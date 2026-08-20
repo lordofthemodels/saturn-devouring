@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Charon — peer-to-peer systemic survival aboard the UNSC Saturn Devouring.">
+  <title>Charon</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; margin: 0; background: #05080c; color: #dce8ef; }
+    body { display: grid; place-items: center; font: 13px/1.6 ui-monospace, Menlo, monospace; }
+    a { color: #79d8df; }
+  </style>
+  <script>
+    const target = new URL('./game/', location.href);
+    target.search = location.search;
+    target.hash = location.hash;
+    location.replace(target.href);
+  </script>
+</head>
+<body><p>Opening <a href="./game/">Charon</a>…</p></body>
+</html>

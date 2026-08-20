@@ -1,0 +1,64 @@
+// FPS mechanics constants — ported from the first-strike vertical slice
+// (js/data.js), tuned for the Charon. Decoupling contract preserved:
+// mechanics read these rows, nothing hardcodes a name.
+
+export const MA5 = {
+  name: 'MA5 ASSAULT RIFLE', // what every marine aboard carries
+  rpm: 900,
+  damage: 8,
+  mag: 60,
+  reserve: 240,
+  reloadS: 2.3,
+  spreadBaseDeg: 1.35,
+  spreadMaxDeg: 6.2,
+  bloomPerShotDeg: 0.38,
+  spreadDecayDegS: 4.4,
+  kickDeg: 0.2,
+  meleeDamage: 45,
+  meleeRange: 2.2,
+  meleeCooldownS: 0.9,
+};
+
+export const ODST = {
+  // "an ODST with extra life": ballistic armor over meat — the armor layer
+  // soaks damage and recovers when you break contact; the health under it
+  // does not.
+  armor: 50,
+  health: 45,
+  armorDelayS: 4.2,
+  armorRegenPerS: 22,
+  // movement (first-strike player feel — the old 2.4 m/s walk read as mud)
+  walkSpeed: 5.6,
+  sprintSpeed: 7.6,
+  accel: 14,
+  airControl: 0.35,
+  gravity: 24,
+  jumpVel: 8.2,
+  eyeHeight: 1.62,
+  climbSpeed: 2.6,
+  // how fast a knockback bleeds off (see FpsController.shoveX). 7/s puts a
+  // 4.4 m/s stagger under walking pace in about a fifth of a second — you feel
+  // shoved and you recover; you are never sliding on ice.
+  shoveDecayPerSec: 7,
+};
+
+export const FRAG = {
+  count: 4,          // you board with four
+  max: 12,           // how many you can carry (resupply at the armory)
+  throwSpeed: 24,    // m/s out of the hand — a real hard throw, reaches across a bay
+  upBoost: 4.2,      // lofted arc so it carries down a long corridor
+  gravity: 20,
+  fuseS: 2.4,        // cooked from release — flies far before it goes
+  bounce: 0.42,      // velocity kept on impact
+  radiusM: 8,        // heavy blast — clears a room, not just a corner
+  damage: 135,       // sim explodeAt payload (falls off to ~40% at the edge)
+};
+
+export const DOORS = {
+  openRadius: 2.6,   // any body this close slides the door open
+  slideSpeed: 4.5,   // m/s of panel travel
+  // a SEALED door is stuck ajar, not shut (user: red-painted broken doors
+  // killed the realism): open enough to see and shoot through the gap,
+  // far too narrow to walk through. 0.22 of full travel ≈ a 28 cm slot.
+  ajar01: 0.22,
+};

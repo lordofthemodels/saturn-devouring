@@ -1,0 +1,1727 @@
+// Flood hive AI (§6) driven by the decision math in §13. One brain; forms
+// are dumb actuators executing tasks. No phase flags anywhere: hide/invest/
+// snowball/rampage all fall out of the scarcity term.
+
+import { FACTION } from '../shared/agentBuffer.js';
+import { STATE } from './init.js';
+import { humanPass } from './graph.js';
+
+export const TASK = {
+  MOVE: 'move',            // {node}
+  GRAB: 'grab',            // {targetId}
+  CONVERT: 'convert',      // {corpseId} infection form + body -> combat form (form spent)
+  TRANSFORM: 'transform',  // combat form roots into a carrier (the hive's ratio lever)
+  GUARD: 'guard',          // {node} defend a carrier
+  REANIMATE: 'reanimate',  // {targetId} downed combat form
+  DRAG: 'drag',            // {corpseId, node} haul carrier food
+  DECOY: 'decoy',          // {show, stage} get seen far from the dens, then evade
+  ATTACK: 'attack',        // {node} open aggression (rampage)
+  SCOUT: 'scout',          // {node} refresh a lost belief — costs forms to look
+  // DOOR BAIT (user tactic, enabled by the motion-only tracker): a staged
+  // pack holds dead still — invisible to the tracker — while one form steps
+  // through the door, shows itself, and immediately doubles back. Whoever
+  // follows it through walks into the whole pack.
+  DART: 'dart',            // {into, back, muster, stage}
+};
+
+const W_HUMAN = { [FACTION.CIVILIAN]: 0.1, [FACTION.ARMED]: 0.6, [FACTION.MARINE]: 1.0 };
+const W_FLOOD = { [FACTION.INFECTION]: 0.25, [FACTION.COMBAT]: 1.0, [FACTION.CARRIER]: 0.5 };
+
+export class Hive {
+  constructor(sim) {
+    this.sim = sim;
+    // Stale map (§6.1): the hive knows the ship AS DESIGNED. Locks are
+    // discovered only when a form runs into them. (The duct network is the
+    // hive's own body — always known, always open.)
+    this.knownLocked = new Set();
+    // THE MARINE COUNTER (user redesign): the hive holds a running estimate
+    // of how many armed marines remain. Seeded from absorbed crew knowledge
+    // (the garrison's rough strength is common shipboard fact), decremented
+    // every time the hive KILLS one — takes one, or watches one die to its
+    // claws. This is what "it knows where they are, therefore where they are
+    // not" hangs off: few marines believed left => the rest of the ship is
+    // open ground.
+    this.marinesBelieved = sim.agents.filter((a) => a.faction === FACTION.MARINE && !a.dead).length;
+    // Belief per human (§6.1), seeded with absorbed-crew knowledge: it knows
+    // the brig/medbay are stocked and where the barracks squads berth. It
+    // does NOT know where detached squads happen to be — the sweep ETA it
+    // races is a guess (§6.7).
+    this.beliefs = new Map(); // humanId -> {node, t, conf, static}
+    this.believedHumanStr = new Float32Array(sim.graph.n);
+    this.believedHardness = new Float32Array(sim.graph.n);
+    this.opening = true;
+    this.carrierSite = -1;
+    this.sweepEtaSec = Infinity;
+    this.baitCooldownUntil = 0;
+    this.strongpoints = new Map(); // node -> {w, t}: remembered fortified positions
+    // static distance-from-garrison field (absorbed map knowledge): dens and
+    // carrier sites want to be far from where armed humans muster
+    const garrison = [
+      ...sim.graph.nodesWithRole('armory'),
+      ...sim.graph.nodesWithRole('marines'),
+      ...sim.graph.nodesWithRole('odst'),
+    ];
+    this.garrisonDist = sim.graph.flowField(garrison, ['std'], () => true).dist;
+    const barracks = sim.graph.byId.get('barracks');
+    for (const a of sim.agents) {
+      if (a.dead) continue;
+      if (a.faction === FACTION.CIVILIAN && (a.helpless || a.stayPut)) this.beliefs.set(a.id, { node: a.node, t: 0, conf: 0.9, static: true });
+      else if (a.faction === FACTION.CIVILIAN) this.beliefs.set(a.id, { node: a.node, t: 0, conf: 0.3 });
+      else if (a.faction === FACTION.ARMED) this.beliefs.set(a.id, { node: a.node, t: 0, conf: 0.25 });
+      else if (a.faction === FACTION.MARINE) this.beliefs.set(a.id, { node: a.node, t: 0, conf: a.node === barracks ? 0.8 : 0.2 });
+    }
+  }
+
+  // --- stale-map passability: believed, not actual ---
+  // VENTS ARE INFECTION-ONLY now (user redesign), and they are not walked —
+  // the duct network is routed explicitly via ventRoute (safeInfectionPath
+  // below picks walk vs network by time). The walking predicates here cover
+  // std corridors only — stairs, ladders and lifts, like the crew.
+  infectionPass = (link, from, to) => {
+    if (this.sim.graph.burningUntil[to ?? -1] > this.sim.t) return false;
+    if (link.kind === 'std') return !this.knownLocked.has(link.i) || !link.lockable;
+    return link.kind === 'vent'; // synthesized network link — never blocked
+  };
+  // THE MAINTENANCE SHAFTS ARE DEAD (user: "old vent system should be dead").
+  // Cross-deck crawlways were the legacy duct layer; the one-network vents
+  // replaced them for pods, and the big forms now climb like the crew do —
+  // stairs, ladders and lifts, through real doorways (user: "combat forms
+  // should have to use the stairs or ladders").
+  bigPass = (link, from, to) => {
+    if (this.sim.graph.burningUntil[to ?? -1] > this.sim.t) return false;
+    return link.kind === 'std' && !this.knownLocked.has(link.i);
+  };
+  combatPass = this.bigPass;
+  _layersFor(kind) {
+    return ['std'];
+  }
+  _passFor(kind) {
+    return kind === 'infection' ? this.infectionPass : kind === 'combat' ? this.combatPass : this.bigPass;
+  }
+
+  observeBlocked(link) {
+    const g = this.sim.graph;
+    if (link.kind === 'std' && !this.knownLocked.has(link.i)) {
+      this.knownLocked.add(link.i);
+      g.invalidatePathCache(); // hive predicates read knownLocked
+      this.sim.log('hive', `hive discovers a locked ${link.type} (${g.node(link.a).name} ↔ ${g.node(link.b).name}) — re-planning`);
+    }
+  }
+
+  // the hive killed (or took) a marine — the counter is ground truth it earned
+  noteMarineKill() {
+    this.marinesBelieved = Math.max(0, this.marinesBelieved - 1);
+  }
+
+  // seconds through the duct network between two rooms' grates — the closed
+  // form the whole redesign leans on: time ∝ real grate-to-grate distance
+  ventEtaSec(from, to) {
+    if (from === to) return 0;
+    return this.sim.travelSec(this.sim.graph.ventLink(from, to), 1);
+  }
+
+  // Infection reachability in "hops" that stay comparable with the old
+  // BFS numbers: the walk distance, or the duct network expressed as
+  // equivalent corridor hops — never -1, because any grate reaches any other.
+  infectionHops(from, to) {
+    if (from === to) return 0;
+    const g = this.sim.graph;
+    const walk = g.hops(from, to, ['std'], this.infectionPass);
+    const hopSec = g.avgStdLenM / 1.4;
+    const ventH = 1 + Math.ceil(this.ventEtaSec(from, to) / hopSec);
+    return walk === -1 ? ventH : Math.min(walk, ventH);
+  }
+
+  // --- §13.2 scarcity: the engine of emergent phases ---
+  scarcity(I) {
+    const P = this.sim.P.hive;
+    return Math.min(P.scarcityMax, Math.max(P.scarcityMin, Math.pow(P.I_ref / Math.max(I, 1), P.kS)));
+  }
+
+  // --- belief maintenance (§6.1, §13.6) ---
+  updateBeliefs() {
+    const sim = this.sim, dt = sim.P.sim.strategicTickSec;
+    const lambda = sim.P.belief.decayRatePerSec;
+    for (const [id, b] of this.beliefs) {
+      if (!b.static) b.conf *= Math.exp(-lambda * dt);
+      // a belief that has decayed to nothing is a ghost — drop it. (Ghost
+      // entries never expired, so the ALL-IN trigger compared the hive's
+      // mass against every human it had EVER seen — with a hundred stale
+      // records the endgame convergence could never fire: user report of
+      // the last stand being trickled instead of rushed.)
+      if (b.conf < 0.05) this.beliefs.delete(id);
+    }
+    // any form with LOS resets the record
+    const seen = new Set();
+    const observed = new Map(); // node -> shooter weight actually seen this round
+    for (const f of sim.agents) {
+      if (f.dead || !isActiveFloodForm(f)) continue;
+      // the flood SENSES living bodies in every adjacent compartment, not just
+      // down an open sightline (user rule) — this is what lets it read a gun
+      // line forming next door and evade it, or feel the defenceless crew
+      // through a bulkhead and come for them
+      for (const n of sim.floodSenses(f.node)) {
+        let shooterW = 0;
+        for (const h of sim.occupants(n)) {
+          if (!isLivingHuman(h)) continue;
+          if (h.faction === FACTION.MARINE) shooterW += 1;
+          else if (h.faction === FACTION.ARMED) shooterW += 0.6;
+          if (seen.has(h.id)) continue;
+          seen.add(h.id);
+          const old = this.beliefs.get(h.id);
+          this.beliefs.set(h.id, { node: h.node, t: sim.t, conf: 1, static: old?.static && (h.helpless || h.stayPut) });
+        }
+        // remember FORTIFIED positions: a mass of guns seen once stays feared
+        // for minutes, not seconds — this is what stops the one-at-a-time
+        // trickle into the last-stand line (per-contact beliefs decay in ~7s,
+        // so the hive kept "forgetting" the line and feeding it another form)
+        if (shooterW >= 2) this.strongpoints.set(n, { w: shooterW, t: sim.t });
+        const prev = observed.get(n);
+        if (prev === undefined || shooterW > prev) observed.set(n, shooterW);
+      }
+    }
+    // believed strength fields (§13.6): probability mass spreads over nodes
+    // reachable since last seen; q (prediction quality) sharpens it toward
+    // the hive's model of where humans run
+    const P = sim.P;
+    this.believedHumanStr.fill(0);
+    this.believedHardness.fill(0);
+    for (const [id, b] of this.beliefs) {
+      const h = sim.byId.get(id);
+      if (!h || h.dead || h.hp <= 0) { this.beliefs.delete(id); continue; }
+      if (b.conf < 0.05) continue;
+      const w = W_HUMAN[h.faction] * b.conf;
+      const dtSeen = sim.t - b.t;
+      const spreadHops = b.static ? 0 : Math.min(4, Math.floor(P.belief.humanSpeedHops * dtSeen));
+      const q = P.belief.predictionQuality;
+      if (spreadHops === 0 || b.conf > 0.95) {
+        this.believedHumanStr[b.node] += w;
+        if (h.faction === FACTION.MARINE) this.believedHardness[b.node] += w;
+      } else {
+        const nodes = sim.graph.nodesWithin(b.node, spreadHops, ['std'], humanPass);
+        let total = 0;
+        const score = nodes.map((n) => {
+          const model = 1 / (1 + sim.influence.floodStr[n] * 3);
+          const s = (1 - q) + q * model;
+          total += s;
+          return s;
+        });
+        nodes.forEach((n, i) => {
+          const p = score[i] / total;
+          this.believedHumanStr[n] += w * p;
+          if (h.faction === FACTION.MARINE) this.believedHardness[n] += w * p;
+        });
+      }
+    }
+    // fold remembered strongpoints into the threat picture (slow ~3 min decay)
+    for (const [n, sp] of this.strongpoints) {
+      // eyes on the position beat the memory: a form looked at it THIS round
+      // and the mass of guns is gone (dead or moved on) — drop the fear, or
+      // the muster keeps storming an empty room for minutes
+      if (observed.has(n) && observed.get(n) < 2) { this.strongpoints.delete(n); continue; }
+      const age = sim.t - sp.t;
+      if (age > 360) { this.strongpoints.delete(n); continue; }
+      // the memory is a FLOOR under the live picture, not an addition — while
+      // forms keep eyes on the line, live beliefs already carry its full
+      // weight, and summing both doubled the defense estimate (the muster
+      // then waited for numbers that couldn't exist)
+      const s = sp.w * Math.exp(-age / 180);
+      this.believedHardness[n] += Math.max(0, s - this.believedHardness[n]);
+      this.believedHumanStr[n] += Math.max(0, s - this.believedHumanStr[n]);
+    }
+    // every believed* field just moved — memoized routes are stale
+    this._beliefEpoch = (this._beliefEpoch ?? 0) + 1;
+  }
+
+  // --- per-epoch route memo (perf pass 3) ---
+  // The strategic draft loops call safeAssaultPath/stealthPath in forms x
+  // candidate-nodes patterns — the measured storm was 300-550 full Dijkstras
+  // in ONE 15Hz tick every 2.5s (a metronomic 30-100ms hitch that grew with
+  // the flood). The inputs those predicates read are exactly (a) the graph's
+  // passability (locks / vents / burning — versioned by pathVersion) and
+  // (b) the believed* fields + known* sets (versioned by _beliefEpoch, which
+  // observeBlocked also rides via invalidatePathCache). Same inputs => same
+  // route, so a memo keyed on both versions is bit-identical; only the CPU
+  // time changes. Callers CONSUME paths (setPath aliases then shifts), so
+  // hits return a shallow copy — step objects are never mutated.
+  _routeMemo(kind) {
+    const g = this.sim.graph;
+    const v = (g.pathVersion ?? 0);
+    const e = (this._beliefEpoch ?? 0);
+    if (this._memoV !== v || this._memoE !== e) {
+      this._memoV = v; this._memoE = e;
+      (this._assaultMemo ??= new Map()).clear();
+      (this._stealthMemo ??= new Map()).clear();
+      (this._nbhMemo ??= new Map()).clear();
+      (this._huntMemo ??= new Map()).clear();
+    }
+    return kind === 'assault' ? this._assaultMemo
+      : kind === 'stealth' ? this._stealthMemo
+        : kind === 'nbh' ? this._nbhMemo : this._huntMemo;
+  }
+
+  // --- route risk (§13.8) ---
+  routeRisk(path) {
+    if (!path) return 1;
+    const g = this.sim.graph;
+    let risk = 0;
+    for (const step of path) {
+      if (step.layer === 'vent') risk += this.ventWatched(step.link) * 0.5;
+      else {
+        risk += Math.min(1.0, this.believedHumanStr[step.to] * 1.0);
+        // absorbed doctrine: arteries and open bays carry patrol traffic
+        // whether or not the hive has a current belief about them
+        const nd = g.node(step.to);
+        if (nd.roles.includes('artery') || nd.type === 'open') risk += 0.25;
+      }
+    }
+    return Math.min(2.5, risk);
+  }
+
+  ventWatched(link) {
+    // a vent is only watched from the two rooms it connects — a shooter has
+    // to be at the grating to see through it (user note). No adjacency bleed.
+    let w = 0;
+    for (const end of [link.a, link.b]) {
+      w += this.believedHardness[end] + this.believedHumanStr[end] * 0.5;
+    }
+    return Math.min(1, w);
+  }
+
+  // Stealth pathing (§6.3): prefer routes around believed human presence and
+  // watched vents; fall back to the direct route when there is no choice.
+  stealthPath(from, to, kind) {
+    const memo = this._routeMemo('stealth');
+    const key = kind + '|' + from + '|' + to;
+    const hit = memo.get(key);
+    if (hit !== undefined) return hit === null ? null : hit.slice();
+    const g = this.sim.graph;
+    const layers = this._layersFor(kind);
+    const base = this._passFor(kind);
+    const quiet = (l, a, b) => {
+      if (!base(l, a, b)) return false;
+      if (b !== to && this.believedHumanStr[b] > 0.25) return false;
+      if (l.kind === 'vent' && this.ventWatched(l) > 0.5) return false;
+      return true;
+    };
+    const path = g.path(from, to, layers, quiet) ?? g.path(from, to, layers, base);
+    memo.set(key, path);
+    // callers consume paths (setPath aliases, then shift()) — never hand out
+    // the stored array, on hit OR miss
+    return path === null ? null : path.slice();
+  }
+  // INFECTION ROUTING (user redesign): pods ALWAYS avoid marines, and the
+  // duct network is how. Compare the quiet walk against the direct network
+  // transit by time and take the faster — with two hard rules on top:
+  //  1. never EMERGE into a room the hive believes marines hold;
+  //  2. if the only walk crosses believed guns, the network wins outright
+  //     (the pod vanishes into the walls instead).
+  safeInfectionPath(from, to) {
+    if (from === to) return [];
+    const walk = this.stealthPath(from, to, 'infection');
+    const g = this.sim.graph;
+    const ventOk = this.believedHardness[to] <= 0.3;
+    if (!ventOk) return walk; // never surface under believed guns
+    const vEta = this.ventEtaSec(from, to);
+    if (walk) {
+      let walkSec = 0, crossesGuns = false;
+      for (const s of walk) {
+        walkSec += g.linkCost(s.link);
+        if (s.to !== to && (this.believedHardness[s.to] > 0.4 || this.believedHumanStr[s.to] > 0.5)) crossesGuns = true;
+      }
+      if (!crossesGuns && walkSec <= vEta) return walk;
+    }
+    return g.ventRoute(from, to);
+  }
+
+  // Combat-form route that never cuts THROUGH a remembered gun line: any
+  // intermediate node with real believed hardness is off-limits (only the
+  // destination itself may be hard — that's the assault). Walking the muster
+  // through the last-stand corridor was how forms trickled in one at a time.
+  safeAssaultPath(from, to) {
+    const memo = this._routeMemo('assault');
+    const key = from * 4096 + to; // node counts are far below 4096
+    const hit = memo.get(key);
+    if (hit !== undefined) return hit === null ? null : hit.slice();
+    const pass = (l, a, b) => {
+      if (!this.bigPass(l, a, b)) return false;
+      if (b !== from && b !== to && this.believedHardness[b] > 0.7) return false;
+      return true;
+    };
+    const path = this.sim.graph.path(from, to, ['std'], pass);
+    memo.set(key, path);
+    // callers consume paths (setPath aliases, then shift()) — never hand out
+    // the stored array, on hit OR miss
+    return path === null ? null : path.slice();
+  }
+
+  // --- sweep ETA (§6.7/§13.5): a belief, not ground truth ---
+  estimateSweepEta() {
+    const sim = this.sim;
+    let bestHops = Infinity;
+    for (const [id, b] of this.beliefs) {
+      const h = sim.byId.get(id);
+      if (!h || h.faction !== FACTION.MARINE || b.conf < 0.15) continue;
+      const d = sim.graph.hops(b.node, sim.graph.breachNode, ['std'], humanPass);
+      if (d !== -1 && d < bestHops) bestHops = d;
+    }
+    if (bestHops === Infinity) return Infinity;
+    // seconds from NOW at a marine's pace over average real hop distance
+    return bestHops * (sim.graph.avgStdLenM / (sim.P.movement.baseMps * sim.P.speed.marine));
+  }
+
+  // arteries carry marine traffic; denning beside them is asking to be found
+  trafficPenalty(node) {
+    let p = 0;
+    if (this.sim.graph.hasRole(node, 'artery')) p += 2;
+    for (const { to } of this.sim.graph.neighbors(node, ['std'], () => true)) {
+      if (this.sim.graph.hasRole(to, 'artery')) p += 0.4;
+    }
+    return p;
+  }
+
+  // escape options from a node across all layers the hive can use — a
+  // carrier site or fallback point with one exit is a trap, not a refuge.
+  // Every room's grate counts as one exit (infection-only, but a bolt-hole
+  // for the pool is still a bolt-hole).
+  exitCount(node) {
+    let n = 1; // the room's own vent grate
+    for (const _ of this.sim.graph.neighbors(node, ['std'], (l) => !this.knownLocked.has(l.i))) n++;
+    return n;
+  }
+
+  // absorbed map knowledge (§6.1): garrison compartments are dangerous
+  // whether or not the hive currently sees anyone in them
+  staticGarrison(node) {
+    const roles = this.sim.graph.node(node).roles;
+    if (roles.includes('marines') || roles.includes('odst')) return 1.2;
+    if (roles.includes('armory') || roles.includes('armed')) return 0.8;
+    return 0;
+  }
+
+  // hardness the hive believes is at/near a node (for evade + siting)
+  localThreat(node) {
+    let h = this.believedHardness[node] + this.believedHumanStr[node] * 0.4 + this.staticGarrison(node);
+    for (const { to } of this.sim.graph.neighbors(node, ['std'], () => true)) {
+      h += this.believedHardness[to] * 0.6 + this.staticGarrison(to) * 0.5;
+    }
+    return h;
+  }
+
+  // ======================= strategic tick =======================
+  strategicTick() {
+    const sim = this.sim;
+    this.updateBeliefs();
+
+    // release claims whose claiming task no longer exists (the claimer died
+    // or was re-tasked) so bodies/downed forms return to the economy
+    const claimedNow = new Set();
+    for (const a of sim.agents) {
+      if (a.dead || !a.task) continue;
+      if (a.task.corpseId !== undefined) claimedNow.add(a.task.corpseId);
+      if (a.task.targetId !== undefined) claimedNow.add(a.task.targetId);
+    }
+    for (const a of sim.agents) {
+      if (a.claimed && !claimedNow.has(a.id)) a.claimed = false;
+    }
+
+    const forms = sim.agents.filter((a) => !a.dead && isActiveFloodForm(a));
+    const infection = forms.filter((a) => a.faction === FACTION.INFECTION);
+    const combat = forms.filter((a) => a.faction === FACTION.COMBAT);
+    const carriers = sim.agents.filter((a) => !a.dead && a.faction === FACTION.CARRIER && a.hp > 0);
+
+    const bodies = sim.agents.filter((a) => !a.dead && a.faction === FACTION.CORPSE && a.damage < 100);
+    const I = infection.length;
+    const C = combat.length;
+    const K = carriers.length;
+    const S = this.scarcity(I + K * 2); // carriers embody future forms
+    this.lastScarcity = S;
+
+    // ALL IN (endgame closure): when the hive's mass dwarfs the few
+    // believed survivors, it stops counting and rises as one — muster
+    // thresholds and door-holds drop, every form converges. Without this a
+    // 150-form hive besieged 6 rifles forever (probe timeouts).
+    const mass = I + C * 2 + K * 2;
+    const wasAllIn = this.allIn;
+    // mass-ratio trigger against CONFIDENT beliefs only (a raw count kept
+    // every human ever seen; a count cap never fired — hiding civilians
+    // kept the believed-survivor count high while 150 forms besieged 6
+    // rifles)
+    let believedAlive = 0;
+    for (const b of this.beliefs.values()) if (b.static || b.conf > 0.15) believedAlive++;
+    // THE COUNTER CLOSES THE GAME (user redesign): when the hive's own kill
+    // ledger says the garrison is nearly spent, it stops tip-toeing — the
+    // armed resistance is what stood between it and the ship.
+    this.allIn = (believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3)
+      || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0);
+    if (this.allIn && !wasAllIn) sim.log('hive', 'the hive rises as one — every form converges for the end');
+
+    // POSTURE (user: evasive hit-and-run early, aggressive once strong). Early —
+    // few carriers or a small pool — the hive RUNS: it slips off to hit soft
+    // targets and disperses, but does NOT gang up on the marines. Once carriers
+    // are seated and the pool has grown (scarcity crosses ~1.0) it flips
+    // AGGRESSIVE and the rampage/muster hunt comes online. Modeled on allIn.
+    // A garrison the counter says is broken flips it aggressive outright.
+    const wasAggro = this.posture === 'AGGRESSIVE';
+    this.posture = ((K >= 2 && S <= 1.05) || this.allIn || this.marinesBelieved <= 2) ? 'AGGRESSIVE' : 'EVASIVE';
+    // DEBUG READOUT (user: a flood strength/number indicator). Every one of
+    // these already drives a decision above — mass gates allIn, S gates the
+    // posture flip, believedAlive is the denominator of the mass ratio, and
+    // marinesLeft is the hive's own kill ledger — so the panel shows the
+    // hive's reasoning rather than a parallel metric that could disagree
+    // with it. Refreshed on the 2.5 s strategic tick, not per frame.
+    this.stats = { I, C, K, bodies: bodies.length, mass, S, believedAlive,
+      marinesLeft: this.marinesBelieved, allIn: this.allIn, posture: this.posture, opening: this.opening };
+    if (this.posture === 'AGGRESSIVE' && !wasAggro) sim.log('hive', 'the hive turns from hit-and-run to open aggression');
+
+    // re-validate queued paths against current beliefs: a route planned two
+    // rounds ago may now run through a manned corridor. COMMITTED INFECTS are
+    // exempt (user: infect-a-body cycles stuttering) — a form already en route
+    // to burrow a specific corpse / raise a downed form kept having its path
+    // dropped here every 2.5 s when the body lay near believed humans, so it
+    // re-pathed forever and never arrived. Once committed to a body it goes.
+    for (const f of forms) {
+      if (f.task?.kind === TASK.CONVERT || f.task?.kind === TASK.REANIMATE) continue;
+      if (f.path.length && f.path.some((s) => this.believedHumanStr[s.to] > 0.5 || this.believedHardness[s.to] > 0.4)) {
+        f.path = [];
+      }
+    }
+
+    // §6.4 EVADE runs in every mode: pull forms out of nodes the marines own.
+    this.evade(forms, carriers);
+
+    if (this.opening) {
+      this.openingMove(infection, combat, bodies);
+      if (sim.firstSweepCleared) {
+        this.opening = false;
+        sim.log('hive', 'hive hands off to steady-state economy (first sweep has passed)');
+      }
+      return;
+    }
+    this.steadyState(infection, combat, carriers, bodies, I, C, K, S);
+  }
+
+  // §6.4 evade: any form standing where believed hardness beats local flood
+  // strength runs for the quietest reachable node. Overrides economy tasks
+  // (but not a sprung ambush — those forms are the trap).
+  evade(forms, carriers) {
+    const sim = this.sim;
+    for (const f of forms) {
+      // COMBAT FORMS DON'T FLEE (user: if timidity doesn't help them, reverse
+      // it — they are the flood's TEETH, not its currency). A combat form
+      // presses the attack and trades bodies; the muster still gathers them
+      // before hitting a defended room, but once in a fight they stay in it.
+      // Only the fragile INFECTION pods (and the carriers below) evade to keep
+      // the pool and the wombs alive. This is the biggest lever on the design
+      // rule that the flood must dominate the NPC-only ship.
+      if (f.faction === FACTION.COMBAT) continue;
+      // never interrupt a rooting carrier — losing the 4s transform to an
+      // evade/rampage yank was why the hive stopped producing carriers
+      if (f.task?.kind === TASK.ATTACK
+        || f.task?.kind === TASK.TRANSFORM) continue;
+      // a form staged for a muster holds its ground — the gathering point is
+      // deliberately near the target, and evade would bleed the muster dry
+      if (f.task?.kind === TASK.GUARD && f.task.muster !== undefined) continue;
+      // a form LATCHED ONTO a victim finishes or dies — evade was yanking it
+      // off every round, the reflex re-grabbed instantly, and the 7s
+      // conversion timer restarted forever (victim pinned, never taken)
+      if (f.state === STATE.GRABBING) continue;
+      const threat = this.localThreat(f.node);
+      const own = sim.influence.floodStr[f.node];
+      if (threat > Math.max(own, 0.8)) {
+        // combat forms bolt through the vents too (user rule) — the escape
+        // hatch topology is what makes avoid-and-breed survivable
+        const safe = this.quietNodeNear(f.node, f.faction === FACTION.INFECTION ? 'infection' : 'combat');
+        if (safe !== -1 && safe !== f.node) {
+          this.assign(f, { kind: TASK.MOVE, node: safe, evade: true });
+        }
+      }
+    }
+    for (const c of carriers) {
+      const threat = this.localThreat(c.node);
+      // A carrier is the flood's WOMB — slow, precious, helpless in a fight, and
+      // it must HIDE, never wander toward guns. localThreat folds in the
+      // adjacent rooms, and the flood now senses life through the bulkheads.
+      // (1) NEVER WALK TOWARD THE GUNS (user: carriers trundle toward marines
+      //     next door even sitting idle, no one coming at them). Drop any route
+      //     whose NEXT step or FAR end is no safer than standing put — a womb
+      //     holds still and hides rather than march into a gun line.
+      if (c.path.length) {
+        const next = this.localThreat(c.path[0].to);
+        const dest = this.localThreat(c.path[c.path.length - 1].to);
+        if (next > threat || dest >= Math.max(0.35, threat)) c.path = [];
+      }
+      // (2) actively relocate away only when the guns get close, and only along
+      //     a route that never steps toward them (else HOLD — hiding beats
+      //     walking past a marine). Skip if already slipping somewhere quiet.
+      if (threat > 0.7) {
+        const dest = c.path.length ? c.path[c.path.length - 1].to : c.node;
+        const headingSomewhereSafe = c.path.length && this.localThreat(dest) <= 0.6;
+        if (!headingSomewhereSafe) {
+          const safe = this.quietNodeNear(c.node, 'big');
+          if (safe !== -1 && safe !== c.node && this.localThreat(safe) < threat) {
+            const path = this.stealthPath(c.node, safe, 'big');
+            if (path && !path.some((s) => this.localThreat(s.to) > threat)) {
+              sim.setPath(c, path);
+              if (sim.t - (c._fleeLogAt ?? -99) > 25) {
+                c._fleeLogAt = sim.t;
+                sim.log('hive', `a carrier slips away from the guns toward ${sim.graph.node(safe).name}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  quietNodeNear(from, kind) {
+    const g = this.sim.graph;
+    const reach = g.nodesWithin(from, 4, this._layersFor(kind), this._passFor(kind));
+    let best = -1, bestScore = -Infinity;
+    for (const n of reach) {
+      if (g.burningUntil[n] > this.sim.t) continue;
+      let score = -this.localThreat(n) * 3 + this.sim.influence.floodStr[n] * 0.5;
+      const nd = g.node(n);
+      if (nd.roles.includes('maintenance') || nd.roles.includes('cargo')) score += 0.7;
+      score -= this.trafficPenalty(n) * 0.4;
+      if (this.exitCount(n) < 2) score -= 1.5;
+      if (n === from) score -= 0.5;
+      if (score > bestScore) { bestScore = score; best = n; }
+    }
+    return best;
+  }
+
+  // Where a pod diving into the grate should surface: the quietest room the
+  // hive believes empty of guns, biased toward its own mass and toward decks
+  // the counter says are unmarined. O(n) scan, only run when a pod is
+  // actually bolting for its life. Deterministic (score, then lowest index).
+  ventBoltTarget(from) {
+    const g = this.sim.graph;
+    let best = -1, bestScore = -Infinity;
+    for (let n = 0; n < g.n; n++) {
+      if (n === from) continue;
+      if (g.burningUntil[n] > this.sim.t) continue;
+      if (this.believedHardness[n] > 0.1 || this.believedHumanStr[n] > 0.3) continue;
+      const score = -this.localThreat(n) * 2
+        + this.sim.influence.floodStr[n] * 0.5
+        + this.radioDark(g.node(n).deck)
+        - this.trafficPenalty(n) * 0.3;
+      if (score > bestScore + 1e-9) { bestScore = score; best = n; }
+    }
+    return best;
+  }
+
+  // RADIO-DARK DECKS (user): the marines' distress net only lands reliably
+  // on their own deck, and the hive "knows" it — a deck with no marines
+  // hears nothing and answers slowly, so it's prime growth space. When the
+  // squads cluster onto one deck, every other deck gets darker. Returns a
+  // 0..2 bonus for how safe a deck is to operate on. Cached per tick.
+  radioDark(deck) {
+    // the radio-dark growth incentive STANDS DOWN at the end (user report:
+    // during the last stand every other deck reads dark, and the bonus was
+    // actively pulling the hive AWAY from the line it should be storming)
+    if (this.allIn) return 0;
+    if (this._darkTick !== this.sim.tickCount) {
+      this._darkTick = this.sim.tickCount;
+      const byDeck = {};
+      let alive = 0;
+      for (const a of this.sim.agents) {
+        if (a.dead || a.hp <= 0 || a.faction !== FACTION.MARINE) continue;
+        alive++;
+        const dk = this.sim.graph.node(a.node).deck;
+        byDeck[dk] = (byDeck[dk] ?? 0) + 1;
+      }
+      const maxD = Math.max(0, ...Object.values(byDeck));
+      this._darkCluster = alive ? maxD / alive : 1; // no marines left: everywhere is dark
+      this._darkByDeck = byDeck;
+    }
+    const m = this._darkByDeck[deck] ?? 0;
+    return m === 0 ? 1 + this._darkCluster : m <= 2 ? 0.5 * this._darkCluster : 0;
+  }
+
+  // Score every plausible den node near the breach (out of the sweep's
+  // sightline, quiet, defensible, ideally sitting on carrier food).
+  denCandidates(maxHops = 3) {
+    const sim = this.sim, g = sim.graph;
+    const bodies0 = sim.agents.filter((a) => !a.dead && a.faction === FACTION.CORPSE && a.damage < 100);
+    const bodyAt = new Set(bodies0.map((b) => b.node));
+    const sweepLOS = new Set(sim.visibleNodes(g.breachNode));
+    const out = [];
+    for (const n of g.nodes) {
+      const d = g.hops(g.breachNode, n.idx, ['std'], this.bigPass);
+      if (d === -1 || d < 1 || d > maxHops || sweepLOS.has(n.idx)) continue;
+      const route = this.stealthPath(g.breachNode, n.idx, 'big');
+      if (!route) continue;
+      let score = -this.localThreat(n.idx) * 3 - this.routeRisk(route) * 2.5;
+      if (n.roles.includes('maintenance')) score += 1;
+      if (n.roles.includes('cargo') || n.roles.includes('corpse_cache')) score += 1;
+      if (bodyAt.has(n.idx)) score += 1.2; // carrier food already on site
+      if (n.type === 'corridor' && !n.roles.includes('maintenance')) score -= 2;
+      if (n.type === 'open') score -= 2;
+      score -= this.trafficPenalty(n.idx);
+      score += Math.min(this.garrisonDist[n.idx] === -1 ? 4 : this.garrisonDist[n.idx], 4) * 0.5;
+      if (this.exitCount(n.idx) < 2) score -= 3;
+      score -= d * 0.2;
+      // radio-dark bonus: an unmarined deck is worth claiming, and the more
+      // the marines bunch up on one deck, the more the dark decks pay
+      score += this.radioDark(n.deck) * 1.8;
+      out.push({ node: n.idx, score });
+    }
+    out.sort((a, b) => b.score - a.score);
+    return out;
+  }
+
+  // Pick up to `count` den sites that are spread apart (>=2 hops), so the
+  // hive hedges its opening across several hiding spots instead of stacking
+  // everything in one room (user note: it over-concentrates early).
+  pickDenSites(count) {
+    const g = this.sim.graph;
+    const cand = this.denCandidates(3);
+    const chosen = [];
+    for (const c of cand) {
+      if (chosen.length >= count) break;
+      if (chosen.every((s) => g.hops(s, c.node, ['std'], this.bigPass) >= 2)) chosen.push(c.node);
+    }
+    if (!chosen.length && cand.length) chosen.push(cand[0].node);
+    return chosen;
+  }
+
+  // THE OPENING SPREAD (user redesign): count the crash room's larder; that
+  // many forms stay to eat. Every spare rides the ducts out and disperses —
+  // one ALWAYS to the medbay (the surest helpless conversions on the ship),
+  // the rest to soft spots picked greedily for maximum mutual spread, and
+  // NEVER a marine muster post or a room beside one. Computed once (the
+  // assignment map is remembered), so the plan survives re-planning ticks.
+  _openingSpread(infection, bodies) {
+    if (this._spreadPlan) return this._spreadPlan;
+    const sim = this.sim, g = sim.graph;
+    const plan = new Map();
+    const larder = bodies.filter((b) => b.node === g.breachNode).length;
+    // forms sorted by id: the first `larder` stay to eat, the rest spread
+    const sorted = [...infection].sort((a, b) => a.id - b.id);
+    const spares = sorted.slice(Math.min(larder, sorted.length));
+    if (!spares.length) { this._spreadPlan = plan; return plan; }
+    // candidate soft spots: living/soft/medical/storage spaces, no marine
+    // posts, nothing beside a marine post, never the breach itself
+    const posts = new Set();
+    for (const n of g.nodes) {
+      if (this.staticGarrison(n.idx) > 0) {
+        posts.add(n.idx);
+        for (const { to } of g.neighbors(n.idx, ['std'], () => true)) posts.add(to);
+      }
+    }
+    const cands = g.nodes.filter((n) =>
+      n.idx !== g.breachNode && !posts.has(n.idx)
+      && (n.roles.includes('soft') || n.roles.includes('quarters') || n.roles.includes('medbay')
+        || n.roles.includes('cargo') || n.roles.includes('maintenance') || n.roles.includes('corpse_cache')));
+    // spread metric in real meters: fore-aft + same-deck beam + a heavy deck
+    // term, so the fan crosses decks instead of lining up one corridor
+    const dist = (a, b) => Math.abs(a.x - b.x)
+      + (a.deck === b.deck ? Math.abs(a.y - b.y) : 0)
+      + Math.abs(a.deck - b.deck) * 30;
+    const chosen = [];
+    const medbay = g.byId.get('medbay');
+    if (medbay !== undefined && !posts.has(medbay)) chosen.push(medbay);
+    while (chosen.length < spares.length && cands.length) {
+      let best = -1, bestScore = -Infinity;
+      for (const n of cands) {
+        if (chosen.includes(n.idx)) continue;
+        let minD = Infinity;
+        for (const c of chosen) minD = Math.min(minD, dist(n, g.node(c)));
+        if (chosen.length === 0) minD = dist(n, g.node(g.breachNode));
+        const score = Math.min(minD, 120)
+          + Math.min(this.garrisonDist[n.idx] === -1 ? 6 : this.garrisonDist[n.idx], 6) * 4;
+        if (score > bestScore + 1e-9) { bestScore = score; best = n.idx; }
+      }
+      if (best === -1) break;
+      chosen.push(best);
+    }
+    if (!chosen.length) { this._spreadPlan = plan; return plan; }
+    spares.forEach((f, i) => plan.set(f.id, chosen[i % chosen.length]));
+    this._spreadPlan = plan;
+    sim.log('hive', `the spare forms slip into the ducts — fanning out to ${chosen.slice(0, 4).map((n) => g.node(n).name).join(', ')}${chosen.length > 4 ? '…' : ''}`);
+    return plan;
+  }
+
+  // --- §6.7/§13.5 the opening: a timed smash-and-grab ---
+  openingMove(infection, combat, bodies) {
+    const sim = this.sim, g = sim.graph;
+    this.sweepEtaSec = this.estimateSweepEta();
+    const margin = sim.P.hive.openingSweepMargin;
+    const timeLeft = this.sweepEtaSec === Infinity ? 999 : this.sweepEtaSec;
+    const mustRun = timeLeft < margin;
+
+    if (!this.denSites) {
+      this.denSites = this.pickDenSites(3);
+      this.carrierSite = this.denSites[0] ?? -1;
+      sim.log('hive', `hive splits toward ${this.denSites.map((n) => g.node(n).name).join(', ')} (est. sweep in ${timeLeft === 999 ? '?' : Math.round(timeLeft)}s)`);
+    }
+    const dens = this.denSites;
+    const homeFor = (id) => dens[id % dens.length];
+    const breachBodies = bodies.filter((b) => b.node === g.breachNode && !b.claimed);
+
+    // combat forms: haul breach bodies out to the dens as carrier food (one
+    // per den), the rest screen their assigned den
+    let draggers = combat.filter((c) => c.task?.kind === TASK.DRAG).length;
+    for (const c of combat) {
+      if (c.task && c.task.kind !== TASK.GUARD) continue;
+      const home = homeFor(c.id);
+      const homeHasBody = bodies.some((b) => b.node === home);
+      if (timeLeft > 20 && draggers < dens.length && !homeHasBody && breachBodies.length) {
+        const body = breachBodies.shift();
+        body.claimed = true;
+        this.assign(c, { kind: TASK.DRAG, corpseId: body.id, node: home });
+        draggers++;
+      } else if (!c.task) {
+        this.assign(c, { kind: TASK.GUARD, node: this.scatterNode(home, c.id, 'big') });
+      }
+    }
+
+    // infection forms (user redesign): the bodies in the crash room get eaten
+    // by as many forms as there are bodies (floodExec's arrive-and-eat rule
+    // claims them the same tick), and every SPARE form makes straight for the
+    // room's grate and rides the duct network out — one always to the medbay,
+    // the rest fanned as wide across the ship as the soft spots allow, never
+    // into a marine muster post or a room beside one.
+    const plan = this._openingSpread(infection, bodies);
+    for (const f of infection) {
+      if (f.task && f.task.kind !== TASK.MOVE) continue;
+      const target = plan.get(f.id);
+      if (target !== undefined) {
+        if (f.task?.node !== target) this.assign(f, { kind: TASK.MOVE, node: target, spread: true });
+        continue;
+      }
+      // a form staying for the larder: grab anything completable in time
+      if (!f.task) {
+        const grab = this.bestGrab(f, 0.6, timeLeft);
+        if (grab) this.assign(f, grab);
+      }
+    }
+
+    // DECOY (user note): during the opening, one combat form runs AWAY from
+    // the den sites to get itself seen — luring the sweep and triggering
+    // radio calls somewhere the carriers aren't, then slipping into evade.
+    // Buying time is worth one form's risk.
+    if (!this.decoySent && combat.length >= 3) {
+      this.decoySent = true;
+      const decoy = combat.find((c) => !c.task || c.task.kind === TASK.GUARD);
+      if (decoy) {
+        // show node: reachable, far from every den, toward believed humans
+        let show = -1, bestScore = -Infinity;
+        for (const n of g.nodes) {
+          if (this.staticGarrison(n.idx) > 0) continue; // show yourself NEAR them, never IN their room
+          const d = g.hops(decoy.node, n.idx, ['std'], this.bigPass);
+          if (d === -1 || d < 2 || d > 5) continue;
+          let minDen = Infinity;
+          for (const den of dens) {
+            const dd = g.hops(n.idx, den, ['std'], this.bigPass);
+            if (dd !== -1) minDen = Math.min(minDen, dd);
+          }
+          const score = Math.min(minDen, 6) * 1.0 + this.believedHumanStr[n.idx] * 1.5 - d * 0.2;
+          if (score > bestScore) { bestScore = score; show = n.idx; }
+        }
+        if (show !== -1) {
+          this.assign(decoy, { kind: TASK.DECOY, show, stage: 0 });
+          sim.log('bait', `a combat form breaks cover toward ${g.node(show).name} — drawing the sweep off the dens`);
+        }
+      }
+    }
+
+    // START PRODUCTION: root a couple of the initial combat forms into
+    // carriers at quiet dens (carriers are converted combat forms — user
+    // economy). It's a carrier rush (§13.4), and a carrier mints its first
+    // form within seconds, so this stands up production immediately while the
+    // rest of the combat forms guard.
+    const carriersNow = sim.agents.filter((a) => !a.dead && a.faction === FACTION.CARRIER).length;
+    let transforming = combat.filter((c) => c.task?.kind === TASK.TRANSFORM).length;
+    const wantCarriers = Math.min(dens.length, 2);
+    for (const den of dens) {
+      if (carriersNow + transforming >= wantCarriers) break;
+      if (this.localThreat(den) >= 0.6) continue;
+      if (sim.agents.some((a) => !a.dead && a.faction === FACTION.CARRIER && a.node === den)) continue;
+      const cf = combat.find((c) => c.node === den && !c.move && !c.fromPlayer
+        && (!c.task || c.task.kind === TASK.GUARD || c.task.kind === TASK.DRAG));
+      if (cf) { this.assign(cf, { kind: TASK.TRANSFORM }); transforming++; }
+    }
+    // and keep the military up: an infection form sitting on a den body turns
+    // it into a fresh combat form to replace the ones that just rooted
+    for (const den of dens) {
+      if (this.localThreat(den) >= 0.6) continue;
+      const feed = bodies.find((b) => b.node === den && !b.claimed);
+      const former = infection.find((f) => f.node === den && (!f.task || f.task.kind === TASK.MOVE));
+      if (feed && former && combat.length < 4) { feed.claimed = true; this.assign(former, { kind: TASK.CONVERT, corpseId: feed.id }); }
+    }
+  }
+
+  // spread forms among a site and its quiet neighbors (no deathballs), but
+  // never out onto an artery — the main corridors are where the forms were
+  // getting mown down in transit
+  scatterNode(site, salt, kind) {
+    const g = this.sim.graph;
+    const opts = [site];
+    for (const { to } of g.neighbors(site, this._layersFor(kind), this._passFor(kind))) {
+      if (this.localThreat(to) < 0.6 && !g.hasRole(to, 'artery') && g.node(to).type !== 'open') opts.push(to);
+    }
+    return opts[salt % opts.length];
+  }
+
+  // --- steady state: §13.3 utility over candidate actions ---
+  steadyState(infection, combat, carriers, bodies, I, C, K, S) {
+    const sim = this.sim, g = sim.graph, P = sim.P;
+    const riskAversion = P.hive.riskBase * S;
+
+    // 1. AGGRESSION IS LOCAL (user note): each region decides hide-vs-rampage
+    //    on its OWN situation, independent of the global pool. A pocket of
+    //    forms standing over undefended civilians goes loud even while the
+    //    hive is scarce elsewhere; a pocket with marines in it hides even
+    //    while the hive is rich. A region rampages iff it has local
+    //    superiority over the humans there, enough local mass to matter, and
+    //    no real marine presence to punish it (that's an evade zone instead).
+    const rampaging = new Set();
+    // EVASIVE hit-and-run (user): pockets stay quiet — no going loud, no muster —
+    // until the hive is strong (posture flips AGGRESSIVE). Early forms disperse
+    // and hit soft targets instead of ganging up on the marines.
+    if (this.posture === 'AGGRESSIVE') for (const n of g.nodes) {
+      const region = g.nodesWithin(n.idx, 1, ['std'], () => true);
+      let fs = 0, hs = 0, hard = 0;
+      for (const r of region) {
+        fs += sim.influence.floodStr[r];
+        hs += this.believedHumanStr[r];
+        hard += this.believedHardness[r];
+      }
+      if (fs >= P.rampage.threshold * Math.max(hs, 0.3)
+        && fs >= P.rampage.localReserve
+        && hard < P.rampage.marineCap) rampaging.add(n.idx);
+    }
+    if (rampaging.size > 0 && !this.rampageLogged) {
+      this.rampageLogged = true;
+      sim.log('rampage', `flood pockets go loud where the crew is undefended (${rampaging.size} region(s))`);
+    }
+
+    // 2. carrier production is the RATIO LEVER (user economy): a spare combat
+    //    form roots into a carrier. Target enough carriers to snowball
+    //    (§13.4 needs K>=2), scaling with the force; only spend a combat form
+    //    on it when there's a genuine surplus (still >=1 combat per carrier),
+    //    and only in a safe, defensible node spread from the other carriers.
+    // REPRODUCTION IS THE FIRST INSTINCT (user note): with no carriers the
+    // hive roots one NOW, whatever else is happening — production precedes
+    // defense, hunting, everything.
+    // MAX BREEDING while a muster is banned for lack of numbers (user rule):
+    // the hive wants more carriers than usual until the force catches up
+    let wantK = Math.min(4, 2 + Math.floor((I + C) / 22));
+    if (sim.t < (this._breedUntil ?? 0)) wantK = Math.min(6, wantK + 2);
+    if (K < wantK && (C > K || K === 0)) {
+      const target = this.bestCarrierNode();
+      if (target !== -1) {
+        // a form raised from the PLAYER never roots into a carrier (game rule);
+        // a form staged in a LIVE MUSTER is off-limits too — drafting the army
+        // it is trying to raise put the hive in a loop of eating its own
+        // soldiers (raise the dead → draft to carrier → rupture → raise…)
+        const spares = combat.filter((c) => !c.fromPlayer
+          && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined) || c.task.kind === TASK.ATTACK));
+        const c = this.nearest(spares, target, ['std'], this.bigPass);
+        if (c) {
+          if (c.node === target && !c.move && this.localThreat(target) < 0.5) this.assign(c, { kind: TASK.TRANSFORM });
+          // seed: true protects the walk from the rampage muster — production
+          // precedes war, and re-drafting the seed form every round starved
+          // the hive of carriers entirely (deadlock: no carriers -> no
+          // infection forms -> no conversions -> the muster can never fill)
+          else this.assign(c, { kind: TASK.GUARD, node: target, seed: true });
+        }
+      }
+    }
+
+    // 2b. DESPERATION (user note): reduced to a handful of combat forms with no
+    //     carriers and no pool, a rational hive rebuilds — it does NOT just
+    //     hide and wait to be shot. The safest-positioned form roots into a
+    //     carrier to restart production; the rest pull back to the quietest
+    //     ground they can reach. This is the last-ditch survival play.
+    // When it's down to a few combat forms and nothing else, EVERY one of
+    // them hides and roots into a carrier (user note) — the last soldiers
+    // become the seed stock, full stop. No hunting, no guarding, no waiting.
+    const desperate = K === 0 && I < 6 && combat.length <= 4;
+    if (desperate) {
+      for (const c of combat) {
+        if (c.downed || c.task?.kind === TASK.TRANSFORM) continue;
+        // a form that has been hunting quiet ground for half a minute roots
+        // WHEREVER it is — the perfect den it kept walking toward left the
+        // last survivor wandering for a quarter hour instead of seeding
+        c.desperateSince ??= sim.t;
+        const overdue = sim.t - c.desperateSince > 30;
+        if ((this.localThreat(c.node) < 0.9 || overdue) && !c.move && !c.fromPlayer) {
+          this.assign(c, { kind: TASK.TRANSFORM });
+        } else {
+          const quiet = this.quietNodeNear(c.node, 'big');
+          if (quiet !== -1 && quiet !== c.node) this.assign(c, { kind: TASK.GUARD, node: quiet });
+          else if (!c.move) this.assign(c, { kind: TASK.TRANSFORM }); // nowhere safer — root here
+        }
+      }
+      if (!this._desperateLogged) {
+        this._desperateLogged = true;
+        this.sim.log('hive', 'the last combat forms go to ground to seed new carriers');
+      }
+    } else {
+      for (const c of combat) c.desperateSince = undefined;
+    }
+    this._desperate = desperate;
+
+    // 2c. SOFT-TARGET RAID (user note): the hive KNOWS the medbay and the
+    //     other soft rooms are likely unguarded — the same shared map that
+    //     pins the marines' believed positions marks everywhere else safe.
+    //     Once the opening carrier base is met (3+ seated or seeding,
+    //     dispersed), one spare combat form slips off early to massacre,
+    //     distract, and MAKE BODIES: the screaming pulls squads across the
+    //     ship while the dens keep breeding, and the dead feed conversion.
+    {
+      const seeding = combat.reduce((n, c) => n + (c.task?.kind === TASK.TRANSFORM || c.task?.seed ? 1 : 0), 0);
+      const raider = this._raiderId !== undefined ? sim.byId.get(this._raiderId) : null;
+      const raiderLive = raider && !raider.dead && !raider.downed && raider.hp > 0;
+      if (!raiderLive) this._raiderId = undefined;
+      if (!this.allIn && (this.posture === 'EVASIVE' || K + seeding >= 3) && !raiderLive && sim.t >= (this._raidCooldownUntil ?? 0)) {
+        let bestT = -1, bestS = 0.5;
+        for (const n of g.nodes) {
+          if (!n.roles.includes('soft') && !n.roles.includes('medbay')) continue;
+          if (this.believedHardness[n.idx] > 0.3) continue; // believed guarded — not this one
+          // radio-dark decks make better hunting: the screaming brings help
+          // late or not at all
+          const s = this.believedHumanStr[n.idx] - this.believedHardness[n.idx] * 2
+            + this.radioDark(n.deck) * 1.2;
+          if (s > bestS) { bestS = s; bestT = n.idx; }
+        }
+        if (bestT !== -1) {
+          const spares = combat.filter((c) => !c.fromPlayer && !c.downed
+            && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)));
+          const r = this.nearest(spares, bestT, ['std'], this.combatPass);
+          if (r) {
+            this._raiderId = r.id;
+            this._raidCooldownUntil = sim.t + 60;
+            this.assign(r, { kind: TASK.ATTACK, node: bestT });
+            sim.log('rampage', `a combat form slips off to raid ${g.node(bestT).name} — soft target, likely unguarded`);
+          }
+        }
+      }
+    }
+
+    // 3. guards on each carrier. Protecting the first carriers through
+    //    incubation is the whole game (§13.4), so guard HARDER when the pool
+    //    is thin — that's exactly when losing a carrier is fatal.
+    const guardsWanted = S >= 1.5 ? 2 : 1;
+    for (const carrier of carriers) {
+      const guards = combat.filter((c) => c.task?.kind === TASK.GUARD && c.task.node === carrier.node);
+      if (guards.length < guardsWanted) {
+        const free = combat.filter((c) => !c.task);
+        const guard = this.nearest(free, carrier.node, ['std'], this.bigPass);
+        if (guard) this.assign(guard, { kind: TASK.GUARD, node: carrier.node });
+      }
+    }
+
+    // 4. rampage: combat forms in hot regions attack believed humans openly
+    //    (infection forms swarm through the grab scoring below — rampage
+    //    scarcity makes those grabs near-free). MUSTER DOCTRINE (user rule):
+    //    the flood never assaults a position it doesn't outnumber ~2:1 — it
+    //    stages nearby and gathers mass first, then everyone goes in.
+    for (const f of combat) {
+      // ALL-IN drafts GLOBALLY (user report: forms with free reign of the
+      // ship never joined the endgame push): the rampage-pocket gate only
+      // conscripted forms already standing near the fight — everyone
+      // breeding three decks away sat the assault out forever
+      if (!this.allIn && !rampaging.has(f.node)) continue;
+      if (f.task && (f.task.kind === TASK.ATTACK || f.task.kind === TASK.TRANSFORM)) continue; // a rooting carrier is not a soldier
+      if (f.task?.seed) continue; // carrier-seed detail is off-limits to the draft
+      const target = this.nearestBelievedHuman(f.node);
+      if (target === -1) continue;
+      const ban = this._musterBan?.get(target);
+      if (ban && sim.t < ban.until && combat.length < ban.needed) continue; // breeding until the numbers exist
+      const defense = this.believedHumanStr[target] + this.believedHardness[target];
+      if (defense > 0.8) {
+        // a defended position is NEVER attacked piecemeal: every form stages
+        // first, and step 4b launches the whole muster together once the
+        // gathered mass clears the ratio. THE STAGE IS PINNED per target
+        // (60 s): recomputing it per form per round made it flap with every
+        // belief shift — forms walked forever toward a moving rally point
+        // and the muster never actually massed (measured: 96 staged rounds,
+        // zero with two arrivals standing together).
+        const stage = this.pinnedStage(target);
+        if (stage !== -1) {
+          const until = (f.task?.kind === TASK.GUARD && f.task.muster === target)
+            ? f.task.until : sim.t + 90;
+          this.assign(f, { kind: TASK.GUARD, node: stage, muster: target, until });
+          if (sim.t >= (this._musterLogAt ?? 0)) {
+            this._musterLogAt = sim.t + 30;
+            sim.log('hive', `the hive masses outside ${g.node(target).name} — waiting for the numbers`);
+          }
+        }
+        continue;
+      }
+      this.assign(f, { kind: TASK.ATTACK, node: target });
+    }
+
+    // 4b. LAUNCH THE MUSTER (user rule): staged forms go in TOGETHER once
+    //     the mass that has actually ARRIVED at the staging ground clears
+    //     killRatio against the believed defense — never one at a time. A
+    //     muster that can't fill in 90s gives its forms back to the economy.
+    {
+      const staged = new Map(); // target -> staged combat forms
+      for (const f of combat) {
+        const t = f.task;
+        if (t?.kind !== TASK.GUARD || t.muster === undefined) continue;
+        if (sim.t > t.until) { f.task = null; continue; }
+        if (!staged.has(t.muster)) staged.set(t.muster, []);
+        staged.get(t.muster).push(f);
+      }
+      this._musterStart ??= new Map();
+      this._musterBan ??= new Map();
+      for (const [target, forms] of staged) {
+        const defense = this.believedHumanStr[target] + this.believedHardness[target];
+        // a wave past maxMusterForms overwhelms ANY line — never keep waiting
+        // for 2x a fear-inflated estimate of the defense.
+        // ALL-IN IS A WAVE, NOT A GREEN LIGHT (user report: the last stand
+        // was trickled): needed=1 under allIn launched every staged form the
+        // moment it arrived — solo, in single file, into the guns. The
+        // zerg rush gathers MOST of the living force and goes in together
+        // (the 75s patience valve below still breaks any stall).
+        const needed = this.allIn
+          ? Math.min(P.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6)))
+          : Math.min(defense * P.swarm.killRatio, P.swarm.maxMusterForms);
+        const arrived = forms.filter((f) => !f.move && f.node === f.task.node).length;
+        if (defense <= 0.8 || arrived >= needed) {
+          this._musterStart.delete(target);
+          for (const f of forms) this.assign(f, { kind: TASK.ATTACK, node: target });
+          sim.log('rampage', `the muster is up — ${forms.length} forms storm ${g.node(target).name} together`);
+          // BACKUP OPTIONS (user rule): a hive with no carrier seated when it
+          // commits an assault peels ONE spare form to go root somewhere
+          // quiet — if the attack breaks, the future is already growing.
+          if (!sim.agents.some((a) => !a.dead && a.faction === FACTION.CARRIER && a.hp > 0)) {
+            const spare = combat.find((c) => !c.fromPlayer && !c.downed
+              && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)));
+            if (spare) {
+              const den = this.quietNodeNear(spare.node, 'big');
+              if (den !== -1) this.assign(spare, { kind: TASK.GUARD, node: den, seed: true });
+            }
+          }
+          continue;
+        }
+        // DOOR BAIT (user tactic): the pack is staged near the target, short
+        // of 3:1, holding DEAD STILL — invisible to a motion tracker. One
+        // form runs to the defended room, shows itself, and doubles straight
+        // back to the motionless pack. A defender who follows the blip walks
+        // into everyone (the spring in floodExec fires the tick a human
+        // enters the stage room). From any stage within two doors — the
+        // runner pays the walk; the trap is the stillness.
+        {
+          const stage = forms[0].task.node;
+          const dartLive = forms.some((f) => f.task?.kind === TASK.DART);
+          if (!dartLive && arrived >= 2 && sim.t >= (this._dartAt?.get(target) ?? 0)) {
+            // humanPass, not an inline closure: hops() keys its flow-field
+            // cache on the predicate's identity — a fresh closure per call
+            // minted a fresh BFS + a dead cache entry every dart check
+            const hopsIn = g.hops(stage, target, ['std'], humanPass);
+            if (hopsIn !== -1 && hopsIn <= 2) {
+              const darter = forms.filter((f) => !f.move && f.node === stage)
+                .sort((a, b) => a.id - b.id)[0];
+              if (darter) {
+                (this._dartAt ??= new Map()).set(target, sim.t + 45);
+                this.assign(darter, { kind: TASK.DART, into: target, back: stage, muster: target, stage: 0 });
+                sim.log('bait', `a form shows itself at ${g.node(target).name} and slips back — the pack lies dead still`);
+              }
+            }
+          }
+        }
+        // PATIENCE HAS LIMITS (user report: standoffs where the hive
+        // "musters and sits or trickles in"): a wave staged for over a
+        // minute at 60%+ of the target number goes anyway — a fear-inflated
+        // defense estimate must never hold a real army in place forever
+        const stagedSince = this._musterStart.get(target);
+        if (stagedSince !== undefined && sim.t - stagedSince > 75
+          && arrived >= Math.max(3, needed * 0.6)) {
+          this._musterStart.delete(target);
+          for (const f of forms) this.assign(f, { kind: TASK.ATTACK, node: target });
+          sim.log('rampage', `the hive tires of waiting — ${forms.length} forms storm ${g.node(target).name}`);
+          continue;
+        }
+        // NUMBERS FIRST (user rule): if every combat form the hive owns
+        // still couldn't meet the ratio, waiting is pointless. But before
+        // giving up: RAISE THE DEAD. Every wave that broke on this line left
+        // its downed in front of it — reanimating that pile (1 infection form
+        // each) is far cheaper than breeding a new army. Only when the pile
+        // plus every living form still can't make the number does the hive
+        // turn to pure breeding.
+        if (combat.length < needed) {
+          const raisable = sim.agents.filter((d) => !d.dead && d.faction === FACTION.COMBAT
+            && d.downed && d.damage < 100 && !d.claimed
+            && !sim.occupants(d.pnode ?? d.node).some((h) => h.hp > 0 && !h.dead
+              && (h.faction === FACTION.MARINE || h.faction === FACTION.ARMED)));
+          const medics = infection.filter((f) => !f.task
+            || f.task.kind === TASK.MOVE || f.task.kind === TASK.SCOUT);
+          if (raisable.length > 0) {
+            // the numbers ARE within reach (they're lying on the deck) — this
+            // is not a breeding emergency, it's a recovery operation
+            this._breedUntil = 0;
+            // raise as many as this round's free forms allow — progress every
+            // round beats an all-or-nothing check that throws the pile away
+            // whenever the medics happen to be busy converting elsewhere
+            let k = 0;
+            while (k < raisable.length && k < medics.length && combat.length + k < needed + 2) {
+              const d = raisable[k];
+              d.claimed = true;
+              this.assign(medics[k], { kind: TASK.REANIMATE, targetId: d.id });
+              k++;
+            }
+            if (k) sim.log('hive', `the hive raises its dead — ${k} downed forms reclaimed for the ${g.node(target).name} muster`);
+            // hold the muster together while the dead stand up
+            for (const f of forms) f.task.until = Math.max(f.task.until ?? 0, sim.t + 60);
+            continue;
+          }
+          this._musterStart.delete(target);
+          this._musterBan.set(target, { until: sim.t + 300, needed });
+          this._breedUntil = sim.t + 300;
+          for (const f of forms) f.task = null;
+          sim.log('hive', `the hive cannot make the numbers for ${g.node(target).name} — everything turns to breeding`);
+          continue;
+        }
+        // force exists but is tied up elsewhere: give recruitment a couple of
+        // minutes, then release this muster too
+        if (!this._musterStart.has(target)) this._musterStart.set(target, sim.t);
+        const spareCount = combat.filter((c) => !c.task
+          || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)).length;
+        if (sim.t - this._musterStart.get(target) > 120 && forms.length + spareCount < needed) {
+          this._musterStart.delete(target);
+          this._musterBan.set(target, { until: sim.t + 180, needed });
+          for (const f of forms) f.task = null;
+          sim.log('hive', `the hive breaks off the muster at ${g.node(target).name} — not enough mass; it turns back to breeding`);
+          continue;
+        }
+        // RECRUIT (user rule: "they muster first"): a muster that is short
+        // actively pulls spare combat forms in from across the ship —
+        // waiting for whoever happened to drift into a rampage pocket
+        // deadlocked a 100-form hive outside a 6-marine line forever
+        if (forms.length < needed + 2) {
+          const stage = forms[0].task.node;
+          const spares = combat.filter((c) => !c.task
+            || (c.task.kind === TASK.GUARD && c.task.muster === undefined));
+          const ranked = spares
+            .map((c) => ({ c, d: g.hops(c.node, stage, ['std'], this.bigPass) }))
+            .filter((x) => x.d !== -1)
+            .sort((x, y) => (x.d - y.d) || (x.c.id - y.c.id));
+          let strength = forms.length;
+          for (const { c } of ranked) {
+            if (strength >= needed + 2) break;
+            this.assign(c, { kind: TASK.GUARD, node: stage, muster: target, until: sim.t + 90 });
+            strength++;
+          }
+        }
+        // while the muster is genuinely filling, the early arrivals wait for
+        // the walkers instead of timing out one by one
+        if (forms.length >= needed) {
+          for (const f of forms) f.task.until = Math.max(f.task.until, sim.t + 30);
+        }
+      }
+    }
+
+    // 5. idle infection forms turn bodies into combat forms and hunt the crew
+    //    (§6.5 priority). Conversion is UNCAPPED (user rule): every safe
+    //    corpse on the ship is a guaranteed combat form, and the combat force
+    //    is what fills the musters and roots into carriers.
+    for (const f of infection) {
+      if (f.task) continue;
+      // LOW-HANGING CORPSES FIRST (user rule): the ship is littered with
+      // bodies and every SAFE one is a guaranteed combat form — multiplying
+      // always beats hunting or marching on guns. The muster is built from
+      // corpses; nearestBody refuses bodies inside a remembered gun line.
+      // a downed form within a couple of rooms is the LOWEST-hanging body of
+      // all (user rule generalized): raising it is a 2 s conversion that
+      // stands up right where the fighting is, vs a 7 s conversion after a
+      // walk across the ship
+      // the 2-hop neighborhood is identical for every candidate — hoisted out
+      // of the find() predicate (perf pass 3: it used to re-run a fresh BFS
+      // per scanned agent, thousands of times per strategic tick late game)
+      const nearSet = new Set(sim.nodesNear(f.node, 2));
+      const closeDowned = sim.agents.find((d) => !d.dead && d.faction === FACTION.COMBAT
+        && d.downed && d.damage < 100 && !d.claimed
+        && nearSet.has(d.pnode ?? d.node)
+        && !sim.occupants(d.pnode ?? d.node).some((h) => h.hp > 0 && !h.dead
+          && (h.faction === FACTION.MARINE || h.faction === FACTION.ARMED)));
+      if (closeDowned) {
+        closeDowned.claimed = true;
+        this.assign(f, { kind: TASK.REANIMATE, targetId: closeDowned.id });
+        continue;
+      }
+      const body = this.nearestBody(f, bodies);
+      if (body) { body.claimed = true; this.assign(f, { kind: TASK.CONVERT, corpseId: body.id }); continue; }
+      const grab = this.bestGrab(f, riskAversion, null, S);
+      if (grab) { this.assign(f, grab); continue; }
+      // reanimate a downed form: cheaper than a fresh conversion (§13.3) —
+      // but not one lying under a shooter's boots. "Kill zone" is judged in
+      // REAL SPACE: a body in a room no living shooter physically occupies is
+      // fair game even right outside a hard line — that pile of downed forms
+      // in front of a last stand is the hive's cheapest army.
+      const downed = sim.agents.find((d) => !d.dead && d.faction === FACTION.COMBAT && d.downed && d.damage < 100 && !d.claimed
+        && (this.believedHardness[d.node] <= 0.5
+          || !sim.occupants(d.pnode ?? d.node).some((h) => h.hp > 0 && !h.dead
+            && (h.faction === FACTION.MARINE || h.faction === FACTION.ARMED))));
+      if (downed && 2.0 - S * 1.0 > 0) {
+        downed.claimed = true;
+        this.assign(f, { kind: TASK.REANIMATE, targetId: downed.id });
+        continue;
+      }
+      // search (§13.7): only a rich hive can afford to look
+      if (I >= P.hive.searchMinPool && sim.rng.chance(0.3)) {
+        // sweep everywhere, command deck included — the survivors hide in
+        // rooms (§13.7: only a rich hive can afford to look)
+        this.assign(f, { kind: TASK.SCOUT, node: sim.rng.int(g.n) });
+        continue;
+      }
+      // NO IDLING (user note): an infection form with nothing better to do is
+      // wasted currency. It speeds toward the closest known corpse or believed
+      // civilian and stages there as a pack — the swarm forms where the food is.
+      const rally = this.nearestFoodNode(f);
+      if (rally !== -1 && f.node !== rally) {
+        this.assign(f, { kind: TASK.MOVE, node: rally, rally: true });
+      } else if (rally === -1 && carriers.length) {
+        this.assign(f, { kind: TASK.MOVE, node: this.scatterNode(carriers[f.id % carriers.length].node, f.id, 'infection') });
+      }
+    }
+
+    // 5b. pack escorts (user note): infection forms travel in packs, and a
+    //     pack moving with combat forms converts more reliably. For every ~3
+    //     forms rallying on a node, peel one spare combat form to escort it.
+    {
+      const rallyCounts = new Map();
+      for (const f of infection) {
+        if (f.task?.kind === TASK.MOVE && f.task.rally) {
+          rallyCounts.set(f.task.node, (rallyCounts.get(f.task.node) || 0) + 1);
+        }
+      }
+      for (const [node, count] of rallyCounts) {
+        const want = Math.floor(count / P.swarm.escortPer);
+        if (want < 1) continue;
+        const escorts = combat.filter((c) => c.task?.kind === TASK.GUARD && c.task.node === node).length;
+        if (escorts >= want) continue;
+        const free = combat.filter((c) => !c.task);
+        const e = this.nearest(free, node, ['std'], this.bigPass);
+        if (e) this.assign(e, { kind: TASK.GUARD, node });
+      }
+    }
+
+
+    // 6b. squad-wipe (user note): an isolated squad the hive can hit 2:1
+    //     gets hit NOW, losses accepted, while a reserve exists elsewhere.
+    this.trySquadWipe(infection, combat, carriers, I);
+
+    // 7. spare combat forms HUNT civilians for bodies while steering clear of
+    //    marines (user note): they are the hive's body-harvesters. A combat
+    //    form kills a spotted civilian in ~1s, so a civilian that radios is
+    //    just a free corpse — the marines are coming anyway, rack up the body
+    //    and slip away; an infection form converts it later. Static, known
+    //    targets (the wounded, the officers who won't move) come first because
+    //    the hive always knows exactly where they are.
+    // This is a LOCAL decision, not a global one (user note): carriers get
+    // their guards first (step 3), and every SPARE form then hunts whatever
+    // safe, undefended prey is near it — nearestHuntNode already refuses to
+    // walk into marines, so a form only goes loud where its own surroundings
+    // are safe, whatever the global pool is doing elsewhere.
+    for (const c of combat) {
+      if (c.task) continue;
+      // when desperate the survivors rebuild and hide (handled in 2b) — they
+      // don't go hunting into the guns
+      const prey = this._desperate ? -1 : this.nearestHuntNode(c.node);
+      if (prey !== -1) { this.assign(c, { kind: TASK.ATTACK, node: prey }); continue; }
+      const home = carriers.length ? carriers[c.id % carriers.length].node : this.carrierSite;
+      if (home !== -1 && c.node !== home) this.assign(c, { kind: TASK.GUARD, node: this.scatterNode(home, c.id, 'big') });
+    }
+  }
+
+  // score grab candidates per §13.3; returns a task or null.
+  // openingTimeLeft non-null => opening gate (§13.5). S taxes the form cost.
+  bestGrab(form, riskAversion, openingTimeLeft = null, S = 1) {
+    const sim = this.sim, P = sim.P;
+    let best = null, bestU = 0;
+    for (const [id, b] of this.beliefs) {
+      const h = sim.byId.get(id);
+      if (!h || h.dead || h.hp <= 0 || b.conf < 0.25) continue;
+      if (h.faction === FACTION.MARINE) continue; // only via bait/ambush (§6.5)
+      const path = this.safeInfectionPath(form.node, b.node);
+      if (!path) continue;
+      // REAL SECONDS, NOT STEP COUNT (review finding): a duct transit is ONE
+      // step whatever the distance — path.length priced a 90 s cross-ship
+      // crawl as a corridor hop, voiding the §13.5 "completable before the
+      // sweep" gate and making steady-state target choice distance-blind.
+      // Sum the route's actual time and convert to equivalent corridor hops
+      // for the cap and the utility penalty (same conversion infectionHops uses).
+      let etaSec = 0;
+      for (const s of path) etaSec += s.layer === 'vent' ? sim.travelSec(s.link, 1) : sim.graph.linkCost(s.link);
+      const hops = Math.max(path.length, Math.ceil(etaSec / (sim.graph.avgStdLenM / 1.4)));
+      if (openingTimeLeft !== null) {
+        if (etaSec + P.combat.infectionGrabSec > openingTimeLeft - P.hive.openingSweepMargin) continue;
+        if (hops > 3) continue;
+      }
+      let value;
+      if (h.helpless) value = P.hive.values.helpless;
+      else if (h.faction === FACTION.CIVILIAN) {
+        value = h.hasRadio ? P.hive.values.civilianRadio : P.hive.values.civilianNoRadio;
+        // only weigh the distress cost if the alarm HASN'T been raised yet.
+        // Once a target has already called, the sweep is coming regardless —
+        // grabbing it is pure upside now, no penalty (user note).
+        if (!h.calledOut) {
+          if (this.believedHumanStr[b.node] > 0.4) value -= P.hive.values.distressPenalty * 0.5;
+          if (h.hasRadio) value -= P.hive.values.distressPenalty * 0.3;
+        }
+      } else value = P.hive.values.armed - (this.believedHumanStr[b.node] > 0.6 ? 1.0 : 0);
+      // static, always-known targets (the wounded, the officers) are the
+      // surest conversions — the hive never loses their position (user note)
+      if (h.helpless || h.stayPut) value += 1.0;
+      const risk = this.routeRisk(path);
+      // U = value·conf − scarcity·formCost − riskAversion·risk − timeCost (§13.3)
+      const U = value * b.conf - S * 0.35 - riskAversion * 0.25 * risk - hops * 0.06;
+      if (U > bestU) { bestU = U; best = { kind: TASK.GRAB, targetId: id } }
+    }
+    return best;
+  }
+
+  // Best node to root a new carrier: quiet, defensible, near our own mass,
+  // and spread from existing carriers so production isn't one clearable cluster.
+  bestCarrierNode() {
+    const g = this.sim.graph;
+    const carrierNodes = this.sim.agents
+      .filter((a) => !a.dead && a.faction === FACTION.CARRIER).map((a) => a.node);
+    // bodies per node (+ spillover to neighbors): a carrier rooted on food
+    // means every minted form converts within seconds of being born
+    const bodyAt = new Float32Array(g.n);
+    for (const b of this.sim.agents) {
+      if (b.dead || b.faction !== FACTION.CORPSE || b.damage >= 100) continue;
+      bodyAt[b.node] += 1;
+      for (const { to } of g.neighbors(b.node, ['std'], () => true)) bodyAt[to] += 0.3;
+    }
+    // SURVIVAL DOCTRINE (user note): the opening goal is to survive and
+    // sustain — production must be DISPERSED (enough carriers in enough
+    // different spots that no single sweep ends the hive) and sited where
+    // the hive believes marines AREN'T. One form's sighting is the whole
+    // hive's map: a known marine position implies everywhere else is safer.
+    const marineNodes = [];
+    for (const [id, b] of this.beliefs) {
+      const h = this.sim.byId.get(id);
+      if (h && !h.dead && h.hp > 0 && h.faction === FACTION.MARINE && b.conf >= 0.4) marineNodes.push(b.node);
+    }
+    const marineDist = marineNodes.length
+      ? g.flowField(marineNodes, ['std'], () => true).dist : null;
+    let best = -1, bestScore = 0.2; // need a genuinely good spot
+    for (const n of g.nodes) {
+      const idx = n.idx;
+      if (g.burningUntil[idx] > this.sim.t) continue;
+      if (this.localThreat(idx) > 0.4) continue;
+      if (this.exitCount(idx) < 2) continue;
+      let score = this.sim.influence.floodStr[idx] * 0.6;   // near our own forms
+      // ROOT WHERE THE BODIES ARE (user rule) — but never in a spot cut off
+      // from the swarm: an isolated carrier is a free kill
+      score += Math.min(bodyAt[idx], 8) * 0.35;
+      if (this.sim.influence.floodStr[idx] < 0.05) score -= 1.2; // known isolation
+      if (n.roles.includes('maintenance') || n.roles.includes('cargo') || n.roles.includes('corpse_cache')) score += 1;
+      if (n.type === 'corridor' || n.type === 'open') score -= 1.5;
+      score -= this.trafficPenalty(idx) * 0.5;
+      score += Math.min(this.garrisonDist[idx] === -1 ? 4 : this.garrisonDist[idx], 4) * 0.25;
+      if (marineDist) {
+        const d = marineDist[idx];
+        score += Math.min(d === -1 ? 6 : d, 6) * 0.3; // far from every believed marine
+      }
+      if (carrierNodes.length) {
+        let near = Infinity;
+        for (const cn of carrierNodes) { const d = g.hops(idx, cn, ['std'], this.bigPass); if (d !== -1) near = Math.min(near, d); }
+        if (near === 0) continue;                 // already a carrier here
+        if (near === 1) score -= 2.5;             // next door = one sweep kills both
+        if (near !== Infinity) score += Math.min(near, 5) * 0.5;
+      }
+      if (score > bestScore) { bestScore = score; best = idx; }
+    }
+    return best;
+  }
+
+
+  staleBeliefs() {
+    for (const [id, b] of this.beliefs) {
+      const h = this.sim.byId.get(id);
+      if (h && h.faction === FACTION.MARINE && b.conf > 0.5) return false;
+    }
+    return true;
+  }
+
+  nearest(list, node, layers, pass) {
+    let best = null, bestD = Infinity;
+    for (const a of list) {
+      const d = this.sim.graph.hops(a.node, node, layers, pass);
+      if (d !== -1 && d < bestD) { bestD = d; best = a; }
+    }
+    return best;
+  }
+
+  nearestBody(form, bodies) {
+    let best = null, bestD = Infinity;
+    for (const b of bodies) {
+      if (b.claimed) continue;
+      // a corpse inside a remembered gun line isn't food, it's bait: eating
+      // it would stand a fresh combat form up straight into the kill zone.
+      // Tightened (user: infection forms ALWAYS avoid marines) — any real
+      // believed marine presence rules the room out, not just a strong line.
+      if (this.believedHardness[b.node] > 0.15 || this.localThreat(b.node) > 1.2) continue;
+      // duct-aware distance: every body on the ship is reachable now
+      const d = this.infectionHops(form.node, b.node);
+      if (d < bestD) { bestD = d; best = b; }
+    }
+    return best;
+  }
+
+  // Where a combat form goes to make bodies. Combines live belief with the
+  // hive's standing knowledge of where the crew lives (absorbed crew memory):
+  // quarters, mess, medbay and cryo are always worth checking even with no
+  // current contact — that's how it "seeks out civilians as soon as able."
+  // Marine-held nodes are avoided (hide from the guns, hunt the soft).
+  nearestHuntNode(from) {
+    const memo = this._routeMemo('hunt');
+    const hit = memo.get(from);
+    if (hit !== undefined) return hit;
+    const r = this._nearestHuntNode(from);
+    memo.set(from, r);
+    return r;
+  }
+  _nearestHuntNode(from) {
+    const sim = this.sim, g = sim.graph;
+    // population prior per node from live beliefs...
+    const prior = new Float32Array(g.n);
+    for (const [id, b] of this.beliefs) {
+      const h = sim.byId.get(id);
+      if (!h || h.dead || h.hp <= 0 || h.faction === FACTION.MARINE) continue;
+      let w = b.conf * (h.helpless || h.stayPut ? 3 : 1); // static = surest bodies
+      prior[b.node] += w;
+    }
+    // ...plus a standing prior on crew spaces, so it hunts population centers
+    // even when every contact has gone cold
+    for (const n of g.nodes) {
+      if (n.roles.includes('quarters') || n.roles.includes('soft')) prior[n.idx] += 0.6;
+      if (n.roles.includes('helpless') || n.roles.includes('medbay') || n.roles.includes('brig')) prior[n.idx] += 1.2;
+    }
+    let best = -1, bestScore = 0.4; // need a real reason to move out
+    for (const n of g.nodes) {
+      if (prior[n.idx] <= 0) continue;
+      if (this.believedHardness[n.idx] > 0.5) continue;   // marines here — skip
+      if (this.localThreat(n.idx) > 1.0) continue;        // garrison/armory area
+      // prey you can only reach by walking through a gun line isn't prey
+      const p = this.safeAssaultPath(from, n.idx);
+      if (!p || p.length > 7) continue;
+      const score = prior[n.idx] - p.length * 0.3;
+      if (score > bestScore) { bestScore = score; best = n.idx; }
+    }
+    return best;
+  }
+
+  // Closest thing an infection form can eat or convert: a corpse, or a
+  // believed civilian position. Skips marine-held ground.
+  nearestFoodNode(form) {
+    const sim = this.sim;
+    let best = -1, bestD = Infinity;
+    for (const b of sim.agents) {
+      if (b.dead || b.faction !== FACTION.CORPSE || b.damage >= 100) continue;
+      if (this.believedHardness[b.node] > 0.15) continue; // pods never near marines
+      const d = this.infectionHops(form.node, b.node);
+      if (d < bestD) { bestD = d; best = b.node; }
+    }
+    for (const [id, bel] of this.beliefs) {
+      const h = sim.byId.get(id);
+      if (!h || h.dead || h.hp <= 0 || h.faction === FACTION.MARINE || bel.conf < 0.3) continue;
+      if (this.believedHardness[bel.node] > 0.15) continue;
+      const d = this.infectionHops(form.node, bel.node);
+      if (d < bestD) { bestD = d; best = bel.node; }
+    }
+    return best;
+  }
+
+  // §swarm-kill (user note): an ISOLATED squad the hive can muster 2:1 on
+  // gets hit immediately, losses accepted, as long as the hive keeps a
+  // reserve (forms or a carrier) elsewhere. Eliminating the main threat is
+  // worth trading currency for.
+  trySquadWipe(infection, combat, carriers, I) {
+    const sim = this.sim, g = sim.graph, P = sim.P.swarm;
+    if (sim.t < 60) return; // no set-piece attacks in the first minute (user rule)
+    if (sim.t < (this.squadWipeCooldownUntil ?? 0)) return;
+    for (const squad of sim.squads) {
+      if (squad.broken) continue;
+      const members = squad.members.map((id) => sim.byId.get(id)).filter((m) => m && !m.dead && m.hp > 0);
+      if (!members.length) continue;
+      const leader = members[0];
+      const bel = this.beliefs.get(leader.id);
+      if (!bel || bel.conf < 0.6) continue; // must have a solid fix
+      // isolated: no OTHER squad believed within isolationHops
+      let isolated = true;
+      for (const other of sim.squads) {
+        if (other === squad || other.broken) continue;
+        const oLeader = sim.byId.get(other.members[0]);
+        if (!oLeader || oLeader.dead) continue;
+        const ob = this.beliefs.get(oLeader.id);
+        if (!ob || ob.conf < 0.3) continue;
+        const d = g.hops(bel.node, ob.node, ['std'], humanPass);
+        if (d !== -1 && d <= P.isolationHops) { isolated = false; break; }
+      }
+      if (!isolated) continue;
+      // muster: every form within musterHops. Odds are sized against EVERYONE
+      // believed to be holding that ground — a "squad" standing on a last-
+      // stand line with three dozen armed crew is not an 8-gun target, and
+      // sizing against the squad alone fed wave after wave into the grinder.
+      const squadW = Math.max(members.length,
+        this.believedHumanStr[bel.node] + this.believedHardness[bel.node]);
+      const muster = [];
+      let musterW = 0;
+      for (const f of [...combat, ...infection]) {
+        if (f.task?.kind === TASK.TRANSFORM) continue;
+        const d = f.faction === FACTION.INFECTION
+          ? this.infectionHops(f.node, bel.node)
+          : g.hops(f.node, bel.node, ['std'], this.bigPass);
+        if (d !== -1 && d <= P.musterHops) { muster.push(f); musterW += f.faction === FACTION.COMBAT ? 1 : 0.25; }
+      }
+      // reserve rule: only trade the swarm for marines if the hive keeps a
+      // future (a carrier or a pool) somewhere else
+      const reserveOk = carriers.length > 0 || I - muster.filter((m) => m.faction === FACTION.INFECTION).length >= 0
+        ? (carriers.length > 0 || I >= P.reserveForms) : false;
+      if (musterW >= squadW * P.killRatio && reserveOk && muster.length) {
+        for (const f of muster) this.assign(f, { kind: TASK.ATTACK, node: bel.node });
+        this.squadWipeCooldownUntil = sim.t + 45;
+        sim.log('rampage', `the hive springs on isolated squad ${squad.id + 1} in ${g.node(bel.node).name} (${muster.length} forms, ${musterW.toFixed(1)}:${squadW} odds)`);
+        return;
+      }
+    }
+  }
+
+  // weighted flood mass within `hops` of a node — what the hive could bring
+  // to an assault there
+  musterStrength(node, hops = 2) {
+    const near = new Set(this.sim.graph.nodesWithin(node, hops, ['std'], () => true));
+    let s = 0;
+    for (const a of this.sim.agents) {
+      if (a.dead || a.hp <= 0 || a.downed) continue;
+      if (a.faction === FACTION.COMBAT && near.has(a.node)) s += 1;
+      else if (a.faction === FACTION.INFECTION && near.has(a.node)) s += 0.25;
+    }
+    return s;
+  }
+
+  // a quiet gathering point 1-2 hops from a defended target. ADJACENCY IS
+  // WORTH REAL POINTS (user tactic): a pack staged one door away can spring
+  // the moment a defender steps in, and it is the only place the door-bait
+  // dart can run from — a stage two rooms back can do neither.
+  stagingNodeNear(target) {
+    const g = this.sim.graph;
+    const adj = new Set((g.adj.std[target] ?? []).filter((e) => !e.link.locked).map((e) => e.to));
+    let best = -1, bestScore = -Infinity;
+    for (const n of g.nodesWithin(target, 2, ['std'], this.bigPass)) {
+      if (n === target) continue;
+      const score = -this.localThreat(n) * 2 - (g.hasRole(n, 'artery') ? 0.5 : 0)
+        + (adj.has(n) ? 0.8 : 0);
+      if (score > bestScore) { bestScore = score; best = n; }
+    }
+    return best;
+  }
+
+  // the pinned stage for a muster target — held for 60 s so arrivals stack
+  // up on ONE node instead of chasing every belief shift
+  pinnedStage(target) {
+    const cur = (this._stageFor ??= new Map()).get(target);
+    if (cur && this.sim.t < cur.until) return cur.node;
+    const n = this.stagingNodeNear(target);
+    if (n !== -1) this._stageFor.set(target, { node: n, until: this.sim.t + 60 });
+    return n;
+  }
+
+  nearestBelievedHuman(from) {
+    const memo = this._routeMemo('nbh');
+    const hit = memo.get(from);
+    if (hit !== undefined) return hit;
+    const r = this._nearestBelievedHuman(from);
+    memo.set(from, r);
+    return r;
+  }
+  _nearestBelievedHuman(from) {
+    let best = -1, bestScore = -Infinity;
+    for (let n = 0; n < this.sim.graph.n; n++) {
+      if (this.believedHumanStr[n] <= 0.05) continue;
+      // rushing the garrison rooms in the first minute is suicide (user rule)
+      if (this.sim.t < 60 && this.staticGarrison(n) > 0) continue;
+      // only targets reachable without marching through ANOTHER gun line
+      const p = this.safeAssaultPath(from, n);
+      if (!p) continue;
+      const s = this.believedHumanStr[n] - p.length * 0.2;
+      if (s > bestScore) { bestScore = s; best = n; }
+    }
+    return best;
+  }
+
+  assign(form, task) {
+    // CLEAR THE ROOM BEFORE YOU ROOT (user: "before they are carriers, the
+    // combat forms should by default kill everyone in the room at the very
+    // least to prevent them from running, before they turn into carriers").
+    //
+    // Every transform site gated on localThreat, which is a BELIEF about guns:
+    // it counts marines heavily and unarmed crew at 0.4x of a decayed estimate,
+    // so a room holding nothing but civilians scored under the 0.5/0.6 bar and
+    // a form rooted with people still standing in it. Measured over 25 min:
+    // 4-8% of transforms started in an occupied room (worst: Medbay, 4 alive).
+    //
+    // Gating HERE rather than at the six call sites because assign() is the
+    // one funnel they all pass through, including the desperation path — a
+    // last-ditch form rooting beside a live human is the worst case of all.
+    // The form is turned onto the room instead: kill first, root after.
+    if (task.kind === TASK.TRANSFORM && this.sim.humansAt(form.pnode ?? form.node) > 0) {
+      task = { kind: TASK.ATTACK, node: form.pnode ?? form.node };
+    }
+    // COMMITTED BURROWER (user rule: once a form starts burrowing a body it
+    // CANNOT be pulled off). A form seated and burrowing a corpse/downed form
+    // (or a combat form rooting into a carrier) ignores every new order until
+    // it finishes or the body is gone — floodExec clears the task itself when
+    // the body becomes invalid. Without this, the strategic tick and the
+    // attack/muster drafts kept re-tasking a mid-conversion form (CONVERT ->
+    // ATTACK / MOVE) and zeroing its timer — the "infect stutter when human
+    // NPCs are nearby" (the nearby life is exactly what triggers the draft).
+    if (form.task && form.taskProgress > 0
+      && (form.task.kind === TASK.CONVERT || form.task.kind === TASK.REANIMATE
+        || form.task.kind === TASK.TRANSFORM)) {
+      const ct = form.task;
+      const body = this.sim.byId.get(ct.corpseId ?? ct.targetId);
+      const alive = ct.kind === TASK.TRANSFORM
+        ? (!form.downed && form.hp > 0)
+        : (body && !body.dead && body.damage < 100);
+      if (alive) return; // committed — the order is ignored
+    }
+    // re-issuing the SAME task must not wipe the path or restart progress —
+    // the strategic round re-assigns standing orders every 2.5 s, and the
+    // clear-repath cycle read as agents stuttering mid-corridor (user note:
+    // jerky movement); rooting/conversion timers also kept resetting
+    const t = form.task;
+    const same = t && t.kind === task.kind && t.node === task.node
+      && t.targetId === task.targetId && t.corpseId === task.corpseId
+      && t.muster === task.muster;
+    // a REPLACED task releases its claims (same leak as death: a corpse
+    // "spoken for" by a form that got retasked was locked away forever)
+    if (!same && t) {
+      if (t.corpseId !== undefined) {
+        const b = this.sim.byId.get(t.corpseId);
+        if (b && !b.dead) b.claimed = false;
+      }
+      if (t.kind === TASK.REANIMATE && t.targetId !== undefined) {
+        const d = this.sim.byId.get(t.targetId);
+        if (d && d.claimed) d.claimed = false;
+      }
+    }
+    form.task = task;
+    if (!same) {
+      form.path = [];
+      form.taskProgress = 0;
+    }
+    // a form yanked out of a grab must not stay frozen in GRABBING — that
+    // state parks movement AND blocks eating (the breach-freeze regression)
+    if (form.state === STATE.GRABBING) { form.state = STATE.IDLE; form.grabTimer = 0; }
+  }
+}
+
+export function isActiveFloodForm(a) {
+  return (a.faction === FACTION.INFECTION || a.faction === FACTION.COMBAT) && !a.downed && a.hp > 0;
+}
+export function isLivingHuman(a) {
+  return (a.faction === FACTION.CIVILIAN || a.faction === FACTION.ARMED || a.faction === FACTION.MARINE) && a.hp > 0 && !a.dead;
+}
+export { W_HUMAN, W_FLOOD };

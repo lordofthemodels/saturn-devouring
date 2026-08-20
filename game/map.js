@@ -1,0 +1,556 @@
+// MARINE TACNET (user request): a map view like the sim view's deck plan,
+// but it only shows what the marine teams actually SEE. The ship schematic
+// itself is always drawn — every marine has the blueprints — but room
+// CONTENTS (flood contacts, bodies, lights-out) only appear where a living
+// marine (or you) currently has eyes. When the last observer leaves a room,
+// its intel goes stale: it stays on the map as a last-seen report that
+// fades with age. Friendlies broadcast position and vitals over the squad
+// net, so every marine shows live with health and squad tag, plus a roster
+// panel. Read-only over the sim — it never touches state or the RNG.
+
+import { FACTION } from '../shared/agentBuffer.js';
+import { fmtTime } from '../sim/sim.js';
+
+const STALE_FADE_SEC = 180;   // last-seen reports fade to minimum over 3 min
+const CONTACT_FRESH_SEC = 5;  // under this age a report still reads "just now"
+
+export class MarineMap {
+  constructor(canvas, sideEl, sim, fireteamId, playerAgentId) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.sideEl = sideEl;
+    this.sim = sim;
+    this.fireteamId = fireteamId;
+    this.playerAgentId = playerAgentId;
+    const n = sim.graph.n;
+    this.lastSeenT = new Float64Array(n).fill(-1); // -1 = never observed
+    this.seenFlood = new Float32Array(n);          // flood strength at last look
+    this.seenCorpses = new Uint16Array(n);
+    this.seenDark = new Uint8Array(n);             // 0 clear, 1 dark, 2 spore fog
+    this.liveObs = new Uint8Array(n);
+    this._corpseScratch = new Uint16Array(n);
+    this._floodScratch = new Float32Array(n); // VISIBLE forms only — vent transit excluded
+    // RADIO-TRUE STALENESS (user: the map should obey the receipt rules):
+    // off-deck teams only reach your board via periodic sitreps that roll
+    // the same cross-deck dice as every other transmission — between
+    // received reports their rooms and their own markers age on the board.
+    this._rep = new Map();       // agentId -> { next, ok, burst }
+    this._marineRep = new Map(); // agentId -> { x, y, deck, hp, maxHp, heading, t }
+    // DECK LINK (user): the deck you are STANDING ON always reads true — you
+    // are the sensor. Every other deck arrives over a relay that drops for
+    // long stretches, and while it is down that deck reports nothing at all.
+    this._link = new Map();      // deck -> { up, until }
+    this._pd = -1;               // player's deck, stamped each draw
+    this._panelAt = 0;
+    this.marines0 = sim.agents.filter((a) => a.faction === FACTION.MARINE).length;
+    this.s = 1;
+    this.dpr = 1;
+  }
+
+  // Run every frame, cheap — intel accumulates even while the map is closed,
+  // exactly like a real ops board someone else is keeping up to date.
+  // Advance every deck's relay. Driven off SIM time, not wall time, so an
+  // outage does not tick away while the game is paused or the tab is hidden.
+  _stepLinks() {
+    const { sim } = this;
+    const P = sim.P.tacnet;
+    for (let d = 1; d <= 5; d++) {
+      let L = this._link.get(d);
+      if (!L) {
+        // STAGGER THE FIRST FLIP. Seeded off the deck number rather than
+        // rolled: with a common start time every deck would drop and recover
+        // together, which reads as one global outage instead of five
+        // independent relays.
+        const phase = ((d * 7919) % 97) / 97;
+        this._link.set(d, (L = { up: true, until: sim.t + P.linkUpMinSec * (0.15 + 0.85 * phase) }));
+      }
+      if (sim.t >= L.until) {
+        L.up = !L.up;
+        const lo = L.up ? P.linkUpMinSec : P.linkDownMinSec;
+        const hi = L.up ? P.linkUpMaxSec : P.linkDownMaxSec;
+        L.until = sim.t + lo + Math.random() * (hi - lo);
+      }
+    }
+  }
+
+  // is this deck reporting? your own always is
+  linkUp(deck) { return deck === this._pd || (this._link.get(deck)?.up ?? true); }
+  // seconds until the current state flips — drives the countdown on the band
+  linkFor(deck) { return Math.max(0, (this._link.get(deck)?.until ?? 0) - this.sim.t); }
+
+  observe() {
+    const { sim } = this;
+    // the player's deck has to be known BEFORE the link gate is applied, and
+    // observe() runs every frame whether the map is open or not
+    this._pd = sim.byId.get(this.playerAgentId)?.deck ?? this._pd;
+    this._stepLinks();
+    this.liveObs.fill(0);
+    this._corpseScratch.fill(0);
+    this._floodScratch.fill(0);
+    for (const a of sim.agents) {
+      if (a.dead) continue;
+      if (a.faction === FACTION.CORPSE) { this._corpseScratch[a.node]++; continue; }
+      if (a.faction === FACTION.INFECTION || a.faction === FACTION.COMBAT || a.faction === FACTION.CARRIER) {
+        // a form HIDDEN mid-crawl is out of everyone's sight — it counts
+        // toward nothing on this board; one at the grate is a normal contact
+        // A DOWNED FORM IS NOT A CONTACT (user: "dead flood bodies are marked
+        // as red dots. Shouldn't be the case"). hurtFloodForm never sets
+        // `dead` on a combat form — killing one leaves hp 0 / downed true, and
+        // a fully burned husk keeps dead=false ON PURPOSE so it survives as a
+        // husk marker. So the `a.dead` guard below never fired for any of
+        // them, and a room of husks scored as a heavy contact.
+        if (!a.downed
+          && !(a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden)) {
+          this._floodScratch[a.node] += a.faction === FACTION.CARRIER ? 2 : 1;
+        }
+        continue;
+      }
+      // eyes on the net: living marines, and the player (armed or not — the
+      // ODST rig reports either way). Your own eyes, your fireteam and
+      // same-deck teams feed the board LIVE; a team on another deck only
+      // lands intel when its sitrep gets through (ODST gear always does).
+      if ((a.faction === FACTION.MARINE && a.hp > 0) || a.id === this.playerAgentId) {
+        const pd = this._pd;
+        let live = a.id === this.playerAgentId || a.deck === pd || a.squad === this.fireteamId;
+        // THE RELAY OUTRANKS EVERY OTHER RULE. A downed deck lands nothing —
+        // not a same-deck team's live feed, not your own fireteam's, not an
+        // ODST's guaranteed sitrep. Gating here rather than at draw time is
+        // what makes the outage real: the board simply stops learning, so
+        // when the link returns the intel is genuinely a minute old instead
+        // of having quietly updated behind the curtain.
+        if (a.id !== this.playerAgentId && !this.linkUp(a.deck)) live = false;
+        if (!live) {
+          let r = this._rep.get(a.id);
+          if (!r) { r = { next: sim.t + 4 + (a.id % 7), ok: false, burst: -99 }; this._rep.set(a.id, r); }
+          if (sim.t >= r.next) {
+            r.next = sim.t + 9 + (a.id % 5);
+            r.ok = a.odst ? true : Math.random() < 0.45;
+            if (r.ok) r.burst = sim.t;
+          }
+          live = sim.t - r.burst < 1.2; // a landed sitrep stamps a brief window
+        }
+        if (live) {
+          this.liveObs[a.node] = 1;
+          this._marineRep.set(a.id, {
+            x: a.x, y: a.y, deck: a.deck, hp: a.hp, maxHp: a.maxHp, heading: a.heading, t: sim.t,
+          });
+        } else if (a.faction === FACTION.MARINE && !this._marineRep.has(a.id)) {
+          // muster report: start positions are known to everyone
+          this._marineRep.set(a.id, {
+            x: a.x, y: a.y, deck: a.deck, hp: a.hp, maxHp: a.maxHp, heading: a.heading, t: sim.t,
+          });
+        }
+      }
+    }
+    for (let n = 0; n < sim.graph.n; n++) {
+      if (!this.liveObs[n]) continue;
+      this.lastSeenT[n] = sim.t;
+      this.seenFlood[n] = this._floodScratch[n];
+      this.seenCorpses[n] = this._corpseScratch[n];
+      this.seenDark[n] = sim.fogAt(n) ? 2 : sim.darkAt(n) ? 1 : 0;
+    }
+  }
+
+  // --- drawing helpers (meter-space transform, constant on-screen sizes) ---
+  _lw(px) { return (px * this.dpr) / this.s; }
+  _font(px) { return `${(px * this.dpr) / this.s}px monospace`; }
+  _rr(m, px) { return Math.max(m, (px * this.dpr) / this.s); }
+
+  draw(playerAgent, playerDead) {
+    const { canvas, ctx, sim } = this;
+    const g = sim.graph;
+    // capped at 1.25, the same ceiling the renderer boots with — the tacnet
+    // was rasterising at dpr 2 (a 2880x1800 canvas on a retina panel) while
+    // the game itself rendered at a fraction of that
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+    this.dpr = dpr;
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    if (!cw || !ch) return;
+    if (canvas.width !== Math.round(cw * dpr)) canvas.width = Math.round(cw * dpr);
+    if (canvas.height !== Math.round(ch * dpr)) canvas.height = Math.round(ch * dpr);
+    const W = canvas.width, H = canvas.height;
+    // the roster panel owns a left gutter — the plan centers in what's left
+    const gutter = 280 * dpr;
+    const s = Math.min((W - gutter) / (g.width + 6), H / (g.height + 6)) * 0.98;
+    this.s = s;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.setTransform(s, 0, 0, s, gutter + (W - gutter) / 2 - (g.width / 2) * s, H / 2 - (g.height / 2) * s);
+
+    this._deckBands(g);
+    this._rooms(g);
+    this._doorsAndPads(g);
+    this._staleIntel(g);
+    this._contacts(g);
+    this._callRings(g);
+    this._agents(g, playerAgent, playerDead);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this._panel();
+  }
+
+  _deckBands(g) {
+    const { ctx } = this;
+    ctx.font = this._font(11);
+    for (let d = 1; d <= 5; d++) {
+      const band = g.deckBands[d - 1];
+      ctx.fillStyle = d % 2 ? '#0d1117' : '#0b0e14';
+      ctx.fillRect(0, band.y0, g.width, band.y1 - band.y0);
+      const deckNodes = g.nodes.filter((n) => n.deck === d);
+      if (deckNodes.length) {
+        const x0 = Math.min(...deckNodes.map((n) => n.x - n.w / 2)) - 1.6;
+        const x1 = Math.max(...deckNodes.map((n) => n.x + n.w / 2)) + 1.6;
+        const y0 = Math.min(...deckNodes.map((n) => n.y - n.d / 2)) - 1.6;
+        const y1 = Math.max(...deckNodes.map((n) => n.y + n.d / 2)) + 1.6;
+        ctx.fillStyle = '#11161f';
+        ctx.strokeStyle = '#232d40';
+        ctx.lineWidth = this._lw(1.4);
+        ctx.beginPath();
+        ctx.roundRect(x0, y0, x1 - x0, y1 - y0, 3);
+        ctx.fill(); ctx.stroke();
+      }
+      // LINK LOST: hatch the whole band and say so. Blanking a deck without
+      // marking it would be the one genuinely unfair version of this — an
+      // empty deck has to read as "no signal", never as "no contacts".
+      const down = !this.linkUp(d);
+      if (down) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, band.y0, g.width, band.y1 - band.y0);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(224, 154, 74, 0.13)';
+        ctx.lineWidth = this._lw(1);
+        const step = this._lw(9);
+        for (let x = -(band.y1 - band.y0); x < g.width; x += step) {
+          ctx.beginPath();
+          ctx.moveTo(x, band.y1); ctx.lineTo(x + (band.y1 - band.y0), band.y0);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+      ctx.fillStyle = down ? '#7a5a2c' : '#38445a';
+      ctx.fillText(`DECK ${d} — ${['COMMAND', 'HABITATION', 'OPERATIONS', 'ENGINEERING', 'FLIGHT'][d - 1]}`, 3, band.y0 + this._lw(13));
+      if (down) {
+        // no countdown (user: a timer on a lost link makes no sense) — the
+        // uncertainty IS the message; the retry clock still runs underneath
+        ctx.fillStyle = '#e09a4a';
+        ctx.fillText('◆ LINK LOST — RETRYING', g.width - this._lw(150), band.y0 + this._lw(13));
+      }
+    }
+    ctx.fillStyle = '#232b38';
+    ctx.fillText('BOW ◄', 3, g.deckBands[0].y0 - this._lw(4));
+    ctx.fillText('► STERN', g.width - this._lw(58), g.deckBands[0].y0 - this._lw(4));
+  }
+
+  _rooms(g) {
+    const { ctx, sim } = this;
+    for (const n of g.nodes) {
+      const seen = this.lastSeenT[n.idx] >= 0;
+      const live = this.liveObs[n.idx] === 1;
+      const age = seen ? sim.t - this.lastSeenT[n.idx] : Infinity;
+      const conf = live ? 1 : Math.max(0.3, 1 - age / STALE_FADE_SEC);
+      const x0 = n.x - n.w / 2, y0 = n.y - n.d / 2;
+      // schematic base: unexplored rooms are just blueprint outlines
+      ctx.fillStyle = !seen ? '#0a0d12' : live ? '#1a2231' : '#12161f';
+      ctx.fillRect(x0, y0, n.w, n.d);
+      if (seen) {
+        // lights-out / spore state at last observation (live rooms read the
+        // sim directly so the tint is current)
+        const darkState = live ? (sim.fogAt(n.idx) ? 2 : sim.darkAt(n.idx) ? 1 : 0) : this.seenDark[n.idx];
+        if (darkState === 1) {
+          ctx.fillStyle = `rgba(16, 28, 12, ${0.62 * conf})`;
+          ctx.fillRect(x0, y0, n.w, n.d);
+        } else if (darkState === 2) {
+          ctx.fillStyle = `rgba(58, 72, 22, ${0.5 * conf})`;
+          ctx.fillRect(x0, y0, n.w, n.d);
+        }
+        const flood = live ? this._floodScratch[n.idx] : this.seenFlood[n.idx];
+        if (flood > 0.05) {
+          ctx.fillStyle = `rgba(255, 62, 42, ${Math.min(0.5, 0.12 + flood * 0.09) * conf})`;
+          ctx.fillRect(x0, y0, n.w, n.d);
+        }
+      }
+      ctx.strokeStyle = live ? '#4d6f9f' : seen ? '#2a3547' : '#1b2330';
+      ctx.lineWidth = this._lw(live ? 1.6 : 1);
+      ctx.strokeRect(x0, y0, n.w, n.d);
+      // labels: big spaces always (it's the ship's plan); small rooms once
+      // there's anything worth reading there
+      if (n.w >= 15 || live || (seen && (this.seenFlood[n.idx] > 0.05 || this.seenDark[n.idx]))) {
+        ctx.fillStyle = seen ? '#7e90aa' : '#3a4557';
+        ctx.font = this._font(10);
+        ctx.textAlign = 'center';
+        const above = n.type === 'corridor' ? n.y + this._lw(3) : y0 - this._lw(3);
+        ctx.fillText(n.name, n.x, above);
+        ctx.textAlign = 'left';
+      }
+      // bodies reported in the room
+      const corpses = live ? this._corpseScratch[n.idx] : seen ? this.seenCorpses[n.idx] : 0;
+      if (corpses > 0) {
+        ctx.fillStyle = `rgba(150, 150, 150, ${0.85 * conf})`;
+        ctx.font = this._font(9);
+        ctx.fillText(`✕${corpses}`, x0 + this._lw(3), y0 + n.d - this._lw(3));
+      }
+    }
+  }
+
+  // the schematic knows every door and lift — and the ship net reports locks
+  _doorsAndPads(g) {
+    const { ctx } = this;
+    const DOOR_W = 1.7;
+    for (const e of g.edges) {
+      const a = g.node(e.a), b = g.node(e.b);
+      if (a.deck === b.deck && e.door) {
+        const horizWall = Math.abs(a.y - b.y) >= Math.abs(a.x - b.x);
+        const wl = DOOR_W / 2, wt = 0.55;
+        ctx.fillStyle = e.locked ? '#a33a2e' : '#556a85';
+        if (horizWall) ctx.fillRect(e.door.x - wl, e.door.y - wt / 2, DOOR_W, wt);
+        else ctx.fillRect(e.door.x - wt / 2, e.door.y - wl, wt, DOOR_W);
+      } else if (a.deck !== b.deck) {
+        for (const [n, other] of [[a, b], [b, a]]) {
+          const px = Math.max(n.x - n.w / 2 + 1.2, Math.min(n.x + n.w / 2 - 1.2, other.x));
+          const lift = e.type === 'lift';
+          ctx.strokeStyle = lift ? '#1f5560' : '#5c4a20';
+          ctx.lineWidth = this._lw(1.2);
+          ctx.beginPath(); ctx.arc(px, n.y, 0.9, 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // stale flood reports: a hollow diamond + how old the sighting is
+  _staleIntel(g) {
+    const { ctx, sim } = this;
+    for (const n of g.nodes) {
+      if (this.liveObs[n.idx] || this.lastSeenT[n.idx] < 0 || this.seenFlood[n.idx] <= 0.05) continue;
+      const age = sim.t - this.lastSeenT[n.idx];
+      const conf = Math.max(0.3, 1 - age / STALE_FADE_SEC);
+      const r = this._rr(1.1, 5);
+      ctx.strokeStyle = `rgba(255, 90, 70, ${0.9 * conf})`;
+      ctx.lineWidth = this._lw(1.4);
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y); ctx.lineTo(n.x, n.y + r); ctx.lineTo(n.x - r, n.y);
+      ctx.closePath(); ctx.stroke();
+      if (age > CONTACT_FRESH_SEC) {
+        ctx.fillStyle = `rgba(255, 130, 110, ${0.85 * conf})`;
+        ctx.font = this._font(8.5);
+        ctx.textAlign = 'center';
+        ctx.fillText(`${fmtTime(age)} ago`, n.x, n.y + r + this._lw(9));
+        ctx.textAlign = 'left';
+      }
+    }
+  }
+
+  // fresh squad contact reports called over the radio
+  _contacts(g) {
+    const { ctx, sim } = this;
+    for (const squad of sim.squads) {
+      if (squad.contactNode === undefined || sim.tickCount - squad.contactTick > 15 * 10) continue;
+      const n = g.node(squad.contactNode);
+      if (!this.linkUp(n.deck)) continue; // that deck's calls are not reaching you
+      const r = this._rr(1.4, 7);
+      const pulse = 0.55 + 0.35 * Math.sin(sim.t * 6);
+      ctx.strokeStyle = `rgba(255, 70, 50, ${pulse})`;
+      ctx.lineWidth = this._lw(1.8);
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y - r); ctx.lineTo(n.x + r, n.y + r * 0.85); ctx.lineTo(n.x - r, n.y + r * 0.85);
+      ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = `rgba(255, 110, 90, ${pulse})`;
+      ctx.font = this._font(8.5);
+      ctx.textAlign = 'center';
+      ctx.fillText('CONTACT', n.x, n.y - r - this._lw(3));
+      ctx.textAlign = 'left';
+    }
+  }
+
+  _callRings(g) {
+    const { ctx, sim } = this;
+    for (const c of sim.calls) {
+      const age = sim.t - c.t;
+      if (age > 8) continue;
+      const n = g.node(c.node);
+      const alpha = Math.max(0, 0.8 - age * 0.1);
+      ctx.strokeStyle = c.faction === FACTION.MARINE
+        ? `rgba(90, 150, 240, ${alpha})` : `rgba(240, 150, 60, ${alpha})`;
+      ctx.lineWidth = this._lw(1.6);
+      ctx.beginPath(); ctx.arc(n.x, n.y, 2 + age * 4, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  _squadTag(a) {
+    if (a.garrison) return 'G';
+    const squad = this.sim.squads[a.squad];
+    if (!squad) return '';
+    if (squad.id === this.fireteamId) return 'FT';
+    if (squad.patrol) return `P${squad.patrolNo}`;
+    return `S${squad.id + 1}`;
+  }
+
+  _agents(g, playerAgent, playerDead) {
+    const { ctx, sim } = this;
+    // hostiles and civilians — only where a marine has eyes right now
+    for (const a of sim.agents) {
+      if (a.dead || !this.liveObs[a.node]) continue;
+      if (a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden) continue; // hidden mid-crawl — unseen
+      const f = a.faction;
+      if (f === FACTION.INFECTION || f === FACTION.COMBAT || f === FACTION.CARRIER) {
+        const r = f === FACTION.INFECTION ? this._rr(0.35, 2) : f === FACTION.CARRIER ? this._rr(0.85, 4) : this._rr(0.6, 3);
+        // A FILLED DOT MEANS THE SAME THING HERE AS A BLIP ON THE TRACKER: a
+        // live hostile. The tracker already refuses anything downed (clip 4),
+        // motionless or without FLAG.MOVING; this board was painting downed
+        // forms in full contact red because they are not flagged `dead`, so
+        // the two instruments disagreed about the same room.
+        // Downed bodies still DRAW — hollow, dim, no fill. They are real
+        // intel: a form under 100 damage can self-revive, and one at 100 is a
+        // husk the hive can still reanimate. Hiding them would trade one lie
+        // for another.
+        if (a.downed) {
+          ctx.strokeStyle = 'rgba(150, 74, 62, 0.55)';
+          ctx.lineWidth = this._lw(1.1);
+          ctx.beginPath(); ctx.arc(a.x, a.y, r * 0.85, 0, Math.PI * 2); ctx.stroke();
+        } else {
+          ctx.fillStyle = f === FACTION.INFECTION ? '#51ff6a' : f === FACTION.CARRIER ? '#b15fd9' : '#e04434';
+          ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, Math.PI * 2); ctx.fill();
+        }
+      } else if (f === FACTION.CIVILIAN || f === FACTION.ARMED) {
+        if (a.id === this.playerAgentId) continue; // drawn as the player marker
+        if (a.isPlayer) continue;                  // teammates get their own marker below
+        ctx.fillStyle = f === FACTION.ARMED ? 'rgba(232,200,64,0.8)' : 'rgba(220,224,230,0.65)';
+        ctx.beginPath(); ctx.arc(a.x, a.y, this._rr(0.4, 2), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    // marines: drawn at their LAST-RECEIVED report, not their live position
+    // (user: the map obeys the radio rules) — an off-deck team that hasn't
+    // gotten a sitrep through sits where it last reported, fading with age
+    ctx.font = this._font(8.5);
+    for (const a of sim.agents) {
+      if (a.dead || a.hp <= 0 || a.faction !== FACTION.MARINE) continue;
+      const rep = this._marineRep.get(a.id);
+      if (!rep) continue;
+      // the relay is down for the deck they last reported from — you do not
+      // get to see where they are (user: "you can't see contact, or where
+      // marines are"). Their last report is still on the board the moment it
+      // comes back, aged by however long the outage ran.
+      if (!this.linkUp(rep.deck)) continue;
+      const age = sim.t - rep.t;
+      const alpha = age < 4 ? 1 : Math.max(0.3, 1 - (age - 4) / 90);
+      const r = this._rr(0.6, 3.2);
+      const mine = a.squad === this.fireteamId;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = mine ? '#7fd1a0' : '#4d8ef0';
+      ctx.save();
+      ctx.translate(rep.x, rep.y); ctx.rotate(rep.heading);
+      ctx.fillRect(-r * 0.7, -r, r * 1.4, r * 2);
+      ctx.restore();
+      // squad tag above — with the report's age once it's gone stale
+      ctx.fillStyle = mine ? '#a8e8c4' : '#8fb5e8';
+      ctx.textAlign = 'center';
+      const tag = this._squadTag(a);
+      ctx.fillText(age > 12 ? `${tag} ·${Math.round(age)}s` : tag, rep.x, rep.y - r - this._lw(3));
+      ctx.textAlign = 'left';
+      // health bar below (as of the last report)
+      const hw = this._rr(1.8, 9), hh = this._lw(2);
+      const frac = Math.max(0, Math.min(1, rep.hp / rep.maxHp));
+      ctx.fillStyle = 'rgba(10,14,20,0.8)';
+      ctx.fillRect(rep.x - hw / 2, rep.y + r + this._lw(2), hw, hh);
+      ctx.fillStyle = frac > 0.66 ? '#5fd88a' : frac > 0.33 ? '#e8c840' : '#ff5a48';
+      ctx.fillRect(rep.x - hw / 2, rep.y + r + this._lw(2), hw * frac, hh);
+      ctx.globalAlpha = 1;
+    }
+    // CO-OP TEAMMATES (user: obvious on the map too). Drawn ALWAYS — no
+    // observation gate: your fireteam is on comms, so you always know roughly
+    // where each other are. Same colour the on-screen marker uses, a bigger
+    // chevron than any NPC, name above and health below.
+    if (this.mates?.length) {
+      ctx.font = this._font(8.5);
+      for (const m of this.mates) {
+        const a = m.agent;
+        if (!a || a.dead) continue;
+        const r = this._rr(1.0, 5.5);
+        ctx.save();
+        ctx.translate(a.x, a.y); ctx.rotate(a.heading + Math.PI / 2);
+        ctx.fillStyle = m.color;
+        ctx.beginPath();
+        ctx.moveTo(0, -r); ctx.lineTo(-r * 0.8, r * 0.85); ctx.lineTo(0, r * 0.35); ctx.lineTo(r * 0.8, r * 0.85);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = m.color;
+        ctx.textAlign = 'center';
+        ctx.fillText(m.name.toUpperCase(), a.x, a.y - r - this._lw(3));
+        ctx.textAlign = 'left';
+        const hw = this._rr(2.0, 10), hh = this._lw(2.2);
+        const frac = Math.max(0, Math.min(1, a.hp / (a.maxHp || 1)));
+        ctx.fillStyle = 'rgba(10,14,20,0.85)';
+        ctx.fillRect(a.x - hw / 2, a.y + r + this._lw(2), hw, hh);
+        ctx.fillStyle = m.color;
+        ctx.fillRect(a.x - hw / 2, a.y + r + this._lw(2), hw * frac, hh);
+      }
+    }
+    // you: a white chevron pointing your heading
+    if (playerAgent && !playerDead) {
+      const r = this._rr(0.8, 4.5);
+      ctx.save();
+      ctx.translate(playerAgent.x, playerAgent.y);
+      ctx.rotate(playerAgent.heading + Math.PI / 2);
+      ctx.fillStyle = '#f2f6ff';
+      ctx.beginPath();
+      ctx.moveTo(0, -r); ctx.lineTo(-r * 0.75, r * 0.8); ctx.lineTo(0, r * 0.35); ctx.lineTo(r * 0.75, r * 0.8);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // --- squad roster panel (HTML, rebuilt at 4 Hz) ---
+  _panel() {
+    const now = performance.now();
+    if (now - this._panelAt < 250) return;
+    this._panelAt = now;
+    const { sim } = this;
+    const alive = (ids) => ids.map((id) => sim.byId.get(id)).filter((m) => m && !m.dead && m.hp > 0);
+    const pips = (members) => members.map((m) => {
+      // vitals as of the last-received report (a flatline is known instantly
+      // — the transponder dies with the man — but wounds age with the radio)
+      const rep = this._marineRep.get(m.id);
+      const f = (rep?.hp ?? m.hp) / m.maxHp;
+      const c = f > 0.66 ? '#5fd88a' : f > 0.33 ? '#e8c840' : '#ff5a48';
+      return `<i style="background:${c}"></i>`;
+    }).join('');
+    const marinesAlive = sim.agents.filter((a) => !a.dead && a.hp > 0 && a.faction === FACTION.MARINE).length;
+    let contactRooms = 0;
+    for (let n = 0; n < sim.graph.n; n++) {
+      if ((this.liveObs[n] ? this._floodScratch[n] : this.seenFlood[n]) > 0.05 && this.lastSeenT[n] >= 0) contactRooms++;
+    }
+    const rows = [];
+    rows.push(`<div class="mrow mhead"><span>MARINES</span><b>${marinesAlive}/${this.marines0}</b></div>`);
+    rows.push(`<div class="mrow mhead"><span>ROOMS W/ CONTACT</span><b>${contactRooms}</b></div>`);
+    for (const squad of sim.squads) {
+      const members = alive(squad.members);
+      const name = squad.id === this.fireteamId ? 'FIRETEAM (YOURS)'
+        : squad.patrol ? `PATROL ${squad.patrolNo}` : `SQUAD ${squad.id + 1}`;
+      const status = squad.broken ? '<em>BROKEN — scattered</em>'
+        : members.length === 0 ? '<em>wiped out</em>' : this._objText(squad);
+      rows.push(`<div class="mrow"><span>${name} <b>${members.length}/${squad.size0}</b></span>`
+        + `<span class="pips">${pips(members)}</span><div class="obj">${status}</div></div>`);
+    }
+    const garrison = sim.agents.filter((a) => !a.dead && a.garrison);
+    const garrisonAlive = garrison.filter((a) => a.hp > 0);
+    if (garrison.length || garrisonAlive.length) {
+      rows.push(`<div class="mrow"><span>GARRISON <b>${garrisonAlive.length}</b></span>`
+        + `<span class="pips">${pips(garrisonAlive)}</span><div class="obj">holding Command Corridor</div></div>`);
+    }
+    this.sideEl.innerHTML = rows.join('');
+  }
+
+  _objText(squad) {
+    const { sim } = this;
+    if (squad.pendingSweep) return 'mustering';
+    if (squad.order?.kind === 'order:escort') return 'escorting you';
+    if (squad.order?.kind === 'order:guard') return `holding ${sim.graph.node(squad.order.node)?.name ?? ''}`;
+    const o = squad.objective;
+    if (!o) return 'holding position';
+    const room = sim.graph.node(o.node)?.name ?? '?';
+    const verb = {
+      breach: 'sweeping to', distress: 'answering distress —', pursuit: 'pursuing contact —',
+      hold: 'holding', order: 'moving —', sweep: 'sweeping —',
+    }[o.kind] ?? `${o.kind} —`;
+    return `${verb} ${room}`;
+  }
+}
