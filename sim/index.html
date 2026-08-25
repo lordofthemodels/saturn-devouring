@@ -129,34 +129,35 @@
     </span>
     <button id="legendToggle" class="active">legend</button>
   </header>
-  <div class="dials" title="exact counts — what you set is what you get; positions re-roll each run (applies on restart / Enter)">
+  <div class="dials" title="game defaults — positions and crash-site bodies re-roll each run (applies on restart / Enter)">
     <b style="color:#6a7686">SCENARIO</b>
     <span class="grp">flood:
-      <label>infection <input class="cnt" id="startInf" type="number" min="0" max="60" value="20"></label>
-      <label>combat <input class="cnt" id="startCf" type="number" min="0" max="20" value="0"></label>
-      <label>carriers <input class="cnt" id="startCar" type="number" min="0" max="6" value="0"></label>
+      <label>infection <input class="cnt" id="startInf" type="number" min="0" max="60"></label>
+      <label>combat <input class="cnt" id="startCf" type="number" min="0" max="20"></label>
+      <label>carriers <input class="cnt" id="startCar" type="number" min="0" max="6"></label>
     </span>
     <span class="grp">marines:
-      <label>squads <input class="cnt" id="inSquads" type="number" min="0" max="8" value="4"></label>
-      <label>× size <input class="cnt" id="inSquadSize" type="number" min="1" max="8" value="4"></label>
-      <label>patrols <input class="cnt" id="inPatrols" type="number" min="0" max="6" value="3"></label>
-      <label>garrison <input class="cnt" id="inGarrison" type="number" min="0" max="12" value="6"></label>
+      <label>squads <input class="cnt" id="inSquads" type="number" min="0" max="8"></label>
+      <label>× size <input class="cnt" id="inSquadSize" type="number" min="1" max="8"></label>
+      <label>patrols <input class="cnt" id="inPatrols" type="number" min="0" max="6"></label>
+      <label>garrison <input class="cnt" id="inGarrison" type="number" min="0" max="12"></label>
     </span>
     <span class="grp">crew:
-      <label>civilians <input class="cnt" id="inCivilians" type="number" min="0" max="200" value="96"></label>
-      <label>armed <input class="cnt" id="inArmed" type="number" min="0" max="60" value="21"></label>
-      <label>maint <input class="cnt" id="inMaint" type="number" min="0" max="60" value="44"></label>
+      <label>civilians <input class="cnt" id="inCivilians" type="number" min="0" max="200"></label>
+      <label>armed <input class="cnt" id="inArmed" type="number" min="0" max="60"></label>
+      <label>maint <input class="cnt" id="inMaint" type="number" min="0" max="60"></label>
     </span>
     <span class="grp">bodies:
-      <label>ship <input class="cnt" id="inBodies" type="number" min="0" max="400" value="69"></label>
-      <label>breach <input class="cnt" id="inBreachBodies" type="number" min="0" max="40" value="10"></label>
+      <label>ship <input class="cnt" id="inBodies" type="number" min="0" max="400"></label>
+      <label>crash min <input class="cnt" id="inBreachMin" type="number" min="0" max="40"></label>
+      <label>max <input class="cnt" id="inBreachMax" type="number" min="0" max="40"></label>
     </span>
   </div>
   <div class="dials">
     <b style="color:#6a7686">MASTER DIALS</b>
-    <span class="dial"><span class="name">belief decay λ</span><input id="dialLambda" type="range" min="0.02" max="0.4" step="0.01" value="0.1"><span class="val" id="dialLambdaV">0.10</span></span>
-    <span class="dial"><span class="name">prediction q</span><input id="dialQ" type="range" min="0" max="1" step="0.05" value="0.7"><span class="val" id="dialQV">0.70</span></span>
-    <span class="dial"><span class="name">marine radio</span><input id="dialRadio" type="range" min="0.2" max="1" step="0.05" value="0.5"><span class="val" id="dialRadioV">0.50</span></span>
+    <span class="dial"><span class="name">belief decay λ</span><input id="dialLambda" type="range" min="0.02" max="0.4" step="0.01"><span class="val" id="dialLambdaV"></span></span>
+    <span class="dial"><span class="name">prediction q</span><input id="dialQ" type="range" min="0" max="1" step="0.05"><span class="val" id="dialQV"></span></span>
+    <span class="dial"><span class="name">marine radio</span><input id="dialRadio" type="range" min="0.2" max="1" step="0.05"><span class="val" id="dialRadioV"></span></span>
     <span class="muted">(live — no restart needed; seed replay only exact if dials untouched)</span>
   </div>
   <main>

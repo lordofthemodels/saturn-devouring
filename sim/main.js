@@ -4,43 +4,72 @@
 import { Sim } from './sim.js';
 import { Viz, renderStats, renderLog } from './viz.js';
 import { CMD } from './commands.js';
+import { PARAMS } from '../shared/params.js';
 
 const canvas = document.getElementById('canvas');
 const statsEl = document.getElementById('stats');
 const logEl = document.getElementById('log');
 
-// SCENARIO inputs (user note): exact counts, no fractions — what you set is
-// what you get; only starting positions re-roll each run. Applied on restart.
+// Scenario defaults come from the same source as the game. The controls then
+// provide explicit overrides, so tuning cannot silently drift.
 const SCENARIO_IDS = ['startInf', 'startCf', 'startCar', 'inSquads', 'inSquadSize',
-  'inPatrols', 'inGarrison', 'inCivilians', 'inArmed', 'inMaint', 'inBodies', 'inBreachBodies'];
+  'inPatrols', 'inGarrison', 'inCivilians', 'inArmed', 'inMaint', 'inBodies',
+  'inBreachMin', 'inBreachMax'];
+const CONTROL_DEFAULTS = {
+  startInf: PARAMS.flood.initialInfectionForms,
+  startCf: PARAMS.flood.initialCombatForms,
+  startCar: PARAMS.flood.initialCarriers,
+  inSquads: PARAMS.marines.squads,
+  inSquadSize: PARAMS.marines.squadSize,
+  inPatrols: PARAMS.marines.patrols,
+  inGarrison: PARAMS.marines.garrison,
+  inCivilians: PARAMS.crew.civilians,
+  inArmed: PARAMS.crew.armedCrew,
+  inMaint: PARAMS.crew.lowerMaintenance,
+  inBodies: PARAMS.bodies.eventCorpses,
+  inBreachMin: PARAMS.bodies.breachMin,
+  inBreachMax: PARAMS.bodies.breachMax,
+  dialLambda: PARAMS.belief.decayRatePerSec,
+  dialQ: PARAMS.belief.predictionQuality,
+  dialRadio: PARAMS.radio.marineCallReliability,
+};
+for (const [id, value] of Object.entries(CONTROL_DEFAULTS)) {
+  document.getElementById(id).value = value;
+}
+
 function swarmOverrides() {
-  const num = (id, lo, hi, dflt) => {
-    const v = Number(document.getElementById(id).value);
-    return Number.isFinite(v) ? Math.max(lo, Math.min(hi, Math.round(v))) : dflt;
+  const num = (id) => {
+    const input = document.getElementById(id);
+    const value = Number(input.value);
+    const min = Number(input.min);
+    const max = Number(input.max);
+    return Number.isFinite(value)
+      ? Math.max(min, Math.min(max, Math.round(value)))
+      : CONTROL_DEFAULTS[id];
   };
+  const breachA = num('inBreachMin');
+  const breachB = num('inBreachMax');
   return {
     flood: {
-      initialInfectionForms: num('startInf', 0, 60, 20),
-      initialCombatForms: num('startCf', 0, 20, 4),
-      initialCarriers: num('startCar', 0, 6, 0),
+      initialInfectionForms: num('startInf'),
+      initialCombatForms: num('startCf'),
+      initialCarriers: num('startCar'),
     },
     marines: {
-      squads: num('inSquads', 0, 8, 4),
-      squadSize: num('inSquadSize', 1, 8, 4),
-      patrols: num('inPatrols', 0, 6, 3),
-      garrison: num('inGarrison', 0, 12, 6),
+      squads: num('inSquads'),
+      squadSize: num('inSquadSize'),
+      patrols: num('inPatrols'),
+      garrison: num('inGarrison'),
     },
     crew: {
-      civilians: num('inCivilians', 0, 200, 96),
-      armedCrew: num('inArmed', 0, 60, 21),
-      lowerMaintenance: num('inMaint', 0, 30, 10),
+      civilians: num('inCivilians'),
+      armedCrew: num('inArmed'),
+      lowerMaintenance: num('inMaint'),
     },
     bodies: {
-      eventCorpses: num('inBodies', 0, 400, 150),
-      // the harness input pins the breach larder EXACTLY (min = max = input),
-      // overriding the game's uniform breachMin..breachMax roll
-      breachMin: num('inBreachBodies', 0, 40, 6),
-      breachMax: num('inBreachBodies', 0, 40, 6),
+      eventCorpses: num('inBodies'),
+      breachMin: Math.min(breachA, breachB),
+      breachMax: Math.max(breachA, breachB),
     },
   };
 }
