@@ -335,6 +335,44 @@ assert.equal(memorySim.hive.beliefs.get(hiddenMarine.id).conf, 0,
 assert.equal(memorySim.hive.believedHumanStr.reduce((sum, value) => sum + value, 0), 0,
   'an unknown survivor must not leak ground-truth location into tactical beliefs');
 
+// The player is an armed-crew agent while their fireteam uses the marine
+// faction. Faction priority must never make a form run past the closer player
+// to reach a farther squadmate; both pursuit and the actual swipe use distance.
+const playerTargetSim = new Sim('nearest-player-target-check');
+for (const agent of playerTargetSim.agents) agent.dead = true;
+const playerRoom = playerTargetSim.graph.nodes.find((node) => node.w >= 10 && node.d >= 6);
+assert.ok(playerRoom, 'player target fixture needs an open room');
+const playerHunter = makeAgent(FACTION.COMBAT, playerRoom.idx, playerTargetSim.graph);
+const closePlayer = makeAgent(FACTION.ARMED, playerRoom.idx, playerTargetSim.graph);
+const farMarine = makeAgent(FACTION.MARINE, playerRoom.idx, playerTargetSim.graph);
+playerHunter.x = playerRoom.x - 1;
+playerHunter.y = playerRoom.y;
+closePlayer.x = playerRoom.x;
+closePlayer.y = playerRoom.y;
+closePlayer.hp = closePlayer.maxHp = 45;
+closePlayer.isPlayer = true;
+farMarine.x = playerRoom.x + 1;
+farMarine.y = playerRoom.y;
+farMarine.hp = farMarine.maxHp = 45;
+playerTargetSim.spawn(playerHunter);
+playerTargetSim.spawn(closePlayer);
+playerTargetSim.spawn(farMarine);
+playerTargetSim.tickCount = 1;
+playerTargetSim.t = playerTargetSim.dt;
+playerTargetSim.hive.allIn = true;
+playerTargetSim._refreshOccupancy();
+assert.equal(playerTargetSim.hive.nearestCombatTarget(playerHunter), closePlayer,
+  'a combat form must target the closer player instead of a farther marine');
+assert.equal(playerTargetSim.hive.respondToCombat(playerHunter, closePlayer), true,
+  'the shared hive response must commit the hunter to the closer player');
+assert.equal(playerHunter.task.targetId, closePlayer.id,
+  'the live pursuit task must stay on the closer player');
+const playerHp = closePlayer.hp;
+const marineHpBefore = farMarine.hp;
+resolveCombat(playerTargetSim, playerTargetSim.dt);
+assert.ok(closePlayer.hp < playerHp, 'the nearest player must receive the combat-form swipe');
+assert.equal(farMarine.hp, marineHpBefore, 'the farther marine must not absorb the player\'s attack');
+
 // A grand stair is one open volume. Its combat sightline works in both
 // directions, and traversal never gives an agent coordinates from one deck
 // while its logical room still belongs to another.
