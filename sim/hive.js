@@ -500,12 +500,8 @@ export class Hive {
 
   nearestCombatTarget(form, candidates = null) {
     const humans = candidates ?? this.sim.lineOfSightAgents(form, isLivingHuman);
-    const shooters = humans.filter((a) => a.faction === FACTION.MARINE);
-    const pool = shooters.length ? shooters
-      : humans.some((a) => a.faction === FACTION.ARMED)
-        ? humans.filter((a) => a.faction === FACTION.ARMED) : humans;
     let best = null, bestDistance = Infinity;
-    for (const human of pool) {
+    for (const human of humans) {
       if (!isLivingHuman(human)) continue;
       const distance = this.sim.agentDistance(form, human);
       if (distance < bestDistance - 1e-9

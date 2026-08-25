@@ -71764,10 +71764,8 @@ var init_hive = __esm({
       }
       nearestCombatTarget(form, candidates = null) {
         const humans = candidates ?? this.sim.lineOfSightAgents(form, isLivingHuman);
-        const shooters = humans.filter((a2) => a2.faction === FACTION.MARINE);
-        const pool = shooters.length ? shooters : humans.some((a2) => a2.faction === FACTION.ARMED) ? humans.filter((a2) => a2.faction === FACTION.ARMED) : humans;
         let best = null, bestDistance = Infinity;
-        for (const human of pool) {
+        for (const human of humans) {
           if (!isLivingHuman(human)) continue;
           const distance3 = this.sim.agentDistance(form, human);
           if (distance3 < bestDistance - 1e-9 || Math.abs(distance3 - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity)) {
@@ -73743,11 +73741,8 @@ function resolveCombat(sim2, dt) {
         if (f2.task?.retreat) continue;
         const victims = sim2.lineOfSightAgents(f2, (a2) => a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED || a2.faction === FACTION.CIVILIAN);
         if (victims.length) {
-          const marines = victims.filter((v2) => v2.faction === FACTION.MARINE);
-          const armed = victims.filter((v2) => v2.faction === FACTION.ARMED);
-          const candidates = marines.length ? marines : armed.length ? armed : victims;
           let best = null, bestScore = Infinity;
-          for (const v2 of candidates) {
+          for (const v2 of victims) {
             if (v2.hp <= 0 || v2.dead) continue;
             const d2 = sim2.agentDistance(f2, v2);
             const score = d2 + v2.id * 1e-6;

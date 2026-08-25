@@ -408,9 +408,9 @@ export function resolveCombat(sim, dt) {
 
     // flood attacks — REAL REACH (user note): claws only land on a victim
     // the form has physically closed with (meleeRangeM); a hosted weapon
-    // fires across the room. Each form fights the nearest body (shooters
-    // preferred on near-ties), so a pack spreads across a line instead of
-    // resolving as one abstract damage pool at the room's center.
+    // fires across the room. Each form fights the nearest body regardless of
+    // faction, so a nearby player cannot be ignored for a farther marine and
+    // a pack spreads across a line instead of resolving at the room's center.
     if (combatForms.length) {
       let fired = false;
       for (const f of [...combatForms].sort((a, b) => a.id - b.id)) {
@@ -421,11 +421,8 @@ export function resolveCombat(sim, dt) {
         const victims = sim.lineOfSightAgents(f, (a) => a.faction === FACTION.MARINE
           || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN);
         if (victims.length) {
-          const marines = victims.filter((v) => v.faction === FACTION.MARINE);
-          const armed = victims.filter((v) => v.faction === FACTION.ARMED);
-          const candidates = marines.length ? marines : armed.length ? armed : victims;
           let best = null, bestScore = Infinity;
-          for (const v of candidates) {
+          for (const v of victims) {
             if (v.hp <= 0 || v.dead) continue;
             const d = sim.agentDistance(f, v);
             const score = d + v.id * 1e-6;
