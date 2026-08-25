@@ -156,21 +156,17 @@ export class Hive {
     const observed = new Map(); // node -> shooter weight actually seen this round
     for (const f of sim.agents) {
       if (f.dead || !isActiveFloodForm(f)) continue;
-      // the flood SENSES living bodies in every adjacent compartment, not just
-      // down an open sightline (user rule) — this is what lets it read a gun
-      // line forming next door and evade it, or feel the defenceless crew
-      // through a bulkhead and come for them
-      for (const n of sim.floodSenses(f.node)) {
-        let shooterW = 0;
-        for (const h of sim.occupants(n)) {
-          if (!isLivingHuman(h)) continue;
-          if (h.faction === FACTION.MARINE) shooterW += 1;
-          else if (h.faction === FACTION.ARMED) shooterW += 0.6;
-          if (seen.has(h.id)) continue;
-          seen.add(h.id);
-          const old = this.beliefs.get(h.id);
-          this.beliefs.set(h.id, { node: h.node, t: sim.t, conf: 1, static: old?.static && (h.helpless || h.stayPut) });
-        }
+      const shootersByNode = new Map();
+      for (const h of sim.lineOfSightAgents(f, isLivingHuman)) {
+        const n = h.pnode ?? h.node;
+        const weight = h.faction === FACTION.MARINE ? 1 : h.faction === FACTION.ARMED ? 0.6 : 0;
+        shootersByNode.set(n, (shootersByNode.get(n) ?? 0) + weight);
+        if (seen.has(h.id)) continue;
+        seen.add(h.id);
+        const old = this.beliefs.get(h.id);
+        this.beliefs.set(h.id, { node: n, t: sim.t, conf: 1, static: old?.static && (h.helpless || h.stayPut) });
+      }
+      for (const [n, shooterW] of shootersByNode) {
         // remember FORTIFIED positions: a mass of guns seen once stays feared
         // for minutes, not seconds — this is what stops the one-at-a-time
         // trickle into the last-stand line (per-contact beliefs decay in ~7s,
@@ -408,26 +404,67 @@ export class Hive {
     return h;
   }
 
-  // A live doorway check for combat forms. Strategic beliefs decide where to
-  // muster, but bodies can move between rounds; the last step into the room
-  // must still satisfy the same 3:1 doctrine against the guns actually there.
-  canPressCombatRoom(from, to, forced = false) {
-    if (forced || this.allIn) return true;
-    const defense = this.combatDefenseAt(to);
-    if (defense === 0) return true;
-    const strength = this.sim.floodStrengthAt(from)
-      + (to === from ? 0 : this.sim.floodStrengthAt(to));
-    return strength >= defense * this.sim.P.swarm.killRatio;
+  // Real-space combat balance around one form. Navigation still moves between
+  // graph nodes, but tactical strength is only what can join the same visible
+  // fight through the actual geometry — never everyone assigned to a room.
+  combatLineOfSight(form) {
+    let strength = W_FLOOD[form.faction] ?? 0;
+    let defense = 0, threatNode = -1, nearestThreat = Infinity;
+    const seen = this.sim.lineOfSightAgents(form,
+      (a) => isLivingHuman(a) || isActiveFloodForm(a) || a.faction === FACTION.CARRIER);
+    for (const a of seen) {
+      if (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED) {
+        defense += W_HUMAN[a.faction];
+        const distance = Math.hypot(a.x - form.x, a.y - form.y);
+        if (distance < nearestThreat) {
+          nearestThreat = distance;
+          threatNode = a.pnode ?? a.node;
+        }
+      } else if (isActiveFloodForm(a) || a.faction === FACTION.CARRIER) {
+        strength += W_FLOOD[a.faction];
+      }
+    }
+    return { strength, defense, threatNode };
   }
 
-  combatDefenseAt(node) {
-    let defense = 0;
-    for (const h of this.sim.occupants(node)) {
-      if (h.dead || h.hp <= 0) continue;
-      if (h.faction === FACTION.MARINE) defense += 1;
-      else if (h.faction === FACTION.ARMED) defense += 0.6;
+  visibleHumanTarget(form, preferredId = -1) {
+    let best = null, bestScore = Infinity;
+    for (const human of this.sim.lineOfSightAgents(form, isLivingHuman)) {
+      const distance = Math.hypot(human.x - form.x, human.y - form.y);
+      const score = distance - (human.id === preferredId ? 8 : 0);
+      if (score < bestScore - 1e-9
+        || (Math.abs(score - bestScore) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
+        best = human;
+        bestScore = score;
+      }
     }
-    return defense;
+    return best;
+  }
+
+  isRetreating(form) {
+    return !!(form.task?.retreat && (form.move || form.path.length));
+  }
+
+  // A planned assault keeps the conservative doctrine. Being fired on starts
+  // a surge at even odds, but it cannot reverse a retreat already in motion.
+  canPressCombatContact(form, provoked = false, forced = false) {
+    if (forced || this.allIn) return true;
+    const { strength, defense } = this.combatLineOfSight(form);
+    if (defense === 0) return true;
+    return strength >= defense * (provoked ? 1 : this.sim.P.swarm.killRatio);
+  }
+
+  engageOrRetreat(form, target, provoked = false) {
+    if (this.isRetreating(form)) return false;
+    const node = typeof target === 'number' ? target : (target.pnode ?? target.node);
+    const surge = provoked || form.task?.surge;
+    const forced = !!form.task?.force;
+    if (this.canPressCombatContact(form, surge, forced)) {
+      this.assign(form, { kind: TASK.ATTACK, node, surge: !!surge, force: forced });
+      return true;
+    }
+    this.retreatOrFight(form, node);
+    return false;
   }
 
   // Losing doorway odds have only two outcomes: withdraw or, if every open
@@ -442,11 +479,11 @@ export class Hive {
       if (link.kind !== 'std' || link.locked) return false;
       if (g.burningUntil[b] > sim.t) return false;
       if (threatNode !== from && (a === threatNode || b === threatNode)) return false;
-      return b === from || this.combatDefenseAt(b) === 0;
+      return true;
     };
     let best = null, bestScore = -Infinity;
     for (const node of g.nodes) {
-      if (node.idx === from || this.combatDefenseAt(node.idx) > 0) continue;
+      if (node.idx === from) continue;
       const path = g.path(from, node.idx, ['std'], openEscape);
       if (!path?.length) continue;
       const away = g.hops(threatNode, node.idx, ['std'], () => true);
@@ -584,16 +621,11 @@ export class Hive {
       // door is still volunteering to be shot. No escape means it is cornered
       // and retreatOrFight marks the attack forced.
       if (f.faction === FACTION.COMBAT) {
-        const from = f.pnode ?? f.node;
-        let threat = -1, defense = 0;
-        for (const node of sim.floodSenses(from)) {
-          const d = this.combatDefenseAt(node);
-          if (d > defense) { defense = d; threat = node; }
-        }
-        if (threat !== -1) {
-          if (this.canPressCombatRoom(from, threat, f.task?.force)) {
-            this.assign(f, { kind: TASK.ATTACK, node: threat });
-          } else this.retreatOrFight(f, threat);
+        const { defense, threatNode } = this.combatLineOfSight(f);
+        if (defense > 0 && threatNode !== -1) {
+          if (!this.isRetreating(f)) {
+            this.engageOrRetreat(f, threatNode, !!f.task?.surge);
+          }
         }
         continue;
       }
@@ -909,14 +941,14 @@ export class Hive {
       }
     }
 
-    // START PRODUCTION: root a couple of the initial combat forms into
+    // START PRODUCTION: root the initial combat forms across the available
     // carriers at quiet dens (carriers are converted combat forms — user
     // economy). It's a carrier rush (§13.4), and a carrier mints its first
     // form within seconds, so this stands up production immediately while the
     // rest of the combat forms guard.
     const carriersNow = sim.agents.filter((a) => !a.dead && a.faction === FACTION.CARRIER).length;
     let transforming = combat.filter((c) => c.task?.kind === TASK.TRANSFORM).length;
-    const wantCarriers = Math.min(dens.length, 2);
+    const wantCarriers = Math.min(dens.length, 3);
     for (const den of dens) {
       if (carriersNow + transforming >= wantCarriers) break;
       if (this.localThreat(den) >= 0.6) continue;
@@ -991,7 +1023,8 @@ export class Hive {
     // defense, hunting, everything.
     // MAX BREEDING while a muster is banned for lack of numbers (user rule):
     // the hive wants more carriers than usual until the force catches up
-    let wantK = Math.min(4, 2 + Math.floor((I + C) / 22));
+    const earlyFloor = sim.t < 240 ? 3 : 2;
+    let wantK = Math.min(5, earlyFloor + Math.floor((I + C) / 22));
     if (sim.t < (this._breedUntil ?? 0)) wantK = Math.min(6, wantK + 2);
     if (K < wantK && (C > K || K === 0)) {
       const target = this.bestCarrierNode();

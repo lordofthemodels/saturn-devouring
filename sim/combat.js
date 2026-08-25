@@ -30,19 +30,6 @@ export function selectRifleTarget(currentId, candidates) {
   return current;
 }
 
-// how far a shooter can ACQUIRE a target in this room's light (user: no more
-// wall-to-wall instant fire lanes down long dark hallways)
-export function sightRangeAt(sim, node) {
-  const P = sim.P.combat;
-  let m;
-  if (sim.darkAt(node)) m = P.sightDarkM;
-  else {
-    const lm = sim.graph.lightMode[node];
-    m = lm === 3 ? P.sightUnlitM : (lm === 1 || lm === 2) ? P.sightFlickerM : P.sightLitM;
-  }
-  return sim.fogAt(node) ? m * P.fogSightMult : m;
-}
-
 // The physical payload of a Flood whip. Kept pure so headless verification
 // can pin the standing/running/jumping ordering independently of the ragdoll
 // renderer. Direction is in sim X/Y; Agents3D maps sim Y directly to world Z.
@@ -178,27 +165,7 @@ export function resolveCombat(sim, dt) {
     const downedForms = group.filter((a) => a.faction === FACTION.COMBAT && a.downed && !a.dead && a.damage < 95);
     const anyFlood = combatForms.length + infForms.length + carriers.length > 0;
     if (!shooters.length && !anyFlood) continue;
-    // THROUGH-THE-DOORWAY POOLS (per-room combat retirement): what stands in
-    // std-adjacent rooms, for both sides' ranged fire. LOS is tested per
-    // shooter/per form at fire time — these are only candidate lists.
-    const adjFlood = [];
-    const adjHumans = [];
-    if (shooters.length || combatForms.length) {
-      for (const { to } of sim.graph.adj.std[node]) {
-        const sightTo = sightRangeAt(sim, to);
-        for (const o of sim._occ[to]) {
-          if (o.hp <= 0 || o.dead || o.move?.hidden) continue;
-          if ((o.faction === FACTION.COMBAT && !o.downed)
-            || o.faction === FACTION.INFECTION || o.faction === FACTION.CARRIER) {
-            o._losSight = sightTo; adjFlood.push(o);
-          } else if (o.faction === FACTION.MARINE || o.faction === FACTION.ARMED || o.faction === FACTION.CIVILIAN) {
-            adjHumans.push(o);
-          }
-        }
-      }
-    }
-
-    if (shooters.length && (anyFlood || adjFlood.length)) {
+    if (shooters.length) {
       // gunfire only rings when someone actually FIRES — with sight limits
       // and reaction delays, a form sharing a dark room no longer makes the
       // room sound like a range the instant it steps in
@@ -242,37 +209,22 @@ export function resolveCombat(sim, dt) {
       // rifleFalloffM (a sprinting form in a dark ship is a hard target).
       // Deterministic: cadence is sim-time, rolls come from the seeded RNG,
       // so lockstep multiplayer holds. Every Flood body is ranked by its real
-      // distance from this shooter; target type never overrides proximity.
-      // sight-limited engagement (user: marines lasered a form the instant it
-      // entered a 40m dark hallway) — a shooter can only acquire inside the
-      // room's light-dependent sight range; the flood needs no light
-      const sight = sightRangeAt(sim, node);
+    // distance from this shooter; target type never overrides proximity.
       // FRIENDLY FIRE (user): rifles are dangerous to everyone downrange —
       // a squadmate in the tight lane corridor blocks the shot (the shooter
       // holds and works a side-step for a clear line instead), and a MISS
       // with a squadmate hugging the lane can clip him. The player counts:
       // marines check their lane around you, and a stray round still bites.
       const FF = P.combat.ff;
-      const mates = group.filter((a) => a.hp > 0 && !a.dead &&
-        (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN));
-      if (adjHumans.length) mates.push(...adjHumans); // a cross-door lane can have friendlies past the door
+      const mates = sim.agents.filter((a) => a.hp > 0 && !a.dead && a.deck === sim.graph.node(node).deck
+        && (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN));
       for (const s of shooters) {
         if (s === flamer) continue;
         if (sim.t < (s.nextShotAt ?? 0)) continue;
-        const candidates = [];
-        for (const t of [...targets, ...infForms]) {
-          if (t.hp <= 0 || t.dead) continue;
-          const rd = Math.hypot(t.x - s.x, t.y - s.y);
-          if (rd > sight) continue; // out in the dark — can't see it to shoot it
-          candidates.push({ target: t, range: rd });
-        }
-        for (const t of adjFlood) {
-          if (t.hp <= 0 || t.dead) continue;
-          const rd = Math.hypot(t.x - s.x, t.y - s.y);
-          if (rd > t._losSight) continue; // the target's room's light gates it
-          if (!sim.losClear(s.x, s.y, s.pnode ?? s.node, t.x, t.y, t.pnode ?? t.node)) continue;
-          candidates.push({ target: t, range: rd });
-        }
+        const candidates = sim.lineOfSightAgents(s, (t) =>
+          (t.faction === FACTION.COMBAT && !t.downed)
+          || t.faction === FACTION.INFECTION || t.faction === FACTION.CARRIER)
+          .map((target) => ({ target, range: Math.hypot(target.x - s.x, target.y - s.y) }));
         const selected = selectRifleTarget(s.fireTargetId, candidates);
         const best = selected?.target ?? null;
         const bestRange = selected?.range ?? 0;
@@ -382,14 +334,15 @@ export function resolveCombat(sim, dt) {
         // FLOOD DARKNESS (user rule): humans fight the held rooms by
         // flashlight — accuracy suffers, and spore fog stacks on top.
         // The flood needs no light.
-        if (sim.darkAt(node)) acc *= P.darkness.darkAccMult;
-        if (sim.fogAt(node)) acc *= P.darkness.fogAccMult;
+        const targetNode = best.pnode ?? best.node;
+        if (sim.darkAt(targetNode)) acc *= P.darkness.darkAccMult;
+        if (sim.fogAt(targetNode)) acc *= P.darkness.fogAccMult;
         // FIXTURE STATE (user rule): a room whose mains are DEAD is
         // flashlight-only shooting even before the flood touches it; a
         // flickering fixture throws the lead off a little. Flood darkness
         // above already prices in the worst case — don't stack both.
-        if (!sim.darkAt(node)) {
-          const lm = sim.graph.lightMode[node];
+        if (!sim.darkAt(targetNode)) {
+          const lm = sim.graph.lightMode[targetNode];
           if (lm === 3) acc *= P.darkness.unlitAccMult;
           else if (lm === 1 || lm === 2) acc *= P.darkness.flickerAccMult;
         }
@@ -459,21 +412,18 @@ export function resolveCombat(sim, dt) {
     // preferred on near-ties), so a pack spreads across a line instead of
     // resolving as one abstract damage pool at the room's center.
     if (combatForms.length) {
-      const victims = group.filter((a) => a.hp > 0 && !a.dead &&
-        (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN));
-      // ...plus whoever stands in the adjacent rooms: a hosted weapon fires
-      // through the same openings the marines do ("or be shot through it"),
-      // and a swipe at a body in the doorway is range-gated anyway. Marked so
-      // the per-form scan below pays the LOS test only for cross-room prey.
-      for (const h of adjHumans) { h._losAdj = true; victims.push(h); }
-      for (const h of group) if (h._losAdj) h._losAdj = false; // never stale for own-room bodies
-      if (victims.length) {
-        let fired = false;
-        for (const f of [...combatForms].sort((a, b) => a.id - b.id)) {
+      let fired = false;
+      for (const f of [...combatForms].sort((a, b) => a.id - b.id)) {
+        // A fleeing form spends the tick escaping. If the route closes,
+        // retreatOrFight replaces the task with a cornered attack before
+        // combat resolves, so this never makes a trapped form passive.
+        if (f.task?.retreat) continue;
+        const victims = sim.lineOfSightAgents(f, (a) => a.faction === FACTION.MARINE
+          || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN);
+        if (victims.length) {
           let best = null, bestScore = Infinity;
           for (const v of victims) {
             if (v.hp <= 0 || v.dead) continue;
-            if (v._losAdj && !sim.losClear(f.x, f.y, node, v.x, v.y, v.pnode ?? v.node)) continue;
             const d = Math.hypot(v.x - f.x, v.y - f.y);
             // getting shot is a stimulus: whoever hurt this form recently
             // jumps the queue — no more mauling one victim while its
@@ -511,14 +461,15 @@ export function resolveCombat(sim, dt) {
             if (sim.rng.chance(acc)) sim.hurtHuman(best, P.combat.hostGun.dmg, f.id);
           }
         }
-        // a hosted weapon firing is gunfire too — the ship hears it, and
-        // renderers get a marked tick to show the flood visibly shooting
-        if (fired) sim.gunfireAt(node);
       }
+      // a hosted weapon firing is gunfire too — the ship hears it, and
+      // renderers get a marked tick to show the flood visibly shooting
+      if (fired) sim.gunfireAt(node);
     }
     // threatened carriers detonate early (§6.6)
     for (const c of carriers) {
-      if (shooters.length && c.hp < c.maxHp * 0.5) explodeCarrier(sim, c);
+      const shotThroughOpening = sim.tickCount - (c.lastHurtTick ?? -999) <= 1;
+      if ((shooters.length || shotThroughOpening) && c.hp < c.maxHp * 0.5) explodeCarrier(sim, c);
     }
   }
 
