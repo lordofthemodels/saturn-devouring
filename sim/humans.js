@@ -6,6 +6,7 @@
 import { FACTION } from '../shared/agentBuffer.js';
 import { STATE } from './init.js';
 import { humanPass, marinePass } from './graph.js';
+import { sightRangeAt } from './combat.js';
 
 export function updateHumansTick(sim, dt) {
   for (const a of sim.agents) {
@@ -48,6 +49,26 @@ function floodThreatVisible(sim, a) {
   // doorways, the sealed doors' ajar slots, the grand stairwell's open
   // volume). sim.losClear walks the actual geometry.
   return sim.losFloodThreat(a);
+}
+
+// Detection and a usable rifle shot are deliberately different. A marine can
+// spot motion through a dark doorway beyond the range at which he can acquire
+// a target. Only the latter should cancel the squad's advance; otherwise both
+// sides can wait forever on opposite sides of a threshold.
+function floodTargetInRifleRange(sim, a) {
+  const from = a.pnode ?? a.node;
+  const nodes = [from, ...sim.graph.adj.std[from].map(({ to }) => to)];
+  for (const node of nodes) {
+    const range = sightRangeAt(sim, node);
+    for (const form of sim.occupants(node)) {
+      if (form.dead || form.hp <= 0 || form.downed || form.move?.hidden) continue;
+      if (form.faction !== FACTION.INFECTION && form.faction !== FACTION.COMBAT
+        && form.faction !== FACTION.CARRIER) continue;
+      if (Math.hypot(form.x - a.x, form.y - a.y) > range) continue;
+      if (sim.losClear(a.x, a.y, from, form.x, form.y, node)) return true;
+    }
+  }
+  return false;
 }
 
 function hearsTrouble(sim, a) {
@@ -363,7 +384,19 @@ function updateMarineTick(sim, a, dt) {
   const threat = floodThreatVisible(sim, a);
   maybeThrowFrag(sim, a, dt);
   const pn = a.pnode ?? a.node;
-  if (sim.floodStrengthAt(pn) > 0 || threat > 0) {
+  // Report every confirmed sighting even when it is too dark or distant for a
+  // shot. This was previously below an unconditional return and therefore
+  // never updated the squad blackboard for doorway contacts.
+  if (threat > 0) {
+    squad.contactNode = nearestThreatNode(sim, a);
+    squad.contactTick = sim.tickCount;
+    sim.floodKnown = true;
+    if (a.hasRadio && !squad.calledContact) {
+      squad.calledContact = true;
+      if (sim.rng.chance(sim.P.radio.marineCallReliability)) sim.emitCall(a);
+    }
+  }
+  if (sim.floodStrengthAt(pn) > 0 || floodTargetInRifleRange(sim, a)) {
     // stand and fight ON CONTACT, where you physically are — a marine does
     // not keep walking to the middle of the hangar with a form on the deck
     a.state = STATE.FIGHT; a.path = []; a.move = null;
@@ -387,17 +420,6 @@ function updateMarineTick(sim, a, dt) {
   // a marine standing in a clear room has swept it — timestamp it so the
   // squad's sweep planner expands into unswept ground instead of doubling back
   if (sim.graph.node(a.node).type !== 'corridor' && threat === 0) sim.sweptAt[a.node] = sim.t;
-
-  // report contacts to the blackboard + shipwide alert
-  if (threat > 0) {
-    squad.contactNode = nearestThreatNode(sim, a);
-    squad.contactTick = sim.tickCount;
-    sim.floodKnown = true;
-    if (a.hasRadio && !squad.calledContact) {
-      squad.calledContact = true;
-      if (sim.rng.chance(sim.P.radio.marineCallReliability)) sim.emitCall(a);
-    }
-  }
 
   // FOLLOW THE PLAYER LIVE (user: fireteam bad at following + deck nav). For an
   // escort order, chase the player's CURRENT node and re-path the MOMENT they
