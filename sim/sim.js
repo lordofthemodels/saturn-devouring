@@ -48,6 +48,9 @@ export class Sim {
     // rooms indexed by deck, for the physical-room lookup (_pnodeOf)
     this._deckRooms = {};
     for (const n of graph.nodes) (this._deckRooms[n.deck] ??= []).push(n);
+    this._deckAgents = {};
+    for (const deck of Object.keys(this._deckRooms)) this._deckAgents[deck] = [];
+    this._losAgentCache = new Map();
 
     this.buffer = new AgentBuffer(512);
     this.commands = new CommandQueue();
@@ -317,33 +320,42 @@ export class Sim {
     return false;
   }
 
-  // LOS-filtered visible flood threat around a human: the weighted strength
-  // of every active form it can actually SEE, candidates drawn from its own
-  // room plus std-adjacent rooms (lock-agnostic — a sealed door's ajar slot
-  // can still reveal), capped at sight distance. Replaces the old
-  // room-membership sum (visCache) for perception.
-  losFloodThreat(h, rangeM = 26) {
-    const pn = h.pnode ?? h.node;
-    const r2cap = rangeM * rangeM;
-    let sum = 0;
-    const scan = (room, capped) => {
-      for (const o of this._occ[room]) {
-        if (o.hp <= 0 || o.dead) continue;
-        const w = W_FLOOD[o.faction];
-        if (!w || (o.faction !== FACTION.CARRIER && !isActiveFloodForm(o))) continue;
-        if (o.move?.hidden) continue; // inside the structure — invisible
-        if (capped) {
-          const ddx = o.x - h.x, ddy = o.y - h.y;
-          if (ddx * ddx + ddy * ddy > r2cap) continue;
-          if (!this.losClear(h.x, h.y, pn, o.x, o.y, room)) continue;
-        }
-        sum += w;
+  // Real-space perception shared by combat and behavior. Rooms remain the
+  // pathfinding mesh, but they no longer decide who can see whom: any live
+  // body on the same deck inside the range and geometric sightline is a
+  // candidate, even across several aligned openings.
+  hasLineOfSight(observer, target, rangeM = this.P.combat.sightM) {
+    const from = observer.pnode ?? observer.node;
+    const range2 = rangeM * rangeM;
+    if (target.move?.hidden || target.deck !== observer.deck) return false;
+    const dx = target.x - observer.x, dy = target.y - observer.y;
+    if (dx * dx + dy * dy > range2) return false;
+    const to = target.pnode ?? target.node;
+    return this.losClear(observer.x, observer.y, from, target.x, target.y, to);
+  }
+
+  lineOfSightAgents(observer, predicate, rangeM = this.P.combat.sightM) {
+    const key = `${observer.id}:${rangeM}`;
+    let visible = this._losAgentCache.get(key);
+    if (!visible) {
+      visible = [];
+      for (const target of this._deckAgents[observer.deck] ?? []) {
+        if (target !== observer && this.hasLineOfSight(observer, target, rangeM)) visible.push(target);
       }
-    };
-    // own room: uncapped, no LOS test — a form sharing your compartment is a
-    // felt presence whatever the light (parity with the old room-sum)
-    scan(pn, false);
-    for (const { to } of this.graph.adj.std[pn]) scan(to, true); // losClear rejects cross-deck except the stairwell pair
+      this._losAgentCache.set(key, visible);
+    }
+    return visible.filter((target) => !target.dead && target.hp > 0 && predicate(target));
+  }
+
+  // LOS-filtered visible Flood strength. Detection and rifle acquisition use
+  // this same geometric envelope, so a contact can neither freeze a squad
+  // outside firing range nor be shootable without triggering a reaction.
+  losFloodThreat(h, rangeM = this.P.combat.sightM) {
+    let sum = 0;
+    for (const target of this.lineOfSightAgents(h,
+      (a) => a.faction === FACTION.CARRIER || isActiveFloodForm(a), rangeM)) {
+      sum += W_FLOOD[target.faction];
+    }
     return sum;
   }
   nodesNear(node, hops) { return hops <= 1 ? this.near1[node] : this.graph.nodesWithin(node, hops, ['std'], (l) => !l.locked); }
@@ -786,7 +798,7 @@ export class Sim {
           || killer.faction === FACTION.COMBAT || killer.faction === FACTION.CARRIER);
         const witnessed = !floodKill && this.agents.some((f) => !f.dead && f.hp > 0
           && (f.faction === FACTION.INFECTION || f.faction === FACTION.COMBAT)
-          && this.floodSenses(f.pnode ?? f.node).includes(a.pnode ?? a.node));
+          && this.hasLineOfSight(f, a));
         if (floodKill || witnessed) this.hive?.noteMarineKill();
       }
       this.screamTick[a.node] = this.tickCount;
@@ -1166,6 +1178,8 @@ export class Sim {
   // hangar IS in the hangar, even if its "move" hasn't completed yet.
   _refreshOccupancy() {
     const g = this.graph;
+    this._losAgentCache.clear();
+    for (const agents of Object.values(this._deckAgents)) agents.length = 0;
     // persistent per-node arrays, cleared in place (swarm finding: the old
     // Array.from(...() => []) allocated ~1,900 throwaway arrays a second)
     if (!this._occ || this._occ.length !== g.n) this._occ = Array.from({ length: g.n }, () => []);
@@ -1175,6 +1189,7 @@ export class Sim {
     this._panicked.fill(0);
     for (const a of this.agents) {
       if (a.dead) continue;
+      (this._deckAgents[a.deck] ??= []).push(a);
       a.pnode = this._pnodeOf(a);
       this._occ[a.pnode].push(a);
       if (isActiveFloodForm(a) || (a.faction === FACTION.CARRIER && a.hp > 0)) {
@@ -1647,18 +1662,22 @@ export class Sim {
           a.path = [];
           continue;
         }
-        // LIVE ODDS AT THE THRESHOLD. The strategic planner already stages
-        // against believed defenses, but pursuit used to bypass it and a
-        // stale attack path could still feed one form at a time into marines
-        // who had moved next door. The explicit DART bait and forced patience
-        // launch are deliberate sacrifices; ordinary movement holds here.
-        if (a.faction === FACTION.COMBAT && link.kind === 'std'
-          && a.task?.kind !== TASK.DART
-          && !this.hive.canPressCombatRoom(a.node, step.to, a.task?.force)) {
-          a.path = [];
-          a.charging = false;
-          this.hive.retreatOrFight(a, step.to);
-          continue;
+        // Recheck the visible fight before crossing an opening. A committed
+        // retreat is exempt: one pursuer entering its current room cannot make
+        // it reverse into the rest of the squad it is already escaping.
+        if (a.faction === FACTION.COMBAT && link.kind === 'std' && a.task?.kind !== TASK.DART) {
+          const retreating = this.hive.isRetreating(a);
+          const visibleFight = this.hive.combatLineOfSight(a);
+          const retreatBlocked = retreating && visibleFight.defense > 0
+            && visibleFight.threatNode === step.to;
+          const attackOutmatched = !retreating
+            && !this.hive.canPressCombatContact(a, !!a.task?.surge, a.task?.force);
+          if (retreatBlocked || attackOutmatched) {
+            a.path = [];
+            a.charging = false;
+            this.hive.retreatOrFight(a, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step.to);
+            continue;
+          }
         }
         // COMMITTED INFECTION (user rule: once a form commits to infecting a
         // body it must NEVER be interrupted). A form whose very next step
@@ -1888,86 +1907,43 @@ export class Sim {
     if (a.faction === FACTION.COMBAT) {
       if (a.downed || a.hp <= 0 || a.dragging !== -1) return false;
       const k = a.task?.kind;
-      // rooted / playing a role (DART is the door-bait runner: it must
-      // double back on script, not get steered into the guns it just teased)
-      if (k === TASK.TRANSFORM || k === TASK.DECOY || k === TASK.BAIT || k === TASK.DART) return false;
-      let best = null, bestD = Infinity, bestScore = Infinity;
-      for (const h of this._occ[pn]) {
-        if (h.dead || h.hp <= 0) continue;
-        if (h.faction !== FACTION.CIVILIAN && h.faction !== FACTION.ARMED && h.faction !== FACTION.MARINE) continue;
-        const d = Math.hypot(h.x - a.x, h.y - a.y);
-        // shoot-back: a recent NEARBY attacker outranks nearer prey (hit
-        // feedback) — but a form never abandons a kill to chase a distant
-        // shooter through the room's focus fire
-        const grudge = h.id === a.lastHurtBy && d < 8
-          && this.tickCount - (a.lastHurtTick ?? -999) < 30 ? -6 : 0;
-        const score = d + grudge;
-        if (score < bestScore - 1e-9 || (Math.abs(score - bestScore) <= 1e-9 && h.id < (best?.id ?? Infinity))) {
-          bestScore = score; bestD = d; best = h;
-        }
-      }
+      const shotAt = this.tickCount - (a.lastHurtTick ?? -999) < 45;
+      // A chosen retreat is one uninterrupted action. It does not turn around
+      // because the leading marine briefly crosses the threshold, and it does
+      // not stop to pounce him; a blocked route converts it to cornered attack
+      // in the movement pass instead.
+      if (this.hive.isRetreating(a)) return false;
+      // Rooted forms stay rooted. Scripted bait keeps its role until somebody
+      // actually hits it; incoming fire promotes every other posture to the
+      // same surge decision below.
+      if (k === TASK.TRANSFORM
+        || (!shotAt && (k === TASK.DECOY || k === TASK.BAIT || k === TASK.DART))) return false;
+
+      const source = shotAt ? this.byId.get(a.lastHurtBy) : null;
+      let best = this.hive.visibleHumanTarget(a, source?.id ?? -1);
+      // A landed round reveals its source for the short aggression window even
+      // if the shooter has just side-stepped behind the edge of the opening.
+      if (!best && source && !source.dead && source.hp > 0 && source.deck === a.deck) best = source;
       if (!best) {
-        // LINE OF SIGHT (user): a form already hunting doesn't lose its prey at
-        // a doorway or ignore prey standing plainly in the next room. It SENSES
-        // life in every adjacent compartment (floodSenses = self + every room
-        // through a door OR vent, lock or no lock + the grand stairwell); if
-        // prey is there, PATH to it — the graph handles the doorway — and keep
-        // after it, instead of dropping to IDLE and drifting back into the room.
-        // BEING SHOT IS BEING HUNTED (user: "I can shoot them through a
-        // doorway and they just stand there taking hits"). The cross-room
-        // pursuit below already existed — it was only ever switched on for a
-        // form that was ALREADY fighting, so anything idle, guarding or
-        // staged soaked fire from the next room without ever looking up.
-        // Taking damage now counts as being in the fight, which is the same
-        // rule the in-room grudge below already used; a doorway or a ladder
-        // hole stops being a place where damage arrives from nowhere.
-        const shotAt = this.tickCount - (a.lastHurtTick ?? -999) < 45;
-        const hunting = a.state === STATE.FIGHT || a.charging || a.task?.kind === TASK.ATTACK || shotAt;
-        if (hunting) {
-          let pn2 = -1, pd = Infinity;
-          for (const n of this.floodSenses(pn)) {
-            if (n === pn) continue;
-            for (const h of this._occ[n]) {
-              if (h.dead || h.hp <= 0) continue;
-              if (h.faction !== FACTION.CIVILIAN && h.faction !== FACTION.ARMED && h.faction !== FACTION.MARINE) continue;
-              // whoever is shooting you outranks whatever is merely closer
-              const d = Math.hypot(h.x - a.x, h.y - a.y)
-                - (h.id === a.chargeTargetId ? 4 : 0)
-                - (shotAt && h.id === a.lastHurtBy ? 8 : 0);
-              if (d < pd) { pd = d; pn2 = n; }
-            }
-          }
-          // nothing sensed but rounds are landing: the SHOOTER's position is
-          // known the way a muzzle flash is known — even from a corridor
-          // segment outside this room's adjacency (the flush spine chain
-          // reads as one volume to the player; see floodExec's twin note).
-          // Same-deck only: the physical charge is a run, not a séance.
-          if (pn2 < 0 && shotAt) {
-            const src = this.byId.get(a.lastHurtBy);
-            if (src && !src.dead && src.hp > 0 && src.deck === a.deck) pn2 = src.pnode ?? src.node;
-          }
-          // reach it through an unlocked doorway. NOT through the vents any
-          // more (user rule: the in-wall ducting is infection-only) — and if
-          // every open route is sealed, path THROUGH the locked doors anyway:
-          // the blocked-step check upgrades each closed door on the way into
-          // a dedicated charge that busts it open for good (user rule)
-          if (pn2 >= 0 && this.hive.canPressCombatRoom(pn, pn2, a.task?.force)
-            && (this.setPathTo(a, pn2, ['std'], (l) => !l.locked)
-              || this.setPathTo(a, pn2, ['std'], (l) => l.kind === 'std' && !l.armorySeal))) {
-            a.charging = true; a.state = STATE.MOVE;
-            return false; // _advanceMovement walks the path through the doorway
-          }
-          if (pn2 >= 0 && !this.hive.canPressCombatRoom(pn, pn2, a.task?.force)) {
-            this.hive.retreatOrFight(a, pn2);
-            return false;
-          }
-        }
         a.chargeTargetId = -1;
         if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; a.charging = false; }
         return false;
       }
-      if (!this.hive.canPressCombatRoom(pn, pn, a.task?.force)
-        && !this.hive.retreatOrFight(a, pn)) return false;
+
+      const provoked = shotAt || !!a.task?.surge;
+      if (!this.hive.engageOrRetreat(a, best, provoked)) return false;
+      const bestD = Math.hypot(best.x - a.x, best.y - a.y);
+      const targetNode = best.pnode ?? best.node;
+      if (targetNode !== pn) {
+        // Graph pathing only answers how to reach a body already selected by
+        // LOS. Locked doors remain breakable; infection-only vents do not.
+        if (this.setPathTo(a, targetNode, ['std'], (l) => !l.locked)
+          || this.setPathTo(a, targetNode, ['std'], (l) => l.kind === 'std' && !l.armorySeal)) {
+          a.charging = true;
+          a.state = STATE.MOVE;
+        }
+        return false;
+      }
       target = best;
       a.chargeTargetId = best.id;
       stopAt = P.combat.meleeRangeM * 0.6;
@@ -2499,7 +2475,7 @@ export class Sim {
 
   // FIRING LINE (user note: marines clump in the doorway when a room goes hot —
   // spread out for wider lines of fire). A marine/armed in FIGHT holds a line
-  // facing the room's Flood. Two stable per-id hashes place each shooter: one
+  // facing the visible Flood. Two stable per-id hashes place each shooter: one
   // LATERAL (across the line) and one in DEPTH (staggered ranks back from the
   // front). why: in a long thin artery the line runs athwartships across only
   // ~4 m, so lateral spread alone just re-made the clump at the junction (user
@@ -2508,18 +2484,22 @@ export class Sim {
   // from the threat, not a knot at the doorway. Both offsets are clamped to the
   // room's real reach along each axis; _separate resolves hash collisions.
   // Returns [x, y, fx, fy] (slot + unit facing toward the threat) or null when
-  // there is no Flood in the room.
+  // there is no Flood in line of sight.
   _firingSlot(a, room) {
     const occ = this._occ[a.pnode ?? a.node];
     if (!occ) return null;
-    let tx = 0, ty = 0, tn = 0, nShoot = 0;
+    let nShoot = 0;
     for (const o of occ) {
       const f = o.faction;
-      if (f === FACTION.COMBAT || f === FACTION.CARRIER || f === FACTION.INFECTION) { tx += o.x; ty += o.y; tn++; }
-      else if (f === FACTION.MARINE || f === FACTION.ARMED) nShoot++;
+      if (f === FACTION.MARINE || f === FACTION.ARMED) nShoot++;
     }
-    if (tn === 0) return null;
-    tx /= tn; ty /= tn;
+    const threats = this.lineOfSightAgents(a, (o) => !o.downed
+      && (o.faction === FACTION.COMBAT || o.faction === FACTION.CARRIER || o.faction === FACTION.INFECTION));
+    if (!threats.length) return null;
+    let tx = 0, ty = 0;
+    for (const threat of threats) { tx += threat.x; ty += threat.y; }
+    tx /= threats.length;
+    ty /= threats.length;
     // HOLD YOUR GROUND (user: marines fly to the CENTRE of the room when they
     // engage). The stance is anchored on the marine's OWN post — where it took
     // up the fight (its arrival slot) — NOT a room- or swarm-relative point that

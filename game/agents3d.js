@@ -12,7 +12,6 @@ import { characterParts } from './characters.js';
 import { buildCarrier, CarrierAnimator, SACK_BLOAT_M } from './carrier-model.js';
 import { RagdollSystem } from '../engine/physics/ragdoll.js';
 import { TASK } from '../sim/hive.js';
-import { sightRangeAt } from '../sim/combat.js';
 
 const CAP = 512;
 // the carry yaw _rifleAt applies; the weapon light rides the same axis
@@ -1619,24 +1618,21 @@ export class Agents3D {
       const occ = sim.occupants(n);
       const shooters = occ.filter((a) => a.hp > 0 && !a.dead && !a.isPlayer &&
         (a.faction === FACTION.MARINE || (a.faction === FACTION.ARMED && a.state === 5)));
-      const targets = occ.filter((a) => !a.dead && a.hp > 0 && !a.downed &&
-        (a.faction === FACTION.COMBAT || a.faction === FACTION.CARRIER || a.faction === FACTION.INFECTION));
-      if (!shooters.length || !targets.length) continue;
-      const sight = sightRangeAt(sim, n);
+      if (!shooters.length) continue;
       for (const sh of shooters) {
         if (seg >= 250) break;
         if ((sh.id + sim.tickCount) % 3 === 0) continue;
-        const t = targets[(sh.id + (sim.tickCount >> 1)) % targets.length];
+        const targets = sim.lineOfSightAgents(sh, (a) => !a.downed
+          && (a.faction === FACTION.COMBAT || a.faction === FACTION.CARRIER || a.faction === FACTION.INFECTION));
+        if (!targets.length) continue;
+        const t = targets.find((target) => target.id === sh.fireTargetId) ?? targets[0];
         const sr = this.rpos.get(sh.id), tr = this.rpos.get(t.id);
         if (!sr || !tr) continue;
         const [sx, sz] = this.world.simToWorld(sr.x, sr.y, sr.deck);
         let [tx, tz] = this.world.simToWorld(tr.x, tr.y, tr.deck);
         const ey = elevOf(sr.deck) + 1.3;
         let ty = elevOf(tr.deck) + 0.7;
-        // the render honors the same sight limit as the sim (user: marines
-        // visibly lasering a form they couldn't possibly see in the dark)
         const range = Math.hypot(tx - sx, tz - sz);
-        if (range > sight) continue;
         // PER-SHOT SPREAD (user: every tracer from every marine converged on
         // the exact same point) — deterministic jitter around the target,
         // wider at range and for the squad's worse shots; misses visibly miss

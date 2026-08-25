@@ -192,67 +192,6 @@ export function updateFloodTick(sim, dt) {
       }
     }
 
-    // OPPORTUNISTIC AGGRESSION (user note): a combat form doesn't wait on the
-    // 2.5s strategic brain to notice a human sharing its own room right now —
-    // it commits to the fight the SAME tick it arrives, instead of sailing
-    // through on some earlier errand while a human (the player included)
-    // watches it seemingly ignore them until it happens to reach the node
-    // it was already walking to. Damage was always instant (per-node, task-
-    // independent, §7); this is what makes the form's BEHAVIOR match that.
-    if (a.faction === FACTION.COMBAT && a.state !== STATE.GRABBING) {
-      const pn = a.pnode ?? a.node;
-      const preyHere = sim.occupants(pn).some((h) => h.hp > 0 && !h.dead &&
-        (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE));
-      // THE TRAP SPRINGS (user tactic): a form staged for a muster holds dead
-      // still — until a human steps into ITS room. Every staged form runs
-      // this same check, so the whole pack turns on the intruder in the same
-      // tick the door opens. (The dart runner keeps running its script; the
-      // pack it baited for does the killing.)
-      const springs = a.task?.kind === TASK.GUARD && a.task.muster !== undefined && preyHere;
-      // UNDER FIRE BREAKS THE HOLD (user: forms standing in a doorway taking
-      // hits). Nothing is worth holding a staged position for while rounds
-      // are landing — a rooting carrier is the one exception, it is committed.
-      const shotAt = sim.tickCount - (a.lastHurtTick ?? -999) < 45;
-      const held = !springs && a.task && (a.task.kind === TASK.TRANSFORM
-        || (!shotAt && (a.task.kind === TASK.DECOY || a.task.kind === TASK.DART
-          || (a.task.kind === TASK.GUARD && a.task.muster !== undefined)))
-        || (a.task.kind === TASK.ATTACK && a.task.node === a.node));
-      if (!held && preyHere) {
-        if (hive.canPressCombatRoom(pn, pn, a.task?.force)) {
-          hive.assign(a, { kind: TASK.ATTACK, node: pn });
-        } else hive.retreatOrFight(a, pn);
-      }
-      else if (!held && (!a.task || (a.task.kind === TASK.GUARD && a.task.muster === undefined && !a.task.seed))
-        && sim.floodSenses(pn).some((n) => n !== pn && sim.occupants(n).some((h) => h.hp > 0 && !h.dead &&
-          (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE)))) {
-        // SEEN THROUGH THE OPEN DOOR (user report: forms in a room with the
-        // door open ignore a player standing plainly in the corridor). An
-        // IDLE form or a loitering garrison that can sense prey next door
-        // goes onto the attack posture — ATTACK on its OWN room, so the
-        // press logic below owns the actual push: it holds at the doorway
-        // until the pack outnumbers the defenders ~2:1, exactly like an
-        // assault that arrived to an empty objective. Errand-runners (MOVE/
-        // SCOUT on hive business) and staged ambushes stay on script.
-        hive.assign(a, { kind: TASK.ATTACK, node: pn });
-      }
-      else if (!held && shotAt) {
-        // shot from ANYWHERE — go and take the shooter. This used to gate on
-        // floodSenses, but the main corridor is a chain of flush segments
-        // that LOOK like one continuous volume: a player two segments down
-        // it, firing through an open door, was outside the room's adjacency
-        // and the form soaked hits without ever looking up (user report:
-        // "they dont see you or respond to you even being shot at, until
-        // you cross the threshold"). A landed round IS line of sight — the
-        // muzzle flash tells the form exactly where you are, adjacency be
-        // damned. safeAssaultPath still owns whether the route is sane.
-        const src = sim.byId.get(a.lastHurtBy);
-        const sn = src && !src.dead && src.hp > 0 ? (src.pnode ?? src.node) : -1;
-        if (sn >= 0 && sn !== pn) {
-          hive.assign(a, { kind: TASK.ATTACK, node: sn });
-        }
-      }
-    }
-
     const t = a.task;
     if (!t) continue;
     switch (t.kind) {
@@ -267,23 +206,13 @@ export function updateFloodTick(sim, dt) {
         // no direct-route fallback on an assault: if the objective can't be
         // reached without crossing a DIFFERENT gun line, the attack is off
         moveToward(sim, a, t.node, (from, to) => hive.safeAssaultPath(from, to));
-        // open aggression is a hunt, not a post: if the room is empty but
-        // prey is visible next door, PRESS THE ATTACK into that room (this
-        // is what left forms standing in a cleared room forever, staring at
-        // survivors through a doorway); if nothing is visible, stand down
+        // Open aggression follows a visible body, not a room occupant list.
+        // The movement layer owns the shared surge/retreat decision later in
+        // this tick, so execution only keeps the objective current.
         if (a.node === t.node && !a.move) {
-          let preyNode = -1;
-          for (const n of sim.floodSenses(a.node)) {
-            if (sim.occupants(n).some((h) => h.hp > 0 && !h.dead &&
-              (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE))) {
-              preyNode = n; break;
-            }
-          }
-          if (preyNode === -1) a.task = null;
-          else if (preyNode !== a.node) {
-            if (hive.canPressCombatRoom(a.node, preyNode, t.force)) t.node = preyNode;
-            else hive.retreatOrFight(a, preyNode);
-          }
+          const prey = hive.visibleHumanTarget(a, t.surge ? a.lastHurtBy : -1);
+          if (!prey) a.task = null;
+          else t.node = prey.pnode ?? prey.node;
         }
         break;
 

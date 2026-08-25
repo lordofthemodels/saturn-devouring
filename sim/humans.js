@@ -6,7 +6,6 @@
 import { FACTION } from '../shared/agentBuffer.js';
 import { STATE } from './init.js';
 import { humanPass, marinePass } from './graph.js';
-import { sightRangeAt } from './combat.js';
 
 export function updateHumansTick(sim, dt) {
   for (const a of sim.agents) {
@@ -49,26 +48,6 @@ function floodThreatVisible(sim, a) {
   // doorways, the sealed doors' ajar slots, the grand stairwell's open
   // volume). sim.losClear walks the actual geometry.
   return sim.losFloodThreat(a);
-}
-
-// Detection and a usable rifle shot are deliberately different. A marine can
-// spot motion through a dark doorway beyond the range at which he can acquire
-// a target. Only the latter should cancel the squad's advance; otherwise both
-// sides can wait forever on opposite sides of a threshold.
-function floodTargetInRifleRange(sim, a) {
-  const from = a.pnode ?? a.node;
-  const nodes = [from, ...sim.graph.adj.std[from].map(({ to }) => to)];
-  for (const node of nodes) {
-    const range = sightRangeAt(sim, node);
-    for (const form of sim.occupants(node)) {
-      if (form.dead || form.hp <= 0 || form.downed || form.move?.hidden) continue;
-      if (form.faction !== FACTION.INFECTION && form.faction !== FACTION.COMBAT
-        && form.faction !== FACTION.CARRIER) continue;
-      if (Math.hypot(form.x - a.x, form.y - a.y) > range) continue;
-      if (sim.losClear(a.x, a.y, from, form.x, form.y, node)) return true;
-    }
-  }
-  return false;
 }
 
 function hearsTrouble(sim, a) {
@@ -254,22 +233,16 @@ function nearestRoom(sim, from) {
   return cur;
 }
 
-// how many Flood BODIES share this room (user talks in counts — "one or
-// two" — not the weighted strength the hive reasons with), and how close the
-// nearest one physically is.
-function floodFormsIn(sim, node) {
-  let n = 0;
-  for (const o of sim.occupants(node)) {
-    if (o.dead || o.hp <= 0 || o.downed) continue;
-    if (o.faction === FACTION.INFECTION || o.faction === FACTION.COMBAT || o.faction === FACTION.CARRIER) n++;
-  }
-  return n;
+// Human morale reads the same visible bodies their weapons can acquire. A
+// threshold never makes a nearby form disappear from either the count or the
+// distance check.
+function visibleFloodForms(sim, a) {
+  return sim.lineOfSightAgents(a, (o) => !o.downed
+    && (o.faction === FACTION.INFECTION || o.faction === FACTION.COMBAT || o.faction === FACTION.CARRIER));
 }
 function nearestFloodDist(sim, a) {
   let best = Infinity;
-  for (const o of sim.occupants(a.pnode ?? a.node)) {
-    if (o.dead || o.hp <= 0 || o.downed) continue;
-    if (o.faction !== FACTION.INFECTION && o.faction !== FACTION.COMBAT && o.faction !== FACTION.CARRIER) continue;
+  for (const o of visibleFloodForms(sim, a)) {
     const d = Math.hypot(o.x - a.x, o.y - a.y);
     if (d < best) best = d;
   }
@@ -279,7 +252,6 @@ function nearestFloodDist(sim, a) {
 // --- armed humans (§5.2) ---
 function updateArmed(sim, a, dt) {
   const P = sim.P;
-  const threatHere = sim.floodStrengthAt(a.pnode ?? a.node);
   const threat = floodThreatVisible(sim, a);
   const cornered = fleeStep(sim, a) === -1 && threat > 0;
 
@@ -323,37 +295,36 @@ function maybeThrowFrag(sim, a, dt) {
   if (a.frags <= 0 || a.state === STATE.DEAD || a.hp <= 0) return;
   if (sim.t < (a.nextFragAt ?? 0)) return;
   const G = P.grenade;
-  let best = -1, bestN = G.minTargets - 1, bx = 0, by = 0;
-  for (const n of sim.visibleNodes(a.pnode ?? a.node)) {
-    let cnt = 0, sx = 0, sy = 0;
-    for (const o of sim.occupants(n)) {
-      if (o.dead || o.hp <= 0 || o.downed) continue;
-      if (o.faction !== FACTION.INFECTION && o.faction !== FACTION.COMBAT && o.faction !== FACTION.CARRIER) continue;
-      cnt++; sx += o.x; sy += o.y;
+  const visible = sim.lineOfSightAgents(a, (o) => !o.downed
+    && (o.faction === FACTION.INFECTION || o.faction === FACTION.COMBAT || o.faction === FACTION.CARRIER), G.rangeM);
+  let best = null, bestN = G.minTargets - 1;
+  for (const target of visible) {
+    let count = 0;
+    for (const other of visible) {
+      if (Math.hypot(other.x - target.x, other.y - target.y) <= G.radiusM) count++;
     }
-    if (cnt <= bestN) continue;
-    const cx = sx / cnt, cy = sy / cnt;
-    if (Math.hypot(cx - a.x, cy - a.y) > G.rangeM) continue;
-    bestN = cnt; best = n; bx = cx; by = cy;
+    if (count > bestN) { best = target; bestN = count; }
   }
-  if (best === -1) return;
+  if (!best) return;
+  const bx = best.x, by = best.y;
+  const bestNode = best.pnode ?? best.node;
   // never frag yourself or a squadmate: the blast point must clear every
   // living human by minSafeM (the thrower included)
   for (const o of sim.agents) {
     if (o.dead || o.hp <= 0) continue;
     if (o.faction !== FACTION.CIVILIAN && o.faction !== FACTION.ARMED && o.faction !== FACTION.MARINE) continue;
-    if (o.deck !== sim.graph.node(best).deck && o.id !== a.id) continue;
+    if (o.deck !== best.deck && o.id !== a.id) continue;
     if (Math.hypot(o.x - bx, o.y - by) < G.minSafeM) return;
   }
   if (!sim.rng.chance(G.chancePerSec * dt)) return;
   a.frags--;
   a.nextFragAt = sim.t + G.cooldownSec;
   (sim.grenades ??= []).push({
-    at: sim.t + G.fuseSec, deck: sim.graph.node(best).deck, x: bx, y: by, by: a.id,
+    at: sim.t + G.fuseSec, deck: best.deck, x: bx, y: by, by: a.id,
   });
   // callsign is a {rank, name} RECORD, not a string — interpolating it raw
   // printed "[object Object] throws a frag" in the radio log (playtest)
-  sim.log('combat', `${a.callsign ? `${a.callsign.rank} ${a.callsign.name}` : 'a marine'} throws a frag into ${sim.graph.node(best).name}`, best, bx, by);
+  sim.log('combat', `${a.callsign ? `${a.callsign.rank} ${a.callsign.name}` : 'a marine'} throws a frag into ${sim.graph.node(bestNode).name}`, bestNode, bx, by);
 }
 
 // --- marines (§5.3) ---
@@ -363,7 +334,7 @@ function updateMarineTick(sim, a, dt) {
   // CIC (user note). It fights anything that reaches it but never sweeps,
   // answers calls, or takes orders — a fixed strongpoint.
   if (a.garrison) {
-    a.state = (sim.floodStrengthAt(a.pnode ?? a.node) > 0 || sim.losFloodThreat(a) > 0) ? STATE.FIGHT : STATE.IDLE;
+    a.state = sim.losFloodThreat(a) > 0 ? STATE.FIGHT : STATE.IDLE;
     a.path = []; a.move = null;
     if (a.state === STATE.FIGHT && a.hasRadio && sim.tickCount % 60 === 0) sim.emitCall(a);
     return;
@@ -373,7 +344,7 @@ function updateMarineTick(sim, a, dt) {
   // they hold the room — posted at the racks, killing anything that crawls
   // in through the ducts, taking no orders and answering no calls.
   if (a.odst && sim.armoryLocked) {
-    a.state = (sim.floodStrengthAt(a.pnode ?? a.node) > 0 || sim.losFloodThreat(a) > 0) ? STATE.FIGHT : STATE.IDLE;
+    a.state = sim.losFloodThreat(a) > 0 ? STATE.FIGHT : STATE.IDLE;
     a.path = []; a.move = null;
     return;
   }
@@ -383,10 +354,9 @@ function updateMarineTick(sim, a, dt) {
 
   const threat = floodThreatVisible(sim, a);
   maybeThrowFrag(sim, a, dt);
-  const pn = a.pnode ?? a.node;
-  // Report every confirmed sighting even when it is too dark or distant for a
-  // shot. This was previously below an unconditional return and therefore
-  // never updated the squad blackboard for doorway contacts.
+  // The same sightline both updates the squad blackboard and starts the
+  // firefight. There is no detection-only state that can park the squad at an
+  // opening while its rifles consider the exact same form untargetable.
   if (threat > 0) {
     squad.contactNode = nearestThreatNode(sim, a);
     squad.contactTick = sim.tickCount;
@@ -396,7 +366,7 @@ function updateMarineTick(sim, a, dt) {
       if (sim.rng.chance(sim.P.radio.marineCallReliability)) sim.emitCall(a);
     }
   }
-  if (sim.floodStrengthAt(pn) > 0 || floodTargetInRifleRange(sim, a)) {
+  if (threat > 0) {
     // stand and fight ON CONTACT, where you physically are — a marine does
     // not keep walking to the middle of the hangar with a form on the deck
     a.state = STATE.FIGHT; a.path = []; a.move = null;
@@ -404,7 +374,7 @@ function updateMarineTick(sim, a, dt) {
     // wins standing. A real pack is not — he keeps shooting and gives ground,
     // and once they are in his face with room behind him he breaks for the
     // next compartment and re-forms the line there.
-    const forms = floodFormsIn(sim, pn);
+    const forms = visibleFloodForms(sim, a).length;
     a.givingGround = forms > P.morale.marineHoldForms;
     if (a.givingGround && nearestFloodDist(sim, a) < P.morale.breakContactM) {
       const next = fleeStep(sim, a);
@@ -532,8 +502,12 @@ function updateMarineTick(sim, a, dt) {
 }
 
 function nearestThreatNode(sim, a) {
-  for (const n of sim.visibleNodes(a.node)) if (sim.floodStrengthAt(n) > 0) return n;
-  return a.node;
+  let best = null, bestDistance = Infinity;
+  for (const form of visibleFloodForms(sim, a)) {
+    const distance = Math.hypot(form.x - a.x, form.y - a.y);
+    if (distance < bestDistance) { best = form; bestDistance = distance; }
+  }
+  return best ? (best.pnode ?? best.node) : (a.pnode ?? a.node);
 }
 
 // Translate a standing player order (companion spec §2.2/§2.3) into the

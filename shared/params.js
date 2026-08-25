@@ -375,14 +375,9 @@ export const PARAMS = {
     podAccMult: 0.45,          // a skittering pod is a small fast rifle target
     rifleFalloffM: 12,         // full NPC rifle effect inside this — beyond it, a dark
     rifleFarFactor: 0.5,       // ship and a sprinting target halve effective fire
-    // MARINE DEFANG (user: a form entering a long hallway drew instant,
-    // synchronized, pinpoint fire from every marine wall-to-wall).
-    // Sight-limited engagement: shooters can only ACQUIRE a target inside
-    // these ranges (lit / dead-mains / flickering / flood-dark rooms; spore
-    // fog multiplies on top). Big and long rooms are no longer one free
-    // fire lane — the flood closes distance in the dark before the guns open.
-    sightLitM: 26, sightUnlitM: 13, sightFlickerM: 18, sightDarkM: 9,
-    fogSightMult: 0.6,
+    // Geometric acquisition envelope. Darkness and fog reduce accuracy below;
+    // they do not create a second, contradictory definition of visibility.
+    sightM: 26,
     // Staggered human reaction on a FRESH acquisition (>lull since a target
     // was last in sight): base + per-roll scatter, plus a big penalty when
     // the contact appears outside the shooter's ~70° facing cone (they have
