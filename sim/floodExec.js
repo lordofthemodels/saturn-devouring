@@ -217,7 +217,11 @@ export function updateFloodTick(sim, dt) {
         || (!shotAt && (a.task.kind === TASK.DECOY || a.task.kind === TASK.DART
           || (a.task.kind === TASK.GUARD && a.task.muster !== undefined)))
         || (a.task.kind === TASK.ATTACK && a.task.node === a.node));
-      if (!held && preyHere) hive.assign(a, { kind: TASK.ATTACK, node: pn });
+      if (!held && preyHere) {
+        if (hive.canPressCombatRoom(pn, pn, a.task?.force)) {
+          hive.assign(a, { kind: TASK.ATTACK, node: pn });
+        } else hive.retreatOrFight(a, pn);
+      }
       else if (!held && (!a.task || (a.task.kind === TASK.GUARD && a.task.muster === undefined && !a.task.seed))
         && sim.floodSenses(pn).some((n) => n !== pn && sim.occupants(n).some((h) => h.hp > 0 && !h.dead &&
           (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE)))) {
@@ -278,7 +282,7 @@ export function updateFloodTick(sim, dt) {
           if (preyNode === -1) a.task = null;
           else if (preyNode !== a.node) {
             if (hive.canPressCombatRoom(a.node, preyNode, t.force)) t.node = preyNode;
-            // else hold — the pack builds up here until the odds are right
+            else hive.retreatOrFight(a, preyNode);
           }
         }
         break;

@@ -1657,7 +1657,7 @@ export class Sim {
           && !this.hive.canPressCombatRoom(a.node, step.to, a.task?.force)) {
           a.path = [];
           a.charging = false;
-          if (a.task?.kind === TASK.ATTACK) a.task.node = a.node;
+          this.hive.retreatOrFight(a, step.to);
           continue;
         }
         // COMMITTED INFECTION (user rule: once a form commits to infecting a
@@ -1957,11 +1957,17 @@ export class Sim {
             a.charging = true; a.state = STATE.MOVE;
             return false; // _advanceMovement walks the path through the doorway
           }
+          if (pn2 >= 0 && !this.hive.canPressCombatRoom(pn, pn2, a.task?.force)) {
+            this.hive.retreatOrFight(a, pn2);
+            return false;
+          }
         }
         a.chargeTargetId = -1;
         if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; a.charging = false; }
         return false;
       }
+      if (!this.hive.canPressCombatRoom(pn, pn, a.task?.force)
+        && !this.hive.retreatOrFight(a, pn)) return false;
       target = best;
       a.chargeTargetId = best.id;
       stopAt = P.combat.meleeRangeM * 0.6;

@@ -413,16 +413,70 @@ export class Hive {
   // must still satisfy the same 3:1 doctrine against the guns actually there.
   canPressCombatRoom(from, to, forced = false) {
     if (forced || this.allIn) return true;
-    let defense = 0;
-    for (const h of this.sim.occupants(to)) {
-      if (h.dead || h.hp <= 0) continue;
-      if (h.faction === FACTION.MARINE) defense += 1;
-      else if (h.faction === FACTION.ARMED) defense += 0.6;
-    }
+    const defense = this.combatDefenseAt(to);
     if (defense === 0) return true;
     const strength = this.sim.floodStrengthAt(from)
       + (to === from ? 0 : this.sim.floodStrengthAt(to));
     return strength >= defense * this.sim.P.swarm.killRatio;
+  }
+
+  combatDefenseAt(node) {
+    let defense = 0;
+    for (const h of this.sim.occupants(node)) {
+      if (h.dead || h.hp <= 0) continue;
+      if (h.faction === FACTION.MARINE) defense += 1;
+      else if (h.faction === FACTION.ARMED) defense += 0.6;
+    }
+    return defense;
+  }
+
+  // Losing doorway odds have only two outcomes: withdraw or, if every open
+  // route is cut off, fight. The retreat is ground-truth pathing because a
+  // form deciding under visible guns cannot afford a stale-belief shortcut
+  // through the very room it is escaping. Distance from the threat dominates
+  // the score; remembered danger and dead-end rooms break ties.
+  retreatCombatForm(form, threatNode) {
+    const sim = this.sim, g = sim.graph;
+    const from = form.pnode ?? form.node;
+    const openEscape = (link, a, b) => {
+      if (link.kind !== 'std' || link.locked) return false;
+      if (g.burningUntil[b] > sim.t) return false;
+      if (threatNode !== from && (a === threatNode || b === threatNode)) return false;
+      return b === from || this.combatDefenseAt(b) === 0;
+    };
+    let best = null, bestScore = -Infinity;
+    for (const node of g.nodes) {
+      if (node.idx === from || this.combatDefenseAt(node.idx) > 0) continue;
+      const path = g.path(from, node.idx, ['std'], openEscape);
+      if (!path?.length) continue;
+      const away = g.hops(threatNode, node.idx, ['std'], () => true);
+      const exits = [...g.neighbors(node.idx, ['std'], (link) => !link.locked)].length;
+      const score = (away === -1 ? g.n : away) * 100
+        - this.localThreat(node.idx) * 20
+        + exits * 2
+        - this.trafficPenalty(node.idx)
+        - path.length * 0.25;
+      if (score > bestScore + 1e-9
+        || (Math.abs(score - bestScore) <= 1e-9 && node.idx < (best?.node ?? Infinity))) {
+        best = { node: node.idx, path };
+        bestScore = score;
+      }
+    }
+    if (!best) return false;
+    this.assign(form, { kind: TASK.MOVE, node: best.node, retreat: true, threatNode });
+    sim.setPath(form, best.path);
+    form.charging = false;
+    form.state = STATE.MOVE;
+    return true;
+  }
+
+  // Returns true only when escape is impossible and the form must attack.
+  retreatOrFight(form, threatNode) {
+    if (form.task?.retreat && form.task.threatNode === threatNode
+      && (form.move || form.path.length)) return false;
+    if (this.retreatCombatForm(form, threatNode)) return false;
+    this.assign(form, { kind: TASK.ATTACK, node: threatNode, force: true, cornered: true });
+    return true;
   }
 
   // ======================= strategic tick =======================
@@ -498,7 +552,7 @@ export class Hive {
     // dropped here every 2.5 s when the body lay near believed humans, so it
     // re-pathed forever and never arrived. Once committed to a body it goes.
     for (const f of forms) {
-      if (f.task?.kind === TASK.CONVERT || f.task?.kind === TASK.REANIMATE) continue;
+      if (f.task?.kind === TASK.CONVERT || f.task?.kind === TASK.REANIMATE || f.task?.retreat) continue;
       if (f.path.length && f.path.some((s) => this.believedHumanStr[s.to] > 0.5 || this.believedHardness[s.to] > 0.4)) {
         f.path = [];
       }
@@ -524,14 +578,25 @@ export class Hive {
   evade(forms, carriers) {
     const sim = this.sim;
     for (const f of forms) {
-      // COMBAT FORMS DON'T FLEE (user: if timidity doesn't help them, reverse
-      // it — they are the flood's TEETH, not its currency). A combat form
-      // presses the attack and trades bodies; the muster still gathers them
-      // before hitting a defended room, but once in a fight they stay in it.
-      // Only the fragile INFECTION pods (and the carriers below) evade to keep
-      // the pool and the wombs alive. This is the biggest lever on the design
-      // rule that the flood must dominate the NPC-only ship.
-      if (f.faction === FACTION.COMBAT) continue;
+      // A combat form that can see live guns must choose now: attack when its
+      // local pack clears the odds, otherwise withdraw. This deliberately
+      // outranks staged muster holds — waiting on the other side of an open
+      // door is still volunteering to be shot. No escape means it is cornered
+      // and retreatOrFight marks the attack forced.
+      if (f.faction === FACTION.COMBAT) {
+        const from = f.pnode ?? f.node;
+        let threat = -1, defense = 0;
+        for (const node of sim.floodSenses(from)) {
+          const d = this.combatDefenseAt(node);
+          if (d > defense) { defense = d; threat = node; }
+        }
+        if (threat !== -1) {
+          if (this.canPressCombatRoom(from, threat, f.task?.force)) {
+            this.assign(f, { kind: TASK.ATTACK, node: threat });
+          } else this.retreatOrFight(f, threat);
+        }
+        continue;
+      }
       // never interrupt a rooting carrier — losing the 4s transform to an
       // evade/rampage yank was why the hive stopped producing carriers
       if (f.task?.kind === TASK.ATTACK
@@ -1044,6 +1109,7 @@ export class Hive {
       // conscripted forms already standing near the fight — everyone
       // breeding three decks away sat the assault out forever
       if (!this.allIn && !rampaging.has(f.node)) continue;
+      if (f.task?.retreat) continue;
       if (f.task && (f.task.kind === TASK.ATTACK || f.task.kind === TASK.TRANSFORM)) continue; // a rooting carrier is not a soldier
       if (f.task?.seed) continue; // carrier-seed detail is off-limits to the draft
       const target = this.nearestBelievedHuman(f.node);
@@ -1602,6 +1668,7 @@ export class Hive {
       let musterW = 0;
       for (const f of [...combat, ...infection]) {
         if (f.task?.kind === TASK.TRANSFORM) continue;
+        if (f.task?.retreat) continue;
         const d = f.faction === FACTION.INFECTION
           ? this.infectionHops(f.node, bel.node)
           : g.hops(f.node, bel.node, ['std'], this.bigPass);
