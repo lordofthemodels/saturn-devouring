@@ -401,9 +401,19 @@ export class Viz {
       const id = buf.id[i];
       seen.add(id);
       const tx = buf.posX[i], ty = buf.posY[i];
+      const deck = buf.posZ[i];
       let rp = this.rpos.get(id);
-      if (!rp) { rp = { x: tx, y: ty }; this.rpos.set(id, rp); }
-      else { rp.x += (tx - rp.x) * k; rp.y += (ty - rp.y) * k; }
+      // Deck bands are separate diagrams of the same physical ship. Crossing
+      // a stair changes coordinate frames at the landing; interpolating that
+      // discontinuity draws a body flying through the blank space between
+      // decks and can make it appear to land in an unrelated room.
+      if (!rp || rp.deck !== deck) {
+        rp = { x: tx, y: ty, deck };
+        this.rpos.set(id, rp);
+      } else {
+        rp.x += (tx - rp.x) * k;
+        rp.y += (ty - rp.y) * k;
+      }
     }
     if (this.rpos.size > buf.count * 2) { // occasional prune of dead ids
       for (const id of this.rpos.keys()) if (!seen.has(id)) this.rpos.delete(id);

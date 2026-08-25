@@ -144,12 +144,13 @@ export class Hive {
     const lambda = sim.P.belief.decayRatePerSec;
     for (const [id, b] of this.beliefs) {
       if (!b.static) b.conf *= Math.exp(-lambda * dt);
-      // a belief that has decayed to nothing is a ghost — drop it. (Ghost
-      // entries never expired, so the ALL-IN trigger compared the hive's
-      // mass against every human it had EVER seen — with a hundred stale
-      // records the endgame convergence could never fire: user report of
-      // the last stand being trickled instead of rushed.)
-      if (b.conf < 0.05) this.beliefs.delete(id);
+      // Losing a position is not learning a death. Keep the absorbed crew
+      // identity while confidence falls to zero; the location contributes no
+      // tactical weight, but an overwhelming hive still knows somebody is
+      // unaccounted for and can search. The all-in denominator below counts
+      // confident positions only, so these unknown contacts cannot recreate
+      // the old fear-inflated muster threshold.
+      if (b.conf < 0.05) b.conf = 0;
     }
     // any form with LOS resets the record
     const seen = new Set();
@@ -404,38 +405,113 @@ export class Hive {
     return h;
   }
 
-  // Real-space combat balance around one form. Navigation still moves between
-  // graph nodes, but tactical strength is only what can join the same visible
-  // fight through the actual geometry — never everyone assigned to a room.
-  combatLineOfSight(form) {
-    let strength = W_FLOOD[form.faction] ?? 0;
-    let defense = 0, threatNode = -1, nearestThreat = Infinity;
-    const seen = this.sim.lineOfSightAgents(form,
-      (a) => isLivingHuman(a) || isActiveFloodForm(a) || a.faction === FACTION.CARRIER);
-    for (const a of seen) {
-      if (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED) {
-        defense += W_HUMAN[a.faction];
-        const distance = Math.hypot(a.x - form.x, a.y - form.y);
-        if (distance < nearestThreat) {
-          nearestThreat = distance;
-          threatNode = a.pnode ?? a.node;
-        }
-      } else if (isActiveFloodForm(a) || a.faction === FACTION.CARRIER) {
-        strength += W_FLOOD[a.faction];
+  _combatResponder(form) {
+    return form.faction === FACTION.COMBAT && !form.dead && !form.downed
+      && form.hp > 0 && !form.isPlayer && form.dragging === -1
+      && form.transformingUntil === undefined && form.task?.kind !== TASK.TRANSFORM;
+  }
+
+  // A local pack is a connected component of forms that can see one another.
+  // It follows the actual openings and open stair volumes, so changing the
+  // room graph changes the group naturally without tactical room IDs.
+  combatPack(form) {
+    if (this._combatCacheTick !== this.sim.tickCount) {
+      this._combatCacheTick = this.sim.tickCount;
+      this._combatPackCache = new Map();
+      this._combatSituationCache = new Map();
+      this._combatResponseCache = new Set();
+      this._combatVisibleCache = new Map();
+    }
+    const cached = this._combatPackCache.get(form.id);
+    if (cached) return cached;
+    if (!this._combatResponder(form)) return [form];
+    const pack = [], queue = [form], seen = new Set([form.id]);
+    while (queue.length) {
+      const member = queue.shift();
+      pack.push(member);
+      const visible = this.sim.lineOfSightAgents(member,
+        (candidate) => isLivingHuman(candidate) || isActiveFloodForm(candidate)
+          || candidate.faction === FACTION.CARRIER);
+      this._combatVisibleCache.set(member.id, visible);
+      for (const ally of visible) {
+        if (!this._combatResponder(ally)) continue;
+        if (seen.has(ally.id)) continue;
+        seen.add(ally.id);
+        queue.push(ally);
       }
     }
-    return { strength, defense, threatNode };
+    pack.sort((a, b) => a.id - b.id);
+    for (const member of pack) this._combatPackCache.set(member.id, pack);
+    return pack;
+  }
+
+  // Real-space combat balance belongs to the connected pack, not the one
+  // appendage that happened to cross the threshold first. Visible bodies are
+  // deduplicated across every member so the whole pack reaches one decision.
+  combatLineOfSight(form) {
+    const pack = this.combatPack(form);
+    const cached = this._combatSituationCache.get(form.id);
+    if (cached) return cached;
+    const flood = new Map(pack.map((a) => [a.id, a]));
+    const humans = new Map();
+    for (const member of pack) {
+      const visible = this._combatVisibleCache.get(member.id)
+        ?? this.sim.lineOfSightAgents(member,
+          (candidate) => isLivingHuman(candidate) || isActiveFloodForm(candidate)
+            || candidate.faction === FACTION.CARRIER);
+      for (const a of visible) {
+        if (isLivingHuman(a)) humans.set(a.id, a);
+        else if (a.faction !== FACTION.COMBAT || this._combatResponder(a)) flood.set(a.id, a);
+      }
+    }
+    let strength = 0, defense = 0, threat = null, nearestThreat = Infinity;
+    for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
+    for (const human of humans.values()) {
+      defense += W_HUMAN[human.faction] ?? 0;
+      if (human.faction !== FACTION.MARINE && human.faction !== FACTION.ARMED) continue;
+      for (const member of pack) {
+        const distance = this.sim.agentDistance(member, human);
+        if (distance < nearestThreat - 1e-9
+          || (Math.abs(distance - nearestThreat) <= 1e-9 && human.id < (threat?.id ?? Infinity))) {
+          nearestThreat = distance;
+          threat = human;
+        }
+      }
+    }
+    const situation = { pack, humans: [...humans.values()], strength, defense,
+      threat, threatNode: threat ? (threat.pnode ?? threat.node) : -1 };
+    for (const member of pack) this._combatSituationCache.set(member.id, situation);
+    return situation;
   }
 
   visibleHumanTarget(form, preferredId = -1) {
     let best = null, bestScore = Infinity;
     for (const human of this.sim.lineOfSightAgents(form, isLivingHuman)) {
-      const distance = Math.hypot(human.x - form.x, human.y - form.y);
+      const distance = this.sim.agentDistance(form, human);
       const score = distance - (human.id === preferredId ? 8 : 0);
       if (score < bestScore - 1e-9
         || (Math.abs(score - bestScore) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
         best = human;
         bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  nearestCombatTarget(form, candidates = null) {
+    const humans = candidates ?? this.sim.lineOfSightAgents(form, isLivingHuman);
+    const shooters = humans.filter((a) => a.faction === FACTION.MARINE);
+    const pool = shooters.length ? shooters
+      : humans.some((a) => a.faction === FACTION.ARMED)
+        ? humans.filter((a) => a.faction === FACTION.ARMED) : humans;
+    let best = null, bestDistance = Infinity;
+    for (const human of pool) {
+      if (!isLivingHuman(human)) continue;
+      const distance = this.sim.agentDistance(form, human);
+      if (distance < bestDistance - 1e-9
+        || (Math.abs(distance - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
+        best = human;
+        bestDistance = distance;
       }
     }
     return best;
@@ -454,17 +530,46 @@ export class Hive {
     return strength >= defense * (provoked ? 1 : this.sim.P.swarm.killRatio);
   }
 
-  engageOrRetreat(form, target, provoked = false) {
-    if (this.isRetreating(form)) return false;
-    const node = typeof target === 'number' ? target : (target.pnode ?? target.node);
-    const surge = provoked || form.task?.surge;
-    const forced = !!form.task?.force;
-    if (this.canPressCombatContact(form, surge, forced)) {
-      this.assign(form, { kind: TASK.ATTACK, node, surge: !!surge, force: forced });
-      return true;
+  respondToCombat(form, target, provoked = false) {
+    const situation = this.combatLineOfSight(form);
+    const pack = situation.pack;
+    const responseKey = pack[0]?.id ?? form.id;
+    if (this._combatResponseCache.has(responseKey)) {
+      return form.task?.kind === TASK.ATTACK && !form.task.retreat;
     }
-    this.retreatOrFight(form, node);
-    return false;
+    const stimulus = typeof target === 'number' ? null : target;
+    const knownHumans = situation.humans.slice();
+    if (stimulus && isLivingHuman(stimulus)
+      && !knownHumans.some((human) => human.id === stimulus.id)) knownHumans.push(stimulus);
+    for (const member of pack) {
+      if (this.sim.tickCount - (member.lastHurtTick ?? -999) >= 45) continue;
+      const source = this.sim.byId.get(member.lastHurtBy);
+      if (source && isLivingHuman(source)
+        && !knownHumans.some((human) => human.id === source.id)) knownHumans.push(source);
+    }
+    const fallbackNode = typeof target === 'number' ? target
+      : (stimulus?.pnode ?? stimulus?.node ?? situation.threatNode);
+    const surge = provoked || pack.some((member) => member.task?.surge
+      || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
+    const forced = pack.some((member) => member.task?.force);
+    if (this.canPressCombatContact(form, surge, forced)) {
+      for (const member of pack) {
+        const prey = this.nearestCombatTarget(member, knownHumans) ?? stimulus;
+        const node = prey ? (prey.pnode ?? prey.node) : fallbackNode;
+        if (node === undefined || node < 0) continue;
+        this.assign(member, { kind: TASK.ATTACK, node, targetId: prey?.id,
+          surge: !!surge, force: forced });
+      }
+      this._combatResponseCache.add(responseKey);
+      return form.task?.kind === TASK.ATTACK;
+    }
+    const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
+    if (threatNode === undefined || threatNode < 0) return false;
+    for (const member of pack) {
+      if (!this.isRetreating(member)) this.retreatOrFight(member, threatNode);
+    }
+    this._combatResponseCache.add(responseKey);
+    return form.task?.kind === TASK.ATTACK && !form.task.retreat;
   }
 
   // Losing doorway odds have only two outcomes: withdraw or, if every open
@@ -560,9 +665,18 @@ export class Hive {
     // THE COUNTER CLOSES THE GAME (user redesign): when the hive's own kill
     // ledger says the garrison is nearly spent, it stops tip-toeing — the
     // armed resistance is what stood between it and the ship.
+    // No confident position does not mean no prey. The absorbed crew manifest
+    // remains in beliefs until a death is learned; when overwhelming mass has
+    // lost every contact, it searches the topology instead of dropping out of
+    // endgame posture and guarding empty rooms forever.
+    const searchAll = believedAlive === 0 && this.beliefs.size > 0 && mass >= 50;
+    this.searchingAll = searchAll;
     this.allIn = (believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3)
-      || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0);
-    if (this.allIn && !wasAllIn) sim.log('hive', 'the hive rises as one — every form converges for the end');
+      || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0)
+      || searchAll;
+    if (this.allIn && !wasAllIn) sim.log('hive', searchAll
+      ? 'the hive has lost contact with the last prey — every compartment is swept'
+      : 'the hive rises as one — every form converges for the end');
 
     // POSTURE (user: evasive hit-and-run early, aggressive once strong). Early —
     // few carriers or a small pool — the hive RUNS: it slips off to hit soft
@@ -590,7 +704,12 @@ export class Hive {
     // re-pathed forever and never arrived. Once committed to a body it goes.
     for (const f of forms) {
       if (f.task?.kind === TASK.CONVERT || f.task?.kind === TASK.REANIMATE || f.task?.retreat) continue;
-      if (f.path.length && f.path.some((s) => this.believedHumanStr[s.to] > 0.5 || this.believedHardness[s.to] > 0.4)) {
+      // An assault is expected to end in defended ground. Revalidate only its
+      // intermediate route; treating the destination itself as a newly unsafe
+      // surprise erased every breach path on the next strategic tick.
+      const checkThrough = f.task?.kind === TASK.ATTACK ? f.path.length - 1 : f.path.length;
+      if (f.path.length && f.path.some((s, i) => i < checkThrough
+        && (this.believedHumanStr[s.to] > 0.5 || this.believedHardness[s.to] > 0.4))) {
         f.path = [];
       }
     }
@@ -624,7 +743,7 @@ export class Hive {
         const { defense, threatNode } = this.combatLineOfSight(f);
         if (defense > 0 && threatNode !== -1) {
           if (!this.isRetreating(f)) {
-            this.engageOrRetreat(f, threatNode, !!f.task?.surge);
+            this.respondToCombat(f, threatNode, !!f.task?.surge);
           }
         }
         continue;
@@ -857,6 +976,93 @@ export class Hive {
     return plan;
   }
 
+  // Visible pressure plus a broken production line creates its own rear guard:
+  // root the safest one or two bodies and screen the approaches. This is phase
+  // independent — a cornered opening pocket has the same reproductive need as
+  // a steady-state one — and depends only on live geometry and scarcity.
+  pressureCarrierSeeds(combat, I, K, S, wantK) {
+    const sim = this.sim, g = sim.graph, C = combat.length;
+    const pressureHumans = new Map();
+    for (const c of combat) {
+      for (const human of sim.lineOfSightAgents(c, (a) => a.faction === FACTION.MARINE
+        || a.faction === FACTION.ARMED)) pressureHumans.set(human.id, human);
+    }
+    const pressured = K === 0 && I < 3 && S >= 2 && C >= 5 && pressureHumans.size > 0;
+    if (!pressured) {
+      this._pressureSeedLogged = false;
+      for (const c of combat) if (c.task?.screen !== undefined) c.task = null;
+      return;
+    }
+    const threatNodes = [...new Set([...pressureHumans.values()].map((a) => a.pnode ?? a.node))];
+    const threatDist = g.flowField(threatNodes, ['std'], this.bigPass).dist;
+    const rooting = combat.filter((c) => c.task?.kind === TASK.TRANSFORM);
+    const desiredRoots = Math.min(2, wantK, Math.max(1, Math.floor(C / 3)));
+    const candidates = combat.filter((c) => !c.fromPlayer && !c.downed
+      && c.task?.kind !== TASK.TRANSFORM && c.taskProgress === 0 && !c.move
+      && sim.humansAt(c.pnode ?? c.node) === 0)
+      .sort((a, b) => {
+        const visibleA = sim.lineOfSightAgents(a, (h) => h.faction === FACTION.MARINE
+          || h.faction === FACTION.ARMED).length;
+        const visibleB = sim.lineOfSightAgents(b, (h) => h.faction === FACTION.MARINE
+          || h.faction === FACTION.ARMED).length;
+        if (visibleA !== visibleB) return visibleA - visibleB;
+        const da = threatDist[a.pnode ?? a.node], db = threatDist[b.pnode ?? b.node];
+        if (da !== db) return (db === -1 ? g.n : db) - (da === -1 ? g.n : da);
+        return (this.localThreat(a.pnode ?? a.node) - this.localThreat(b.pnode ?? b.node))
+          || (a.id - b.id);
+      });
+    const occupiedRoots = new Set(rooting.map((c) => c.pnode ?? c.node));
+    for (const candidate of candidates) {
+      if (rooting.length >= desiredRoots) break;
+      const node = candidate.pnode ?? candidate.node;
+      if (occupiedRoots.has(node)) continue;
+      this.assign(candidate, { kind: TASK.TRANSFORM, pressured: true });
+      rooting.push(candidate);
+      occupiedRoots.add(node);
+    }
+    if (!rooting.length) return;
+    const screens = rooting.map((seed) => {
+      let bestPath = null;
+      for (const threatNode of threatNodes) {
+        const path = g.path(seed.pnode ?? seed.node, threatNode, ['std'], this.bigPass);
+        if (path && (!bestPath || path.length < bestPath.length)) bestPath = path;
+      }
+      return { seed, node: bestPath?.[0]?.to ?? (seed.pnode ?? seed.node) };
+    });
+    for (const guard of combat) {
+      if (guard.task?.kind === TASK.TRANSFORM || guard.task?.retreat
+        || guard.taskProgress > 0 || guard.fromPlayer) continue;
+      let best = screens[0], bestHops = Infinity;
+      for (const screen of screens) {
+        const hops = g.hops(guard.pnode ?? guard.node, screen.node, ['std'], this.bigPass);
+        if (hops !== -1 && (hops < bestHops
+          || (hops === bestHops && screen.seed.id < best.seed.id))) {
+          best = screen;
+          bestHops = hops;
+        }
+      }
+      this.assign(guard, { kind: TASK.GUARD, node: best.node, screen: best.seed.id });
+    }
+    if (!this._pressureSeedLogged) {
+      this._pressureSeedLogged = true;
+      sim.log('hive', `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? '' : 's'} — the rest form a screen`);
+    }
+  }
+
+  // Shared coverage planner for every mobile appendage. The target ordering
+  // comes from current Flood occupancy and the live graph; ids distribute the
+  // work, while each form's own movement layer decides how to get there.
+  sweepTarget(form, targets, kind) {
+    const g = this.sim.graph;
+    for (let i = 0; i < targets.length; i++) {
+      const node = targets[(form.id + i) % targets.length].idx;
+      if (node === form.node) continue;
+      if (kind === 'combat' && !g.path(form.node, node, ['std'], this.bigPass)) continue;
+      return node;
+    }
+    return -1;
+  }
+
   // --- §6.7/§13.5 the opening: a timed smash-and-grab ---
   openingMove(infection, combat, bodies) {
     const sim = this.sim, g = sim.graph;
@@ -966,6 +1172,17 @@ export class Hive {
         && (!f.task || f.task.kind === TASK.MOVE));
       if (feed && former && combat.length < 4) { feed.claimed = true; this.assign(former, { kind: TASK.CONVERT, corpseId: feed.id }); }
     }
+
+    // The opening plan can fail before its scattered den forms arrive. If
+    // visible guns have already cornered the colony and production is empty,
+    // use the same geometry-driven rear seed/screen response as steady state.
+    this.pressureCarrierSeeds(
+      combat,
+      infection.length,
+      carriersNow,
+      this.scarcity(infection.length + carriersNow * 2),
+      wantCarriers,
+    );
   }
 
   // spread forms among a site and its quiet neighbors (no deathballs), but
@@ -984,6 +1201,13 @@ export class Hive {
   steadyState(infection, combat, carriers, bodies, I, C, K, S) {
     const sim = this.sim, g = sim.graph, P = sim.P;
     const riskAversion = P.hive.riskBase * S;
+    // Sorted once per strategic round. If all confident contacts disappear,
+    // form ids fan the combat mass across the least occupied live graph nodes;
+    // no room names or authored search route are involved.
+    const sweepTargets = this.allIn
+      ? g.nodes.slice().sort((a, b) => (sim.influence.floodStr[a.idx] - sim.influence.floodStr[b.idx])
+        || (a.idx - b.idx))
+      : [];
 
     // 1. AGGRESSION IS LOCAL (user note): each region decides hide-vs-rampage
     //    on its OWN situation, independent of the global pool. A pocket of
@@ -1047,6 +1271,9 @@ export class Hive {
       }
     }
 
+    // 2a. Visible pressure can force a rear-seed response in every phase.
+    this.pressureCarrierSeeds(combat, I, K, S, wantK);
+
     // 2b. DESPERATION (user note): reduced to a handful of combat forms with no
     //     carriers and no pool, a rational hive rebuilds — it does NOT just
     //     hide and wait to be shot. The safest-positioned form roots into a
@@ -1106,7 +1333,8 @@ export class Hive {
         }
         if (bestT !== -1) {
           const spares = combat.filter((c) => !c.fromPlayer && !c.downed
-            && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)));
+            && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined
+              && !c.task.seed && c.task.screen === undefined)));
           const r = this.nearest(spares, bestT, ['std'], this.combatPass);
           if (r) {
             this._raiderId = r.id;
@@ -1144,9 +1372,19 @@ export class Hive {
       if (!this.allIn && !rampaging.has(f.node)) continue;
       if (f.task?.retreat) continue;
       if (f.task && (f.task.kind === TASK.ATTACK || f.task.kind === TASK.TRANSFORM)) continue; // a rooting carrier is not a soldier
-      if (f.task?.seed) continue; // carrier-seed detail is off-limits to the draft
-      const target = this.nearestBelievedHuman(f.node);
-      if (target === -1) continue;
+      if (f.task?.kind === TASK.SCOUT && f.task.sweep
+        && (f.move || f.path.length || f.node !== f.task.node)) continue;
+      if (f.task?.seed || f.task?.screen !== undefined) continue; // production detail is off-limits to the draft
+      // Once the counter calls all-in, a gun line is an objective rather than
+      // a reason to report every survivor beyond it as unreachable.
+      const target = this.allIn ? this.nearestAllInHuman(f.node) : this.nearestBelievedHuman(f.node);
+      if (target === -1) {
+        if (this.allIn) {
+          const sweep = this.sweepTarget(f, sweepTargets, 'combat');
+          if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
+        }
+        continue;
+      }
       const ban = this._musterBan?.get(target);
       if (ban && sim.t < ban.until && combat.length < ban.needed) continue; // breeding until the numbers exist
       const defense = this.believedHumanStr[target] + this.believedHardness[target];
@@ -1210,7 +1448,8 @@ export class Hive {
           // quiet — if the attack breaks, the future is already growing.
           if (!sim.agents.some((a) => !a.dead && a.faction === FACTION.CARRIER && a.hp > 0)) {
             const spare = combat.find((c) => !c.fromPlayer && !c.downed
-              && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)));
+              && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined
+                && !c.task.seed && c.task.screen === undefined)));
             if (spare) {
               const den = this.quietNodeNear(spare.node, 'big');
               if (den !== -1) this.assign(spare, { kind: TASK.GUARD, node: den, seed: true });
@@ -1300,7 +1539,8 @@ export class Hive {
         // minutes, then release this muster too
         if (!this._musterStart.has(target)) this._musterStart.set(target, sim.t);
         const spareCount = combat.filter((c) => !c.task
-          || (c.task.kind === TASK.GUARD && c.task.muster === undefined && !c.task.seed)).length;
+          || (c.task.kind === TASK.GUARD && c.task.muster === undefined
+            && !c.task.seed && c.task.screen === undefined)).length;
         if (sim.t - this._musterStart.get(target) > 120 && forms.length + spareCount < needed) {
           this._musterStart.delete(target);
           this._musterBan.set(target, { until: sim.t + 180, needed });
@@ -1315,7 +1555,8 @@ export class Hive {
         if (forms.length < needed + 2) {
           const stage = forms[0].task.node;
           const spares = combat.filter((c) => !c.task
-            || (c.task.kind === TASK.GUARD && c.task.muster === undefined));
+            || (c.task.kind === TASK.GUARD && c.task.muster === undefined
+              && !c.task.seed && c.task.screen === undefined));
           const ranked = spares
             .map((c) => ({ c, d: g.hops(c.node, stage, ['std'], this.bigPass) }))
             .filter((x) => x.d !== -1)
@@ -1382,6 +1623,14 @@ export class Hive {
       if (downed && 2.0 - S * 1.0 > 0) {
         downed.claimed = true;
         this.assign(f, { kind: TASK.REANIMATE, targetId: downed.id });
+        continue;
+      }
+      // When the shared mind knows prey remains but has lost every position,
+      // every free pod joins the same graph-wide coverage plan as the combat
+      // forms. Nurseries remain production bases, never parking lots.
+      if (this.searchingAll) {
+        const sweep = this.sweepTarget(f, sweepTargets, 'infection');
+        if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
         continue;
       }
       // search (§13.7): only a rich hive can afford to look
@@ -1768,6 +2017,27 @@ export class Hive {
     memo.set(from, r);
     return r;
   }
+
+  // Endgame target selection uses the live topology but deliberately stops
+  // routing around remembered gun lines. This is still belief-driven—the hive
+  // attacks only places where it thinks humans remain—but a defended corridor
+  // can no longer hide every room behind it from an overwhelming force.
+  nearestAllInHuman(from) {
+    const memo = this._routeMemo('nbh');
+    const key = `all:${from}`;
+    const hit = memo.get(key);
+    if (hit !== undefined) return hit;
+    let best = -1, bestScore = -Infinity;
+    for (let n = 0; n < this.sim.graph.n; n++) {
+      if (this.believedHumanStr[n] <= 0.05) continue;
+      const path = this.sim.graph.path(from, n, ['std'], this.bigPass);
+      if (!path) continue;
+      const score = this.believedHumanStr[n] - path.length * 0.2;
+      if (score > bestScore) { bestScore = score; best = n; }
+    }
+    memo.set(key, best);
+    return best;
+  }
   _nearestBelievedHuman(from) {
     let best = -1, bestScore = -Infinity;
     for (let n = 0; n < this.sim.graph.n; n++) {
@@ -1838,6 +2108,9 @@ export class Hive {
         const d = this.sim.byId.get(t.targetId);
         if (d && d.claimed) d.claimed = false;
       }
+    }
+    if ((t?.kind === TASK.TRANSFORM) !== (task.kind === TASK.TRANSFORM)) {
+      this._combatCacheTick = -1;
     }
     form.task = task;
     if (!same) {

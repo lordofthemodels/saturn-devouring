@@ -421,17 +421,14 @@ export function resolveCombat(sim, dt) {
         const victims = sim.lineOfSightAgents(f, (a) => a.faction === FACTION.MARINE
           || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN);
         if (victims.length) {
+          const marines = victims.filter((v) => v.faction === FACTION.MARINE);
+          const armed = victims.filter((v) => v.faction === FACTION.ARMED);
+          const candidates = marines.length ? marines : armed.length ? armed : victims;
           let best = null, bestScore = Infinity;
-          for (const v of victims) {
+          for (const v of candidates) {
             if (v.hp <= 0 || v.dead) continue;
-            const d = Math.hypot(v.x - f.x, v.y - f.y);
-            // getting shot is a stimulus: whoever hurt this form recently
-            // jumps the queue — no more mauling one victim while its
-            // shooter plinks it from behind unanswered (close shooters only;
-            // chasing a distant one through focus fire is how packs die)
-            const grudge = v.id === f.lastHurtBy && d < 8
-              && sim.tickCount - (f.lastHurtTick ?? -999) < 30 ? -6 : 0;
-            const score = d + rank(v) * 0.5 + grudge + v.id * 1e-6;
+            const d = sim.agentDistance(f, v);
+            const score = d + v.id * 1e-6;
             if (score < bestScore) { bestScore = score; best = v; }
           }
           if (!best) break;

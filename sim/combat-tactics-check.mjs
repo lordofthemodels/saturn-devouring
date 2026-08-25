@@ -3,6 +3,7 @@ import { FACTION } from '../shared/agentBuffer.js';
 import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
 import { updateHumansTick } from './humans.js';
+import { updateFloodTick } from './floodExec.js';
 import { resolveCombat } from './combat.js';
 import { Sim } from './sim.js';
 
@@ -111,6 +112,267 @@ surgeForm.move = null;
 surgeSim._refreshOccupancy();
 surgeSim._spatialSteer(surgeForm, surgeSim.dt);
 assert.equal(surgeForm.task.retreat, true, 'a form fired on by superior visible numbers must flee');
+const reinforcements = [0, 1].map(() => makeAgent(FACTION.COMBAT, surgeDoor.a, surgeSim.graph));
+for (const ally of reinforcements) surgeSim.spawn(ally);
+surgeSim._refreshOccupancy();
+surgeSim._spatialSteer(surgeForm, surgeSim.dt);
+for (const form of [surgeForm, ...reinforcements]) {
+  assert.equal(form.task.kind, TASK.ATTACK, 'reinforcements changing the odds must reverse the whole pack into attack');
+  assert.equal(form.task.surge, true, 'the renewed response must remain one shared surge');
+}
+
+// One appendage being shot gives the whole visible pack one response. Every
+// member abandons its stale destination, pursues the shared nearest marine,
+// and keeps the charge multiplier through the intervening doorway.
+const packSim = new Sim('shared-pack-response-check');
+for (const agent of packSim.agents) agent.dead = true;
+const packDoor = openEscapeDoor(packSim);
+assert.ok(packDoor, 'pack fixture needs a visible doorway and alternate route');
+const escape = [...packSim.graph.neighbors(packDoor.a, ['std'], (edge) => !edge.locked)]
+  .find(({ to }) => to !== packDoor.b);
+assert.ok(escape, 'pack fixture needs a stale destination away from the shooter');
+const packForms = [0, 1, 2].map(() => makeAgent(FACTION.COMBAT, packDoor.a, packSim.graph));
+const packShooter = makeAgent(FACTION.MARINE, packDoor.b, packSim.graph);
+for (const form of packForms) {
+  form.hp = form.maxHp = 90;
+  packSim.spawn(form);
+  form.task = { kind: TASK.GUARD, node: escape.to };
+  packSim.setPathTo(form, escape.to, ['std'], (edge) => !edge.locked);
+}
+packSim.spawn(packShooter);
+packShooter.dead = true;
+packSim.tickCount = 1;
+packSim.t = packSim.dt;
+packSim._refreshOccupancy();
+packSim._advanceMovement(packSim.dt);
+assert.ok(packForms.every((form) => form.move), 'pack fixture must begin on stale move legs');
+packShooter.dead = false;
+packSim._refreshOccupancy();
+packForms[0].lastHurtBy = packShooter.id;
+packForms[0].lastHurtTick = packSim.tickCount;
+packSim._spatialSteer(packForms[0], packSim.dt);
+for (const form of packForms) {
+  assert.equal(form.task.kind, TASK.ATTACK, 'one incoming round must turn every pack member onto combat');
+  assert.equal(form.task.surge, true, 'the entire responding pack must share the surge');
+  assert.equal(form.task.targetId, packShooter.id, 'each appendage must pursue the shared nearest marine');
+}
+for (const form of packForms.slice(1)) packSim._spatialSteer(form, packSim.dt);
+assert.ok(packForms.every((form) => !form.move), 'live contact must cancel every stale move leg');
+packSim._advanceMovement(packSim.dt);
+for (const form of packForms) {
+  assert.equal(form.charging, true, 'a cross-room surge must begin at charge speed');
+  assert.ok(form.move, 'each pack member must immediately start through the doorway');
+  const move = form.move;
+  const d1 = Math.hypot(move.link.door.x - move.sx, move.link.door.y - move.sy);
+  const d2 = Math.hypot(move.tx - move.link.door.x, move.ty - move.link.door.y);
+  const walking = (d1 + d2) / (packSim.P.movement.baseMps * packSim._speedMult(form));
+  assert.ok(Math.abs(move.travelSec - walking / packSim.P.speed.chargeMult) < 1e-6,
+    'a surge leg must use the full charge multiplier without per-form slowdown');
+}
+const firstLegs = packForms.map((form) => form.move);
+packSim.tickCount++;
+packSim.t += packSim.dt;
+packSim._refreshOccupancy();
+for (const form of packForms) packSim._spatialSteer(form, packSim.dt);
+assert.ok(packForms.every((form, i) => form.move === firstLegs[i]),
+  'a live cross-room chase must preserve its in-progress doorway leg');
+packSim._advanceMovement(packSim.dt);
+assert.ok(packForms.every((form) => form.move.t > 0),
+  'a preserved doorway charge must gain progress on the following tick');
+
+// Even when several forms begin at the same pixel, the shared charge remains
+// a crowd of solid bodies rather than one stacked glyph.
+const stackSim = new Sim('stacked-pack-check');
+for (const agent of stackSim.agents) agent.dead = true;
+const stackRoom = stackSim.graph.nodes.find((node) => node.w >= 10 && node.d >= 6);
+assert.ok(stackRoom, 'stack fixture needs open floor');
+const stacked = [0, 1, 2].map(() => makeAgent(FACTION.COMBAT, stackRoom.idx, stackSim.graph));
+const loneMarine = makeAgent(FACTION.MARINE, stackRoom.idx, stackSim.graph);
+for (const form of stacked) {
+  form.x = stackRoom.x - 2;
+  form.y = stackRoom.y;
+  stackSim.spawn(form);
+}
+loneMarine.x = stackRoom.x + 2;
+loneMarine.y = stackRoom.y;
+stackSim.spawn(loneMarine);
+stackSim.tickCount = 1;
+stackSim.t = stackSim.dt;
+stackSim._refreshOccupancy();
+stacked[0].lastHurtBy = loneMarine.id;
+stacked[0].lastHurtTick = stackSim.tickCount;
+stackSim._spatialSteer(stacked[0], stackSim.dt);
+for (const form of stacked.slice(1)) stackSim._spatialSteer(form, stackSim.dt);
+stackSim._separate(stackSim.dt);
+for (let i = 0; i < stacked.length; i++) for (let j = i + 1; j < stacked.length; j++) {
+  assert.ok(Math.hypot(stacked[i].x - stacked[j].x, stacked[i].y - stacked[j].y) > 0.1,
+    'responding combat forms must separate instead of stacking');
+}
+
+// Under live pressure with no infection economy, scarcity roots one or two
+// rearmost carrier seeds and turns the remaining forms into a screen.
+const seedSim = new Sim('pressured-carrier-seed-check');
+for (const agent of seedSim.agents) agent.dead = true;
+const seedDoor = openEscapeDoor(seedSim);
+assert.ok(seedDoor, 'carrier seed fixture needs a defended front and rear route');
+const rear = [...seedSim.graph.neighbors(seedDoor.a, ['std'], (edge) => !edge.locked)]
+  .find(({ to }) => to !== seedDoor.b);
+assert.ok(rear, 'carrier seed fixture needs rearmost ground');
+const seedForms = [0, 1, 2, 3, 4, 5].map((_, i) =>
+  makeAgent(FACTION.COMBAT, i < 3 ? seedDoor.a : rear.to, seedSim.graph));
+const seedMarine = makeAgent(FACTION.MARINE, seedDoor.b, seedSim.graph);
+for (const form of seedForms) seedSim.spawn(form);
+seedSim.spawn(seedMarine);
+seedSim.t = 100;
+seedSim.tickCount = Math.round(seedSim.t / seedSim.dt);
+seedSim.hive.opening = true;
+seedSim.hive.posture = 'EVASIVE';
+seedSim.hive.allIn = false;
+seedSim._refreshOccupancy();
+seedSim._computeInfluence();
+seedSim.hive.openingMove([], seedForms, []);
+const roots = seedForms.filter((form) => form.task?.kind === TASK.TRANSFORM);
+assert.ok(roots.length >= 1 && roots.length <= 2, 'a cornered pocket must root one or two carrier seeds');
+assert.ok(roots.some((form) => (form.pnode ?? form.node) === rear.to),
+  'the pressured carrier plan must choose the rearmost available ground');
+assert.ok(seedForms.filter((form) => form.task?.screen !== undefined).length >= seedForms.length - roots.length - 1,
+  'the remaining pocket must screen the carrier seeds instead of wandering');
+
+// The screenshot regression: a roomful of forms outside four rifles is one
+// connected hive response. The appendage with the sightline commits the whole
+// 3:1-plus mass instead of repeatedly probing the doorway alone.
+const breachSim = new Sim('overwhelming-door-breach-check');
+for (const agent of breachSim.agents) agent.dead = true;
+const breachDoor = openEscapeDoor(breachSim);
+assert.ok(breachDoor, 'overwhelming breach fixture needs a visible doorway');
+const breachForms = Array.from({ length: 15 }, () => makeAgent(FACTION.COMBAT, breachDoor.a, breachSim.graph));
+const breachMarines = Array.from({ length: 4 }, () => makeAgent(FACTION.MARINE, breachDoor.b, breachSim.graph));
+for (const form of breachForms) breachSim.spawn(form);
+for (const defender of breachMarines) breachSim.spawn(defender);
+breachSim.tickCount = 1;
+breachSim.t = breachSim.dt;
+breachSim._refreshOccupancy();
+breachForms[0].lastHurtBy = breachMarines[0].id;
+breachForms[0].lastHurtTick = breachSim.tickCount;
+breachSim._spatialSteer(breachForms[0], breachSim.dt);
+assert.ok(breachForms.every((form) => form.task?.kind === TASK.ATTACK && form.task.surge),
+  'an overwhelming pack must surge through the doorway as one response');
+assert.ok(breachForms.every((form) => form.task.targetId !== undefined),
+  'every appendage in the breach must receive a concrete marine target');
+
+// An all-in hive must be able to see and route to survivors behind another
+// remembered gun line. Previously nearestBelievedHuman returned no target and
+// the entire rear mass idled at its carrier node.
+const allInSim = new Sim('all-in-routing-check');
+for (const agent of allInSim.agents) agent.dead = true;
+const allInFrom = allInSim.graph.nodes.find((node) =>
+  allInSim.graph.nodesWithin(node.idx, 2, ['std'], allInSim.hive.bigPass).length > 2);
+assert.ok(allInFrom, 'all-in fixture needs a route at least two rooms long');
+const allInTarget = allInSim.graph.nodesWithin(allInFrom.idx, 2, ['std'], allInSim.hive.bigPass)
+  .find((node) => allInSim.graph.hops(allInFrom.idx, node, ['std'], allInSim.hive.bigPass) === 2);
+assert.notEqual(allInTarget, undefined, 'all-in fixture needs a target behind an intermediate room');
+allInSim.hive.believedHumanStr.fill(0);
+allInSim.hive.believedHardness.fill(0);
+allInSim.hive.believedHumanStr[allInTarget] = 1;
+for (const { to } of allInSim.graph.neighbors(allInFrom.idx, ['std'], allInSim.hive.bigPass)) {
+  allInSim.hive.believedHardness[to] = 1;
+}
+assert.equal(allInSim.hive.nearestBelievedHuman(allInFrom.idx), -1,
+  'measured routing should still reject an intervening gun line');
+assert.equal(allInSim.hive.nearestAllInHuman(allInFrom.idx), allInTarget,
+  'all-in routing must retain the survivor behind that line as an objective');
+const allInForm = makeAgent(FACTION.COMBAT, allInFrom.idx, allInSim.graph);
+allInSim.spawn(allInForm);
+allInSim.hive.allIn = true;
+allInForm.task = { kind: TASK.ATTACK, node: allInTarget };
+updateFloodTick(allInSim, allInSim.dt);
+assert.ok(allInForm.path.length > 0,
+  'an all-in attack must take the direct breach route instead of idling');
+
+// If the hive's live contacts all go stale while the crew manifest still says
+// prey remains, its combat mass fans across the graph rather than guarding
+// empty carrier rooms. Different ids should naturally cover different nodes.
+const sweepSim = new Sim('all-in-sweep-check');
+for (const agent of sweepSim.agents) agent.dead = true;
+const sweepForms = Array.from({ length: 10 }, () => makeAgent(FACTION.COMBAT, sweepSim.graph.breachNode, sweepSim.graph));
+const sweepPods = Array.from({ length: 6 }, () => makeAgent(FACTION.INFECTION, sweepSim.graph.breachNode, sweepSim.graph));
+for (const form of sweepForms) sweepSim.spawn(form);
+for (const form of sweepPods) sweepSim.spawn(form);
+sweepSim.hive.opening = false;
+sweepSim.hive.allIn = true;
+sweepSim.hive.searchingAll = true;
+sweepSim.hive.posture = 'AGGRESSIVE';
+sweepSim.hive.believedHumanStr.fill(0);
+sweepSim.hive.believedHardness.fill(0);
+sweepSim._refreshOccupancy();
+sweepSim._computeInfluence();
+sweepSim.hive.steadyState(sweepPods, sweepForms, [], [], sweepPods.length, sweepForms.length, 5, 1);
+const sweeps = sweepForms.filter((form) => form.task?.kind === TASK.SCOUT && form.task.sweep);
+assert.equal(sweeps.length, sweepForms.length,
+  'an all-in hive without a contact must send every free combat form searching');
+assert.ok(new Set(sweeps.map((form) => form.task.node)).size > 1,
+  'the endgame search must fan out across the live graph instead of forming another pile');
+assert.ok(sweepPods.every((form) => form.task?.kind === TASK.SCOUT && form.task.sweep),
+  'free infection forms must join the shared coverage sweep instead of parking at a carrier');
+assert.ok(new Set(sweepPods.map((form) => form.task.node)).size > 1,
+  'infection-form coverage must distribute across the topology');
+
+// Contact decay erases a location, not the shared hive's knowledge that the
+// person remains unaccounted for. Deleting the whole record made hidden last
+// survivors cease to exist in the hive's decision model.
+const memorySim = new Sim('contact-memory-check');
+for (const agent of memorySim.agents) agent.dead = true;
+const hiddenMarine = makeAgent(FACTION.MARINE, memorySim.graph.nodes.at(-1).idx, memorySim.graph);
+memorySim.spawn(hiddenMarine);
+memorySim.hive.beliefs = new Map([[hiddenMarine.id,
+  { node: hiddenMarine.node, t: 0, conf: 0.051 }]]);
+memorySim.t = memorySim.P.sim.strategicTickSec;
+memorySim.hive.updateBeliefs();
+assert.equal(memorySim.hive.beliefs.has(hiddenMarine.id), true,
+  'a faded contact must retain the survivor identity');
+assert.equal(memorySim.hive.beliefs.get(hiddenMarine.id).conf, 0,
+  'a faded contact must stop contributing a guessed position');
+assert.equal(memorySim.hive.believedHumanStr.reduce((sum, value) => sum + value, 0), 0,
+  'an unknown survivor must not leak ground-truth location into tactical beliefs');
+
+// A grand stair is one open volume. Its combat sightline works in both
+// directions, and traversal never gives an agent coordinates from one deck
+// while its logical room still belongs to another.
+const stairSim = new Sim('grand-stair-frame-check');
+for (const agent of stairSim.agents) agent.dead = true;
+assert.ok(stairSim.graph.stairwells.length, 'stair fixture needs a grand stairwell');
+const stair = stairSim.graph.stairwells[0];
+const upperMarine = makeAgent(FACTION.MARINE, stair.upper, stairSim.graph);
+const lowerForm = makeAgent(FACTION.COMBAT, stair.lower, stairSim.graph);
+stairSim.tickCount = 1;
+stairSim.t = stairSim.dt;
+stairSim.spawn(upperMarine);
+stairSim.spawn(lowerForm);
+stairSim._refreshOccupancy();
+assert.equal(stairSim.hasLineOfSight(upperMarine, lowerForm), true,
+  'the shared LOS wrapper must preserve the grand stair cross-deck sightline');
+assert.ok(stairSim.lineOfSightAgents(lowerForm, (agent) => agent === upperMarine).includes(upperMarine),
+  'cross-deck stair occupants must enter the cached combat candidate set');
+upperMarine.dead = true;
+lowerForm.dead = true;
+for (const [from, to] of [[stair.upper, stair.lower], [stair.lower, stair.upper]]) {
+  const walker = makeAgent(FACTION.COMBAT, from, stairSim.graph);
+  stairSim.spawn(walker);
+  stairSim.setPath(walker, [{ to, link: stair.edge, layer: 'std' }]);
+  stairSim._refreshOccupancy();
+  let ticks = 0;
+  while ((walker.move || walker.path.length) && ticks++ < 1000) {
+    stairSim._advanceMovement(stairSim.dt);
+    stairSim._refreshOccupancy();
+    assert.equal(stairSim.graph.node(walker.node).deck, walker.deck,
+      'a stair mover room and coordinate frame must always name the same deck');
+    const room = stairSim.graph.node(walker.pnode ?? walker.node);
+    assert.equal(room.deck, walker.deck, 'physical stair occupancy must stay on the active deck');
+  }
+  assert.ok(ticks < 1000, 'grand stair traversal must finish');
+  assert.equal(walker.node, to, 'grand stair traversal must land in its paired room');
+  walker.dead = true;
+}
 
 // LOS is allowed to cross more than one graph node. A marine detecting such a
 // target must enter FIGHT and actually fire through the aligned openings.

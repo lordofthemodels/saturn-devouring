@@ -203,9 +203,12 @@ export function updateFloodTick(sim, dt) {
         break;
 
       case TASK.ATTACK:
-        // no direct-route fallback on an assault: if the objective can't be
-        // reached without crossing a DIFFERENT gun line, the attack is off
-        moveToward(sim, a, t.node, (from, to) => hive.safeAssaultPath(from, to));
+        // A measured assault still routes around unrelated gun lines. All-in
+        // and forced breaches do the opposite: the whole point is to punch
+        // through the line that otherwise makes the survivors unreachable.
+        moveToward(sim, a, t.node, (from, to) => (t.force || hive.allIn
+          ? sim.graph.path(from, to, ['std'], hive.bigPass)
+          : hive.safeAssaultPath(from, to)));
         // Open aggression follows a visible body, not a room occupant list.
         // The movement layer owns the shared surge/retreat decision later in
         // this tick, so execution only keeps the objective current.

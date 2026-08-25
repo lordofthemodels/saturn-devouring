@@ -322,25 +322,43 @@ export class Sim {
 
   // Real-space perception shared by combat and behavior. Rooms remain the
   // pathfinding mesh, but they no longer decide who can see whom: any live
-  // body on the same deck inside the range and geometric sightline is a
-  // candidate, even across several aligned openings.
+  // body inside the range and geometric sightline is a candidate, even across
+  // several aligned openings or the grand stairwell's open two-storey volume.
+  agentDistance(a, b) {
+    const dx = b.x - a.x;
+    if (a.deck === b.deck) return Math.hypot(dx, b.y - a.y);
+    // Sim y includes a separate map band for each deck. Remove that drawing
+    // offset before measuring an open stairwell, then include the real storey
+    // height; otherwise the map's whitespace makes adjacent stair landings
+    // look hundreds of metres apart to sight and targeting.
+    const ay = a.y - this._bandC(a.deck);
+    const by = b.y - this._bandC(b.deck);
+    const dz = Math.abs(a.deck - b.deck) * this.graph.deckHeightM;
+    return Math.hypot(dx, by - ay, dz);
+  }
+
   hasLineOfSight(observer, target, rangeM = this.P.combat.sightM) {
     const from = observer.pnode ?? observer.node;
-    const range2 = rangeM * rangeM;
-    if (target.move?.hidden || target.deck !== observer.deck) return false;
-    const dx = target.x - observer.x, dy = target.y - observer.y;
-    if (dx * dx + dy * dy > range2) return false;
+    if (target.move?.hidden || this.agentDistance(observer, target) > rangeM) return false;
     const to = target.pnode ?? target.node;
     return this.losClear(observer.x, observer.y, from, target.x, target.y, to);
   }
 
   lineOfSightAgents(observer, predicate, rangeM = this.P.combat.sightM) {
-    const key = `${observer.id}:${rangeM}`;
+    const key = rangeM === this.P.combat.sightM ? observer.id : `${observer.id}:${rangeM}`;
     let visible = this._losAgentCache.get(key);
     if (!visible) {
       visible = [];
       for (const target of this._deckAgents[observer.deck] ?? []) {
         if (target !== observer && this.hasLineOfSight(observer, target, rangeM)) visible.push(target);
+      }
+      const from = observer.pnode ?? observer.node;
+      for (const stair of this.graph.stairwells) {
+        const other = from === stair.upper ? stair.lower : from === stair.lower ? stair.upper : -1;
+        if (other === -1) continue;
+        for (const target of this._occ[other] ?? []) {
+          if (target !== observer && this.hasLineOfSight(observer, target, rangeM)) visible.push(target);
+        }
       }
       this._losAgentCache.set(key, visible);
     }
@@ -841,6 +859,16 @@ export class Sim {
     return true;
   }
 
+  _interruptMove(a) {
+    if (a.move?.link?.occupiedBy === a.id) a.move.link.occupiedBy = undefined;
+    const node = a.pnode ?? a.node;
+    const room = this.graph.node(node);
+    a.move = null;
+    a.path = [];
+    a.node = node;
+    a.deck = room.deck;
+  }
+
   // ======================= main tick =======================
   tick() {
     const dt = this.dt;
@@ -875,6 +903,10 @@ export class Sim {
     if (halfRound === 0) {
       this._computeInfluence();
       this.hive.strategicTick();
+      // Strategic planning can replace a tactical task after evade observed
+      // contact. Let the movement pass broadcast the live response again;
+      // pack geometry and LOS remain valid, only the issued order changed.
+      this.hive._combatResponseCache?.clear();
       this._commandTick();
       this._checkSelfArming();
       // BEFORE the fall-back check (user: the seal should release "just before
@@ -1179,6 +1211,7 @@ export class Sim {
   _refreshOccupancy() {
     const g = this.graph;
     this._losAgentCache.clear();
+    if (this.hive) this.hive._combatCacheTick = -1;
     for (const agents of Object.values(this._deckAgents)) agents.length = 0;
     // persistent per-node arrays, cleared in place (swarm finding: the old
     // Array.from(...() => []) allocated ~1,900 throwaway arrays a second)
@@ -1504,7 +1537,10 @@ export class Sim {
             // ON THE SWITCHBACK: A → mid landing → B, in the UPPER room's frame.
             // deck = upper for the ride (the well is one two-storey volume) so
             // groundHeightAt walks the feet down the treads.
-            if (a.deck !== upper.deck) a.deck = upper.deck;
+            if (a.deck !== upper.deck) {
+              a.deck = upper.deck;
+              a.node = upper.idx;
+            }
             const kk = (k - appT) / Math.max(1e-6, handT - appT);
             if (kk < 0.5) { const u = kk / 0.5; a.x = A.x + (wp.mid.x - A.x) * u; a.y = A.y + (wp.mid.y - A.y) * u; }
             else { const u = (kk - 0.5) / 0.5; a.x = wp.mid.x + (B.x - wp.mid.x) * u; a.y = wp.mid.y + (B.y - wp.mid.y) * u; }
@@ -1746,8 +1782,10 @@ export class Sim {
         // lore: a combat form closing on prey doesn't walk — it CHARGES,
         // sprinting/leaping the last stretch (renderers get FLAG.CHARGING)
         a.charging = false;
+        const surging = a.faction === FACTION.COMBAT && a.task?.kind === TASK.ATTACK
+          && a.task.surge && a.dragging === -1 && link.kind === 'std';
         if (a.faction === FACTION.COMBAT && a.dragging === -1 && link.kind === 'std'
-          && this._occ[step.to].some((h) => isLivingHuman(h))) {
+          && (surging || this._occ[step.to].some((h) => isLivingHuman(h)))) {
           mult *= this.P.speed.chargeMult;
           a.charging = true;
         }
@@ -1767,7 +1805,8 @@ export class Sim {
         // overwhelm is untouched; only the transit silhouette changes. The crew
         // keep their tight ±1% file.
         const paceHash = ((a.id * 2654435761) >>> 0) / 4294967296;
-        const pace = (a.faction === FACTION.INFECTION || a.faction === FACTION.COMBAT)
+        const pace = surging ? 1
+          : (a.faction === FACTION.INFECTION || a.faction === FACTION.COMBAT)
           ? 1 + (paceHash - 0.5) * 0.5
           : 1 + ((a.id % 7) - 3) * 0.012;
         // sx/sy: the leg starts from where the body ACTUALLY stands (user
@@ -1911,8 +1950,9 @@ export class Sim {
       // A chosen retreat is one uninterrupted action. It does not turn around
       // because the leading marine briefly crosses the threshold, and it does
       // not stop to pounce him; a blocked route converts it to cornered attack
-      // in the movement pass instead.
-      if (this.hive.isRetreating(a)) return false;
+      // in the movement pass instead. Incoming fire is the one reason to ask
+      // the hive again: reinforcements may have joined and changed the odds.
+      if (this.hive.isRetreating(a) && !shotAt) return false;
       // Rooted forms stay rooted. Scripted bait keeps its role until somebody
       // actually hits it; incoming fire promotes every other posture to the
       // same surge decision below.
@@ -1920,10 +1960,14 @@ export class Sim {
         || (!shotAt && (k === TASK.DECOY || k === TASK.BAIT || k === TASK.DART))) return false;
 
       const source = shotAt ? this.byId.get(a.lastHurtBy) : null;
-      let best = this.hive.visibleHumanTarget(a, source?.id ?? -1);
+      const ordered = a.task?.surge && a.task.targetId !== undefined
+        ? this.byId.get(a.task.targetId) : null;
+      let best = this.hive.nearestCombatTarget(a);
       // A landed round reveals its source for the short aggression window even
       // if the shooter has just side-stepped behind the edge of the opening.
-      if (!best && source && !source.dead && source.hp > 0 && source.deck === a.deck) best = source;
+      // The shared task carries that revelation to packmates following behind.
+      if (!best && source && !source.dead && source.hp > 0) best = source;
+      if (!best && ordered && !ordered.dead && ordered.hp > 0) best = ordered;
       if (!best) {
         a.chargeTargetId = -1;
         if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; a.charging = false; }
@@ -1931,10 +1975,27 @@ export class Sim {
       }
 
       const provoked = shotAt || !!a.task?.surge;
-      if (!this.hive.engageOrRetreat(a, best, provoked)) return false;
-      const bestD = Math.hypot(best.x - a.x, best.y - a.y);
+      if (!this.hive.respondToCombat(a, best, provoked)) return false;
+      best = this.byId.get(a.task?.targetId) ?? best;
+      if (!best || best.dead || best.hp <= 0) return false;
+      const bestD = this.agentDistance(a, best);
       const targetNode = best.pnode ?? best.node;
       if (targetNode !== pn) {
+        // Direct contact invalidates a queued strategic destination. Re-anchor
+        // at the room the body physically occupies before plotting the chase;
+        // otherwise it finishes walking to an obsolete parking slot while the
+        // marine it can see keeps shooting it.
+        // Preserve a leg that already leads to this same target. Cancelling it
+        // unconditionally recreated the identical doorway move every tick,
+        // pinning its progress at zero forever while the form appeared to run
+        // in place under fire.
+        const moveGoal = a.move ? (a.path.at(-1)?.to ?? a.move.to) : -1;
+        if (a.move && moveGoal === targetNode) {
+          a.charging = true;
+          a.state = STATE.MOVE;
+          return false;
+        }
+        if (a.move) this._interruptMove(a);
         // Graph pathing only answers how to reach a body already selected by
         // LOS. Locked doors remain breakable; infection-only vents do not.
         if (this.setPathTo(a, targetNode, ['std'], (l) => !l.locked)
