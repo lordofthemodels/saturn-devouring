@@ -1677,6 +1677,16 @@ export class Sim {
       if (a.path.length) {
         const step = a.path[0];
         const link = step.link;
+        // A queued graph step must begin at the room the previous leg reached.
+        // Tactical re-plans can happen mid-doorway; rejecting a disconnected
+        // edge here prevents any caller from turning that race into an illegal
+        // lift, ladder, or cross-deck traversal. The standing task will re-path
+        // from the correct node on its next execution tick.
+        const connectedTo = link.a === a.node ? link.b : link.b === a.node ? link.a : -1;
+        if (connectedTo !== step.to) {
+          a.path = [];
+          continue;
+        }
         // ground-truth passability check; the hive plans on a stale map (§6.1)
         let passable = true;
         if (link.kind === 'std' && link.locked) passable = false;

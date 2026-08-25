@@ -575,7 +575,12 @@ export class Hive {
   // the score; remembered danger and dead-end rooms break ties.
   retreatCombatForm(form, threatNode) {
     const sim = this.sim, g = sim.graph;
-    const from = form.pnode ?? form.node;
+    // A retreat replaces the current leg, not merely the queued steps after
+    // it. Keeping an old doorway leg while installing a route from its origin
+    // lets that leg finish on the far side, where the new first edge is no
+    // longer connected; the form then appears to jump onto a lift or ladder.
+    if (form.move) sim._interruptMove(form);
+    const from = form.node;
     const openEscape = (link, a, b) => {
       if (link.kind !== 'std' || link.locked) return false;
       if (g.burningUntil[b] > sim.t) return false;
@@ -1053,6 +1058,8 @@ export class Hive {
     for (let i = 0; i < targets.length; i++) {
       const node = targets[(form.id + i) % targets.length].idx;
       if (node === form.node) continue;
+      if (kind === 'infection' && (this.localThreat(node) > 1
+        || g.burningUntil[node] > this.sim.t)) continue;
       if (kind === 'combat' && !g.path(form.node, node, ['std'], this.bigPass)) continue;
       return node;
     }
@@ -1075,6 +1082,8 @@ export class Hive {
     const dens = this.denSites;
     const homeFor = (id) => dens[id % dens.length];
     const breachBodies = bodies.filter((b) => b.node === g.breachNode && !b.claimed);
+    const coverageTargets = g.nodes.slice().sort((a, b) =>
+      (sim.influence.floodStr[a.idx] - sim.influence.floodStr[b.idx]) || (a.idx - b.idx));
 
     // combat forms: haul breach bodies out to the dens as carrier food (one
     // per den), the rest screen their assigned den
@@ -1104,13 +1113,27 @@ export class Hive {
       if (f.task && f.task.kind !== TASK.MOVE) continue;
       const target = plan.get(f.id);
       if (target !== undefined) {
-        if (f.task?.node !== target) this.assign(f, { kind: TASK.MOVE, node: target, spread: true });
-        continue;
+        if (f.node !== target || f.move || f.path.length) {
+          if (f.task?.node !== target) this.assign(f, { kind: TASK.MOVE, node: target, spread: true });
+          continue;
+        }
+        // Reaching the frozen opening destination completes that assignment.
+        // Reissuing MOVE to the room already underfoot made the pod a permanent
+        // sentry there; clear it so the coverage fallback chooses another room.
+        if (f.task?.kind === TASK.MOVE) f.task = null;
       }
       // a form staying for the larder: grab anything completable in time
       if (!f.task) {
         const grab = this.bestGrab(f, 0.6, timeLeft);
         if (grab) this.assign(f, grab);
+        else {
+          // The opening spread is intentionally frozen, but carriers create
+          // new ids after it is built. Those newborn pods still need orders;
+          // nearby bodies override SCOUT in floodExec, while every spare fans
+          // out through a quiet grate instead of circling the nursery.
+          const sweep = this.sweepTarget(f, coverageTargets, 'infection');
+          if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
+        }
       }
     }
 
@@ -1200,10 +1223,9 @@ export class Hive {
     // Sorted once per strategic round. If all confident contacts disappear,
     // form ids fan the combat mass across the least occupied live graph nodes;
     // no room names or authored search route are involved.
-    const sweepTargets = this.allIn
-      ? g.nodes.slice().sort((a, b) => (sim.influence.floodStr[a.idx] - sim.influence.floodStr[b.idx])
-        || (a.idx - b.idx))
-      : [];
+    const coverageTargets = g.nodes.slice().sort((a, b) =>
+      (sim.influence.floodStr[a.idx] - sim.influence.floodStr[b.idx]) || (a.idx - b.idx));
+    const sweepTargets = this.allIn ? coverageTargets : [];
 
     // 1. AGGRESSION IS LOCAL (user note): each region decides hide-vs-rampage
     //    on its OWN situation, independent of the global pool. A pocket of
@@ -1629,7 +1651,9 @@ export class Hive {
         if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
         continue;
       }
-      // search (§13.7): only a rich hive can afford to look
+      // A rich pool searches aggressively. Smaller nurseries still send every
+      // spare pod through the safe vent network: holding a ring of idle forms
+      // beside a carrier neither protects it nor finds another host.
       if (I >= P.hive.searchMinPool && sim.rng.chance(0.3)) {
         // sweep everywhere, command deck included — the survivors hide in
         // rooms (§13.7: only a rich hive can afford to look)
@@ -1643,14 +1667,8 @@ export class Hive {
       if (rally !== -1 && f.node !== rally) {
         this.assign(f, { kind: TASK.MOVE, node: rally, rally: true });
       } else {
-        // why: a stale belief in the pod's current room is not an actionable
-        // destination. Fall back to the living production line, or the den
-        // that seeded it, instead of waiting indefinitely in an empty room.
-        const home = carriers.length ? carriers[f.id % carriers.length].node : this.carrierSite;
-        if (home !== -1) {
-          const stage = this.scatterNode(home, f.id, 'infection');
-          if (f.node !== stage) this.assign(f, { kind: TASK.MOVE, node: stage, rally: true });
-        }
+        const sweep = this.sweepTarget(f, coverageTargets, 'infection');
+        if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
       }
     }
 
