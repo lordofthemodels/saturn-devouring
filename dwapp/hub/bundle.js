@@ -71835,7 +71835,8 @@ var init_hive = __esm({
       // the score; remembered danger and dead-end rooms break ties.
       retreatCombatForm(form, threatNode) {
         const sim2 = this.sim, g2 = sim2.graph;
-        const from = form.pnode ?? form.node;
+        if (form.move) sim2._interruptMove(form);
+        const from = form.node;
         const openEscape = (link, a2, b2) => {
           if (link.kind !== "std" || link.locked) return false;
           if (g2.burningUntil[b2] > sim2.t) return false;
@@ -72217,6 +72218,7 @@ var init_hive = __esm({
         for (let i2 = 0; i2 < targets.length; i2++) {
           const node = targets[(form.id + i2) % targets.length].idx;
           if (node === form.node) continue;
+          if (kind === "infection" && (this.localThreat(node) > 1 || g2.burningUntil[node] > this.sim.t)) continue;
           if (kind === "combat" && !g2.path(form.node, node, ["std"], this.bigPass)) continue;
           return node;
         }
@@ -72237,6 +72239,7 @@ var init_hive = __esm({
         const dens = this.denSites;
         const homeFor = (id) => dens[id % dens.length];
         const breachBodies = bodies.filter((b2) => b2.node === g2.breachNode && !b2.claimed);
+        const coverageTargets = g2.nodes.slice().sort((a2, b2) => sim2.influence.floodStr[a2.idx] - sim2.influence.floodStr[b2.idx] || a2.idx - b2.idx);
         let draggers = combat.filter((c2) => c2.task?.kind === TASK.DRAG).length;
         for (const c2 of combat) {
           if (c2.task && c2.task.kind !== TASK.GUARD) continue;
@@ -72256,12 +72259,19 @@ var init_hive = __esm({
           if (f2.task && f2.task.kind !== TASK.MOVE) continue;
           const target = plan.get(f2.id);
           if (target !== void 0) {
-            if (f2.task?.node !== target) this.assign(f2, { kind: TASK.MOVE, node: target, spread: true });
-            continue;
+            if (f2.node !== target || f2.move || f2.path.length) {
+              if (f2.task?.node !== target) this.assign(f2, { kind: TASK.MOVE, node: target, spread: true });
+              continue;
+            }
+            if (f2.task?.kind === TASK.MOVE) f2.task = null;
           }
           if (!f2.task) {
             const grab = this.bestGrab(f2, 0.6, timeLeft);
             if (grab) this.assign(f2, grab);
+            else {
+              const sweep = this.sweepTarget(f2, coverageTargets, "infection");
+              if (sweep !== -1) this.assign(f2, { kind: TASK.SCOUT, node: sweep, sweep: true });
+            }
           }
         }
         if (!this.decoySent && combat.length >= 3) {
@@ -72335,7 +72345,8 @@ var init_hive = __esm({
       steadyState(infection, combat, carriers, bodies, I2, C2, K2, S2) {
         const sim2 = this.sim, g2 = sim2.graph, P2 = sim2.P;
         const riskAversion = P2.hive.riskBase * S2;
-        const sweepTargets = this.allIn ? g2.nodes.slice().sort((a2, b2) => sim2.influence.floodStr[a2.idx] - sim2.influence.floodStr[b2.idx] || a2.idx - b2.idx) : [];
+        const coverageTargets = g2.nodes.slice().sort((a2, b2) => sim2.influence.floodStr[a2.idx] - sim2.influence.floodStr[b2.idx] || a2.idx - b2.idx);
+        const sweepTargets = this.allIn ? coverageTargets : [];
         const rampaging = /* @__PURE__ */ new Set();
         if (this.posture === "AGGRESSIVE") for (const n2 of g2.nodes) {
           const region = g2.nodesWithin(n2.idx, 1, ["std"], () => true);
@@ -72596,11 +72607,8 @@ var init_hive = __esm({
           if (rally !== -1 && f2.node !== rally) {
             this.assign(f2, { kind: TASK.MOVE, node: rally, rally: true });
           } else {
-            const home = carriers.length ? carriers[f2.id % carriers.length].node : this.carrierSite;
-            if (home !== -1) {
-              const stage = this.scatterNode(home, f2.id, "infection");
-              if (f2.node !== stage) this.assign(f2, { kind: TASK.MOVE, node: stage, rally: true });
-            }
+            const sweep = this.sweepTarget(f2, coverageTargets, "infection");
+            if (sweep !== -1) this.assign(f2, { kind: TASK.SCOUT, node: sweep, sweep: true });
           }
         }
         {
@@ -75617,6 +75625,11 @@ var init_sim = __esm({
           if (a2.path.length) {
             const step3 = a2.path[0];
             const link = step3.link;
+            const connectedTo = link.a === a2.node ? link.b : link.b === a2.node ? link.a : -1;
+            if (connectedTo !== step3.to) {
+              a2.path = [];
+              continue;
+            }
             let passable = true;
             if (link.kind === "std" && link.locked) passable = false;
             if (link.kind === "vent" && link.blocked) passable = false;

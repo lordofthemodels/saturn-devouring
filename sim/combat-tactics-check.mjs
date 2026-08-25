@@ -58,6 +58,26 @@ assert.equal(attacker.task.kind, TASK.ATTACK, 'a cornered form must attack');
 assert.equal(attacker.task.force, true, 'the cornered attack must bypass the odds gate');
 for (const [edge, locked] of originalLocks) edge.locked = locked;
 
+// A retreat issued during a doorway leg must replace that leg. Otherwise the
+// old crossing lands first and the new path begins with an edge connected to
+// the room left behind, which lets the form traverse an unrelated lift.
+attacker.task = { kind: TASK.ATTACK, node: link.b };
+attacker.node = attacker.pnode = link.a;
+attacker.deck = sim.graph.node(link.a).deck;
+attacker.x = sim.graph.node(link.a).x;
+attacker.y = sim.graph.node(link.a).y;
+attacker.path = [];
+attacker.move = { from: link.a, to: link.b, link, layer: 'std', t: 0.25, travelSec: 1 };
+assert.equal(sim.hive.retreatCombatForm(attacker, link.b), true,
+  'a mid-doorway form must still find its connected escape');
+assert.equal(attacker.move, null, 'retreat must cancel the superseded doorway leg');
+let routeNode = attacker.node;
+for (const step of attacker.path) {
+  const next = step.link.a === routeNode ? step.link.b : step.link.b === routeNode ? step.link.a : -1;
+  assert.equal(next, step.to, 'every retreat edge must connect to the preceding room');
+  routeNode = step.to;
+}
+
 forms[1].dead = false;
 forms[2].dead = false;
 sim._refreshOccupancy();
