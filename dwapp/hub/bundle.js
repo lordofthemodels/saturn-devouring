@@ -70282,6 +70282,7 @@ function makeAgent(kind, node, graph) {
     nextShotAt: void 0,
     nextSwingAt: void 0,
     meleeUntil: void 0,
+    fireTargetId: void 0,
     nextHostShotAt: void 0,
     _sawThreatT: void 0,
     _reactUntil: void 0,
@@ -71686,6 +71687,21 @@ var init_hive = __esm({
         }
         return h2;
       }
+      // A live doorway check for combat forms. Strategic beliefs decide where to
+      // muster, but bodies can move between rounds; the last step into the room
+      // must still satisfy the same 3:1 doctrine against the guns actually there.
+      canPressCombatRoom(from, to, forced = false) {
+        if (forced || this.allIn) return true;
+        let defense = 0;
+        for (const h2 of this.sim.occupants(to)) {
+          if (h2.dead || h2.hp <= 0) continue;
+          if (h2.faction === FACTION.MARINE) defense += 1;
+          else if (h2.faction === FACTION.ARMED) defense += 0.6;
+        }
+        if (defense === 0) return true;
+        const strength = this.sim.floodStrengthAt(from) + (to === from ? 0 : this.sim.floodStrengthAt(to));
+        return strength >= defense * this.sim.P.swarm.killRatio;
+      }
       // ======================= strategic tick =======================
       strategicTick() {
         const sim2 = this.sim;
@@ -72217,7 +72233,7 @@ var init_hive = __esm({
             const stagedSince = this._musterStart.get(target);
             if (stagedSince !== void 0 && sim2.t - stagedSince > 75 && arrived >= Math.max(3, needed * 0.6)) {
               this._musterStart.delete(target);
-              for (const f2 of forms) this.assign(f2, { kind: TASK.ATTACK, node: target });
+              for (const f2 of forms) this.assign(f2, { kind: TASK.ATTACK, node: target, force: true });
               sim2.log("rampage", `the hive tires of waiting — ${forms.length} forms storm ${g2.node(target).name}`);
               continue;
             }
@@ -72849,14 +72865,7 @@ function updateFloodTick(sim2, dt) {
           }
           if (preyNode === -1) a2.task = null;
           else if (preyNode !== a2.node) {
-            let def = 0;
-            for (const h2 of sim2.occupants(preyNode)) {
-              if (h2.hp <= 0 || h2.dead) continue;
-              if (h2.faction === FACTION.MARINE) def += 1;
-              else if (h2.faction === FACTION.ARMED) def += 0.6;
-            }
-            const local = sim2.floodStrengthAt(a2.node) + sim2.floodStrengthAt(preyNode);
-            if (def === 0 || hive.allIn || local >= def * sim2.P.swarm.killRatio) t2.node = preyNode;
+            if (hive.canPressCombatRoom(a2.node, preyNode, t2.force)) t2.node = preyNode;
           }
         }
         break;
@@ -75343,6 +75352,12 @@ var init_sim = __esm({
               a2.path = [];
               continue;
             }
+            if (a2.faction === FACTION.COMBAT && link.kind === "std" && a2.task?.kind !== TASK.DART && !this.hive.canPressCombatRoom(a2.node, step3.to, a2.task?.force)) {
+              a2.path = [];
+              a2.charging = false;
+              if (a2.task?.kind === TASK.ATTACK) a2.task.node = a2.node;
+              continue;
+            }
             const committedInto = a2.faction === FACTION.INFECTION && this._committedInfectNode(a2) === step3.to;
             if (a2.faction === FACTION.INFECTION && !committedInto && link.kind === "std" && (this.hive.lastScarcity ?? 3) > 0.8 && (a2.doorBalks = (a2.doorBalks ?? 0) + 1) <= 12 && this._occ[step3.to].some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED))) {
               a2.path = [];
@@ -75540,7 +75555,7 @@ var init_sim = __esm({
                 const src = this.byId.get(a2.lastHurtBy);
                 if (src && !src.dead && src.hp > 0 && src.deck === a2.deck) pn2 = src.pnode ?? src.node;
               }
-              if (pn2 >= 0 && (this.setPathTo(a2, pn2, ["std"], (l2) => !l2.locked) || this.setPathTo(a2, pn2, ["std"], (l2) => l2.kind === "std" && !l2.armorySeal))) {
+              if (pn2 >= 0 && this.hive.canPressCombatRoom(pn, pn2, a2.task?.force) && (this.setPathTo(a2, pn2, ["std"], (l2) => !l2.locked) || this.setPathTo(a2, pn2, ["std"], (l2) => l2.kind === "std" && !l2.armorySeal))) {
                 a2.charging = true;
                 a2.state = STATE.MOVE;
                 return false;

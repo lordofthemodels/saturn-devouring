@@ -277,16 +277,7 @@ export function updateFloodTick(sim, dt) {
           }
           if (preyNode === -1) a.task = null;
           else if (preyNode !== a.node) {
-            // muster rule (user): never press into defenders you don't
-            // outnumber ~2:1 — hold at the doorway; reinforcements gather
-            let def = 0;
-            for (const h of sim.occupants(preyNode)) {
-              if (h.hp <= 0 || h.dead) continue;
-              if (h.faction === FACTION.MARINE) def += 1;
-              else if (h.faction === FACTION.ARMED) def += 0.6;
-            }
-            const local = sim.floodStrengthAt(a.node) + sim.floodStrengthAt(preyNode);
-            if (def === 0 || hive.allIn || local >= def * sim.P.swarm.killRatio) t.node = preyNode; // go
+            if (hive.canPressCombatRoom(a.node, preyNode, t.force)) t.node = preyNode;
             // else hold — the pack builds up here until the odds are right
           }
         }

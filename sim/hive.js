@@ -408,6 +408,23 @@ export class Hive {
     return h;
   }
 
+  // A live doorway check for combat forms. Strategic beliefs decide where to
+  // muster, but bodies can move between rounds; the last step into the room
+  // must still satisfy the same 3:1 doctrine against the guns actually there.
+  canPressCombatRoom(from, to, forced = false) {
+    if (forced || this.allIn) return true;
+    let defense = 0;
+    for (const h of this.sim.occupants(to)) {
+      if (h.dead || h.hp <= 0) continue;
+      if (h.faction === FACTION.MARINE) defense += 1;
+      else if (h.faction === FACTION.ARMED) defense += 0.6;
+    }
+    if (defense === 0) return true;
+    const strength = this.sim.floodStrengthAt(from)
+      + (to === from ? 0 : this.sim.floodStrengthAt(to));
+    return strength >= defense * this.sim.P.swarm.killRatio;
+  }
+
   // ======================= strategic tick =======================
   strategicTick() {
     const sim = this.sim;
@@ -1136,7 +1153,7 @@ export class Hive {
         if (stagedSince !== undefined && sim.t - stagedSince > 75
           && arrived >= Math.max(3, needed * 0.6)) {
           this._musterStart.delete(target);
-          for (const f of forms) this.assign(f, { kind: TASK.ATTACK, node: target });
+          for (const f of forms) this.assign(f, { kind: TASK.ATTACK, node: target, force: true });
           sim.log('rampage', `the hive tires of waiting — ${forms.length} forms storm ${g.node(target).name}`);
           continue;
         }
