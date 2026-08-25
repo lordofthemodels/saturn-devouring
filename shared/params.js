@@ -52,7 +52,7 @@ export const PARAMS = {
   // carrier and only spill out when it RUPTURES — under fire, or at the top
   // limit. Gestation starts the moment the carrier forms.
   carrier: {
-    incubationIntervalSec: 9.75, // -35% (user tuning): production runs hotter
+    incubationIntervalSec: 7.3125, // faster gestation makes a protected carrier snowball sooner
     firstIncubationSec: 3.9,     // first form seats quickly (-35%)
     maxInfectionForms: 8,      // top limit — the skin can't hold more; it ruptures
     seekOrExplodeFraction: 0.85, // near-full: waddle toward prey so the pop lands on someone
