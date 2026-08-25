@@ -848,7 +848,8 @@ export class Hive {
     for (const den of dens) {
       if (this.localThreat(den) >= 0.6) continue;
       const feed = bodies.find((b) => b.node === den && !b.claimed);
-      const former = infection.find((f) => f.node === den && (!f.task || f.task.kind === TASK.MOVE));
+      const former = infection.find((f) => f.node === den && !f.move && !f.path.length
+        && (!f.task || f.task.kind === TASK.MOVE));
       if (feed && former && combat.length < 4) { feed.claimed = true; this.assign(former, { kind: TASK.CONVERT, corpseId: feed.id }); }
     }
   }
@@ -1151,8 +1152,8 @@ export class Hive {
             && d.downed && d.damage < 100 && !d.claimed
             && !sim.occupants(d.pnode ?? d.node).some((h) => h.hp > 0 && !h.dead
               && (h.faction === FACTION.MARINE || h.faction === FACTION.ARMED)));
-          const medics = infection.filter((f) => !f.task
-            || f.task.kind === TASK.MOVE || f.task.kind === TASK.SCOUT);
+          const medics = infection.filter((f) => !f.move && !f.path.length
+            && (!f.task || f.task.kind === TASK.MOVE || f.task.kind === TASK.SCOUT));
           if (raisable.length > 0) {
             // the numbers ARE within reach (they're lying on the deck) — this
             // is not a breeding emergency, it's a recovery operation
@@ -1223,7 +1224,10 @@ export class Hive {
     //    corpse on the ship is a guaranteed combat form, and the combat force
     //    is what fills the musters and roots into carriers.
     for (const f of infection) {
-      if (f.task) continue;
+      // why: a task can become invalid mid-crawl while its old vent move is
+      // still finishing. Claiming a new body then makes the pod emerge from
+      // the wrong grate before doubling back; finish the physical leg first.
+      if (f.task || f.move || f.path.length) continue;
       // LOW-HANGING CORPSES FIRST (user rule): the ship is littered with
       // bodies and every SAFE one is a guaranteed combat form — multiplying
       // always beats hunting or marching on guns. The muster is built from
@@ -1277,8 +1281,15 @@ export class Hive {
       const rally = this.nearestFoodNode(f);
       if (rally !== -1 && f.node !== rally) {
         this.assign(f, { kind: TASK.MOVE, node: rally, rally: true });
-      } else if (rally === -1 && carriers.length) {
-        this.assign(f, { kind: TASK.MOVE, node: this.scatterNode(carriers[f.id % carriers.length].node, f.id, 'infection') });
+      } else {
+        // why: a stale belief in the pod's current room is not an actionable
+        // destination. Fall back to the living production line, or the den
+        // that seeded it, instead of waiting indefinitely in an empty room.
+        const home = carriers.length ? carriers[f.id % carriers.length].node : this.carrierSite;
+        if (home !== -1) {
+          const stage = this.scatterNode(home, f.id, 'infection');
+          if (f.node !== stage) this.assign(f, { kind: TASK.MOVE, node: stage, rally: true });
+        }
       }
     }
 
@@ -1519,7 +1530,8 @@ export class Hive {
     let best = -1, bestD = Infinity;
     for (const b of sim.agents) {
       if (b.dead || b.faction !== FACTION.CORPSE || b.damage >= 100) continue;
-      if (this.believedHardness[b.node] > 0.15) continue; // pods never near marines
+      if (b.claimed) continue;
+      if (this.believedHardness[b.node] > 0.15 || this.localThreat(b.node) > 1.2) continue;
       const d = this.infectionHops(form.node, b.node);
       if (d < bestD) { bestD = d; best = b.node; }
     }
@@ -1527,6 +1539,9 @@ export class Hive {
       const h = sim.byId.get(id);
       if (!h || h.dead || h.hp <= 0 || h.faction === FACTION.MARINE || bel.conf < 0.3) continue;
       if (this.believedHardness[bel.node] > 0.15) continue;
+      // why: arriving at an old contact's room already disproved that belief;
+      // returning the current node here strands the pod until the memory fades.
+      if (bel.node === form.node && (h.pnode ?? h.node) !== form.node) continue;
       const d = this.infectionHops(form.node, bel.node);
       if (d < bestD) { bestD = d; best = bel.node; }
     }

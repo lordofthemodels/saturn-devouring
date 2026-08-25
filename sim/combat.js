@@ -15,6 +15,21 @@ function marksman01(id) {
   return (h >>> 0) / 0xffffffff;
 }
 
+// Keep a shooter on the closest target it already acquired. A different form
+// only earns the retarget when it is physically closer; equal range does not
+// make aim flicker between bodies from one shot to the next.
+export function selectRifleTarget(currentId, candidates) {
+  let current = null, nearest = null;
+  for (const candidate of candidates) {
+    if (candidate.target.id === currentId) current = candidate;
+    if (!nearest || candidate.range < nearest.range - 1e-9
+      || (Math.abs(candidate.range - nearest.range) <= 1e-9
+        && candidate.target.id < nearest.target.id)) nearest = candidate;
+  }
+  if (!current || (nearest && nearest.range < current.range - 1e-9)) return nearest;
+  return current;
+}
+
 // how far a shooter can ACQUIRE a target in this room's light (user: no more
 // wall-to-wall instant fire lanes down long dark hallways)
 export function sightRangeAt(sim, node) {
@@ -226,12 +241,8 @@ export function resolveCombat(sim, dt) {
       // shots on its own cadence and ROLLS to hit — accuracy drops past
       // rifleFalloffM (a sprinting form in a dark ship is a hard target).
       // Deterministic: cadence is sim-time, rolls come from the seeded RNG,
-      // so lockstep multiplayer holds. Nearest combat form first; a carrier
-      // only draws fire when no combat form is standing.
-      // pods are RIFLE TARGETS too (user report: marines couldn't touch a
-      // form in transit at all — pods only ever died to point-blank stomps).
-      // They rank behind combat forms (the bigger threat draws the fire),
-      // ahead of carriers, and they're small fast targets: accuracy penalty.
+      // so lockstep multiplayer holds. Every Flood body is ranked by its real
+      // distance from this shooter; target type never overrides proximity.
       // sight-limited engagement (user: marines lasered a form the instant it
       // entered a 40m dark hallway) — a shooter can only acquire inside the
       // room's light-dependent sight range; the flood needs no light
@@ -248,26 +259,24 @@ export function resolveCombat(sim, dt) {
       for (const s of shooters) {
         if (s === flamer) continue;
         if (sim.t < (s.nextShotAt ?? 0)) continue;
-        let best = null, bestD = Infinity, bestRange = 0;
+        const candidates = [];
         for (const t of [...targets, ...infForms]) {
           if (t.hp <= 0 || t.dead) continue;
           const rd = Math.hypot(t.x - s.x, t.y - s.y);
           if (rd > sight) continue; // out in the dark — can't see it to shoot it
-          const bias = t.faction === FACTION.CARRIER ? 1000 : t.faction === FACTION.INFECTION ? 500 : 0;
-          const d = rd + bias;
-          if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && t.id < (best?.id ?? Infinity))) { bestD = d; best = t; bestRange = rd; }
+          candidates.push({ target: t, range: rd });
         }
         for (const t of adjFlood) {
           if (t.hp <= 0 || t.dead) continue;
           const rd = Math.hypot(t.x - s.x, t.y - s.y);
           if (rd > t._losSight) continue; // the target's room's light gates it
-          const bias = (t.faction === FACTION.CARRIER ? 1000 : t.faction === FACTION.INFECTION ? 500 : 0) + 60;
-          const d = rd + bias; // +60: same-room threats always take priority
-          if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && t.id < (best?.id ?? Infinity))) {
-            if (!sim.losClear(s.x, s.y, s.pnode ?? s.node, t.x, t.y, t.pnode ?? t.node)) continue;
-            bestD = d; best = t; bestRange = rd;
-          }
+          if (!sim.losClear(s.x, s.y, s.pnode ?? s.node, t.x, t.y, t.pnode ?? t.node)) continue;
+          candidates.push({ target: t, range: rd });
         }
+        const selected = selectRifleTarget(s.fireTargetId, candidates);
+        const best = selected?.target ?? null;
+        const bestRange = selected?.range ?? 0;
+        s.fireTargetId = best?.id;
         if (!best) continue; // sight ranges differ per shooter position — keep checking the rest
         // STAGGERED REACTION (user: every marine opened up the same instant,
         // like one organism): a FRESH acquisition — nothing in sight for the
@@ -525,22 +534,23 @@ export function resolveCombat(sim, dt) {
       if (!shooters.length) continue;
       const gn = sim.graph.node(gunNode);
       const targets = sim.occupants(floodNode).filter((a) => !a.dead && a.hp > 0 && !a.downed &&
-        (a.faction === FACTION.COMBAT || a.faction === FACTION.CARRIER));
+        (a.faction === FACTION.COMBAT || a.faction === FACTION.CARRIER || a.faction === FACTION.INFECTION));
       if (!targets.length) continue;
       sim.gunfireAt(gunNode);
       for (const sh of shooters) {
         if (sim.t < (sh.nextShotAt ?? 0)) continue;
         // nearest live target (in the deck plane; the storey drop is the same
         // for all, so it just pushes everything past rifleFalloffM -> accFar)
-        let best = null, bestD = Infinity;
-        for (const t of targets) {
-          const d = Math.hypot(t.x - sh.x, t.y - sh.y) + (t.faction === FACTION.CARRIER ? 1000 : 0);
-          if (d < bestD - 1e-9 || (Math.abs(d - bestD) <= 1e-9 && t.id < (best?.id ?? Infinity))) { bestD = d; best = t; }
-        }
+        const selected = selectRifleTarget(sh.fireTargetId, targets.map((target) => ({
+          target, range: Math.hypot(target.x - sh.x, target.y - sh.y),
+        })));
+        const best = selected?.target ?? null;
+        sh.fireTargetId = best?.id;
         if (!best) break;
         const gun = sh.faction === FACTION.MARINE ? P.combat.marine.gun : P.combat.armed.gun;
         sh.nextShotAt = sim.t + 1 / gun.rof;
         let acc = gun.accFar; // always the long cross-level shot
+        if (best.faction === FACTION.INFECTION) acc *= P.combat.podAccMult;
         if (sim.darkAt(gunNode) || sim.darkAt(floodNode)) acc *= P.darkness.darkAccMult;
         if (sim.fogAt(gunNode) || sim.fogAt(floodNode)) acc *= P.darkness.fogAccMult;
         if (sim.rng.chance(acc)) hurtFloodForm(sim, best, gun.dmg, false, sh.id);
