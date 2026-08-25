@@ -1567,7 +1567,11 @@ export class Sim {
             a.move.hidden = false;
           } else if (k > 1 - exitT) {
             const kk = exitT > 1e-6 ? (k - (1 - exitT)) / exitT : 1;
-            const tx = a.move.tx ?? to.x, ty = a.move.ty ?? to.y;
+            // why: corpses can still slide while the pod is hidden in the
+            // duct. Refresh the committed arrival every exit tick so it
+            // follows the body, not the spot where that body used to be.
+            const [tx, ty] = this._moveArrivalPoint(a, to);
+            a.move.tx = tx; a.move.ty = ty;
             a.x = eToX + (tx - eToX) * kk;
             a.y = eToY + (ty - eToY) * kk;
             a.heading = Math.atan2(ty - eToY, tx - eToX);
@@ -1818,7 +1822,7 @@ export class Sim {
           const fromN = this.graph.node(a.node), toN = this.graph.node(step.to);
           const eFrom = (a.node === link.a ? link.doorA : link.doorB) ?? link.door ?? { x: fromN.x, y: fromN.y };
           const eTo = (a.node === link.a ? link.doorB : link.doorA) ?? link.door ?? { x: toN.x, y: toN.y };
-          const [tx, ty] = this._parkSlot(a, toN);
+          const [tx, ty] = this._moveArrivalPoint(a, toN);
           const mps = Math.max(0.5, this.P.movement.baseMps * mult);
           const appSec = Math.hypot(eFrom.x - a.x, eFrom.y - a.y) / mps;
           const exitSec = Math.hypot(tx - eTo.x, ty - eTo.y) / mps;
@@ -2415,6 +2419,18 @@ export class Sim {
     // shoved them apart (user report: marines "zipping to the middle of the
     // room then randomly deploying outward")
     return [nd.x + Math.cos(ang) * u * hw, nd.y + Math.sin(ang) * u * hd];
+  }
+
+  // A pod already committed to a body emerges toward that body. The grate is
+  // still a real waypoint; only the arbitrary post-exit parking detour goes.
+  _moveArrivalPoint(a, nd) {
+    if (a.faction === FACTION.INFECTION && this._committedInfectNode(a) === nd.idx) {
+      const t = a.task;
+      const id = t.kind === TASK.CONVERT || t.kind === TASK.DRAG ? t.corpseId : t.targetId;
+      const target = this.byId.get(id);
+      if (target && !target.dead) return [target.x, target.y];
+    }
+    return this._parkSlot(a, nd);
   }
 
   // GRAND STAIRWELL WELL (user: flood get stuck on the staircase walls). The

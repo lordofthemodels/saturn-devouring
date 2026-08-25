@@ -68864,7 +68864,7 @@ var init_params = __esm({
         // shootable at full combat-form HP, before it stands and fights.
         seatRangeM: 0.12,
         // "on top" means on top — the old gate was 0.35 m + a snap
-        burrowSec: 1.5,
+        burrowSec: 1.4,
         // pod digging into the corpse (interruptible)
         thrashSec: 4,
         // the transforming body convulsing before it stands
@@ -72036,7 +72036,7 @@ var init_hive = __esm({
         for (const den of dens) {
           if (this.localThreat(den) >= 0.6) continue;
           const feed = bodies.find((b2) => b2.node === den && !b2.claimed);
-          const former = infection.find((f2) => f2.node === den && (!f2.task || f2.task.kind === TASK.MOVE));
+          const former = infection.find((f2) => f2.node === den && !f2.move && !f2.path.length && (!f2.task || f2.task.kind === TASK.MOVE));
           if (feed && former && combat.length < 4) {
             feed.claimed = true;
             this.assign(former, { kind: TASK.CONVERT, corpseId: feed.id });
@@ -72223,7 +72223,7 @@ var init_hive = __esm({
             }
             if (combat.length < needed) {
               const raisable = sim2.agents.filter((d2) => !d2.dead && d2.faction === FACTION.COMBAT && d2.downed && d2.damage < 100 && !d2.claimed && !sim2.occupants(d2.pnode ?? d2.node).some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED)));
-              const medics = infection.filter((f2) => !f2.task || f2.task.kind === TASK.MOVE || f2.task.kind === TASK.SCOUT);
+              const medics = infection.filter((f2) => !f2.move && !f2.path.length && (!f2.task || f2.task.kind === TASK.MOVE || f2.task.kind === TASK.SCOUT));
               if (raisable.length > 0) {
                 this._breedUntil = 0;
                 let k2 = 0;
@@ -72270,7 +72270,7 @@ var init_hive = __esm({
           }
         }
         for (const f2 of infection) {
-          if (f2.task) continue;
+          if (f2.task || f2.move || f2.path.length) continue;
           const nearSet = new Set(sim2.nodesNear(f2.node, 2));
           const closeDowned = sim2.agents.find((d2) => !d2.dead && d2.faction === FACTION.COMBAT && d2.downed && d2.damage < 100 && !d2.claimed && nearSet.has(d2.pnode ?? d2.node) && !sim2.occupants(d2.pnode ?? d2.node).some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED)));
           if (closeDowned) {
@@ -72302,8 +72302,12 @@ var init_hive = __esm({
           const rally = this.nearestFoodNode(f2);
           if (rally !== -1 && f2.node !== rally) {
             this.assign(f2, { kind: TASK.MOVE, node: rally, rally: true });
-          } else if (rally === -1 && carriers.length) {
-            this.assign(f2, { kind: TASK.MOVE, node: this.scatterNode(carriers[f2.id % carriers.length].node, f2.id, "infection") });
+          } else {
+            const home = carriers.length ? carriers[f2.id % carriers.length].node : this.carrierSite;
+            if (home !== -1) {
+              const stage = this.scatterNode(home, f2.id, "infection");
+              if (f2.node !== stage) this.assign(f2, { kind: TASK.MOVE, node: stage, rally: true });
+            }
           }
         }
         {
@@ -72502,7 +72506,8 @@ var init_hive = __esm({
         let best = -1, bestD = Infinity;
         for (const b2 of sim2.agents) {
           if (b2.dead || b2.faction !== FACTION.CORPSE || b2.damage >= 100) continue;
-          if (this.believedHardness[b2.node] > 0.15) continue;
+          if (b2.claimed) continue;
+          if (this.believedHardness[b2.node] > 0.15 || this.localThreat(b2.node) > 1.2) continue;
           const d2 = this.infectionHops(form.node, b2.node);
           if (d2 < bestD) {
             bestD = d2;
@@ -72513,6 +72518,7 @@ var init_hive = __esm({
           const h2 = sim2.byId.get(id);
           if (!h2 || h2.dead || h2.hp <= 0 || h2.faction === FACTION.MARINE || bel.conf < 0.3) continue;
           if (this.believedHardness[bel.node] > 0.15) continue;
+          if (bel.node === form.node && (h2.pnode ?? h2.node) !== form.node) continue;
           const d2 = this.infectionHops(form.node, bel.node);
           if (d2 < bestD) {
             bestD = d2;
@@ -73155,6 +73161,15 @@ function marksman01(id) {
   h2 ^= h2 >>> 13;
   return (h2 >>> 0) / 4294967295;
 }
+function selectRifleTarget(currentId, candidates) {
+  let current = null, nearest = null;
+  for (const candidate of candidates) {
+    if (candidate.target.id === currentId) current = candidate;
+    if (!nearest || candidate.range < nearest.range - 1e-9 || Math.abs(candidate.range - nearest.range) <= 1e-9 && candidate.target.id < nearest.target.id) nearest = candidate;
+  }
+  if (!current || nearest && nearest.range < current.range - 1e-9) return nearest;
+  return current;
+}
 function sightRangeAt(sim2, node) {
   const P2 = sim2.P.combat;
   let m2;
@@ -73319,32 +73334,24 @@ function resolveCombat(sim2, dt) {
       for (const s2 of shooters) {
         if (s2 === flamer2) continue;
         if (sim2.t < (s2.nextShotAt ?? 0)) continue;
-        let best = null, bestD = Infinity, bestRange = 0;
+        const candidates = [];
         for (const t2 of [...targets, ...infForms]) {
           if (t2.hp <= 0 || t2.dead) continue;
           const rd = Math.hypot(t2.x - s2.x, t2.y - s2.y);
           if (rd > sight) continue;
-          const bias = t2.faction === FACTION.CARRIER ? 1e3 : t2.faction === FACTION.INFECTION ? 500 : 0;
-          const d2 = rd + bias;
-          if (d2 < bestD - 1e-9 || Math.abs(d2 - bestD) <= 1e-9 && t2.id < (best?.id ?? Infinity)) {
-            bestD = d2;
-            best = t2;
-            bestRange = rd;
-          }
+          candidates.push({ target: t2, range: rd });
         }
         for (const t2 of adjFlood) {
           if (t2.hp <= 0 || t2.dead) continue;
           const rd = Math.hypot(t2.x - s2.x, t2.y - s2.y);
           if (rd > t2._losSight) continue;
-          const bias = (t2.faction === FACTION.CARRIER ? 1e3 : t2.faction === FACTION.INFECTION ? 500 : 0) + 60;
-          const d2 = rd + bias;
-          if (d2 < bestD - 1e-9 || Math.abs(d2 - bestD) <= 1e-9 && t2.id < (best?.id ?? Infinity)) {
-            if (!sim2.losClear(s2.x, s2.y, s2.pnode ?? s2.node, t2.x, t2.y, t2.pnode ?? t2.node)) continue;
-            bestD = d2;
-            best = t2;
-            bestRange = rd;
-          }
+          if (!sim2.losClear(s2.x, s2.y, s2.pnode ?? s2.node, t2.x, t2.y, t2.pnode ?? t2.node)) continue;
+          candidates.push({ target: t2, range: rd });
         }
+        const selected = selectRifleTarget(s2.fireTargetId, candidates);
+        const best = selected?.target ?? null;
+        const bestRange = selected?.range ?? 0;
+        s2.fireTargetId = best?.id;
         if (!best) continue;
         if (sim2.t - (s2._sawThreatT ?? -99) > P2.combat.reactLullSec) {
           const bearing = Math.atan2(best.y - s2.y, best.x - s2.x);
@@ -73532,23 +73539,22 @@ function resolveCombat(sim2, dt) {
       const shooters = sim2.occupants(gunNode).filter((a2) => a2.hp > 0 && !a2.dead && (a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED && a2.state === STATE.FIGHT));
       if (!shooters.length) continue;
       const gn = sim2.graph.node(gunNode);
-      const targets = sim2.occupants(floodNode).filter((a2) => !a2.dead && a2.hp > 0 && !a2.downed && (a2.faction === FACTION.COMBAT || a2.faction === FACTION.CARRIER));
+      const targets = sim2.occupants(floodNode).filter((a2) => !a2.dead && a2.hp > 0 && !a2.downed && (a2.faction === FACTION.COMBAT || a2.faction === FACTION.CARRIER || a2.faction === FACTION.INFECTION));
       if (!targets.length) continue;
       sim2.gunfireAt(gunNode);
       for (const sh of shooters) {
         if (sim2.t < (sh.nextShotAt ?? 0)) continue;
-        let best = null, bestD = Infinity;
-        for (const t2 of targets) {
-          const d2 = Math.hypot(t2.x - sh.x, t2.y - sh.y) + (t2.faction === FACTION.CARRIER ? 1e3 : 0);
-          if (d2 < bestD - 1e-9 || Math.abs(d2 - bestD) <= 1e-9 && t2.id < (best?.id ?? Infinity)) {
-            bestD = d2;
-            best = t2;
-          }
-        }
+        const selected = selectRifleTarget(sh.fireTargetId, targets.map((target) => ({
+          target,
+          range: Math.hypot(target.x - sh.x, target.y - sh.y)
+        })));
+        const best = selected?.target ?? null;
+        sh.fireTargetId = best?.id;
         if (!best) break;
         const gun = sh.faction === FACTION.MARINE ? P2.combat.marine.gun : P2.combat.armed.gun;
         sh.nextShotAt = sim2.t + 1 / gun.rof;
         let acc = gun.accFar;
+        if (best.faction === FACTION.INFECTION) acc *= P2.combat.podAccMult;
         if (sim2.darkAt(gunNode) || sim2.darkAt(floodNode)) acc *= P2.darkness.darkAccMult;
         if (sim2.fogAt(gunNode) || sim2.fogAt(floodNode)) acc *= P2.darkness.fogAccMult;
         if (sim2.rng.chance(acc)) hurtFloodForm(sim2, best, gun.dmg, false, sh.id);
@@ -75276,7 +75282,9 @@ var init_sim = __esm({
                 a2.move.hidden = false;
               } else if (k2 > 1 - exitT) {
                 const kk = exitT > 1e-6 ? (k2 - (1 - exitT)) / exitT : 1;
-                const tx = a2.move.tx ?? to.x, ty = a2.move.ty ?? to.y;
+                const [tx, ty] = this._moveArrivalPoint(a2, to);
+                a2.move.tx = tx;
+                a2.move.ty = ty;
                 a2.x = eToX + (tx - eToX) * kk;
                 a2.y = eToY + (ty - eToY) * kk;
                 a2.heading = Math.atan2(ty - eToY, tx - eToX);
@@ -75440,7 +75448,7 @@ var init_sim = __esm({
               const fromN = this.graph.node(a2.node), toN = this.graph.node(step3.to);
               const eFrom = (a2.node === link.a ? link.doorA : link.doorB) ?? link.door ?? { x: fromN.x, y: fromN.y };
               const eTo = (a2.node === link.a ? link.doorB : link.doorA) ?? link.door ?? { x: toN.x, y: toN.y };
-              const [tx, ty] = this._parkSlot(a2, toN);
+              const [tx, ty] = this._moveArrivalPoint(a2, toN);
               const mps = Math.max(0.5, this.P.movement.baseMps * mult);
               const appSec = Math.hypot(eFrom.x - a2.x, eFrom.y - a2.y) / mps;
               const exitSec = Math.hypot(tx - eTo.x, ty - eTo.y) / mps;
@@ -75915,6 +75923,17 @@ var init_sim = __esm({
         const ang = h12 * Math.PI * 2 + nd.idx * 0.7;
         const u2 = Math.sqrt(h2);
         return [nd.x + Math.cos(ang) * u2 * hw, nd.y + Math.sin(ang) * u2 * hd];
+      }
+      // A pod already committed to a body emerges toward that body. The grate is
+      // still a real waypoint; only the arbitrary post-exit parking detour goes.
+      _moveArrivalPoint(a2, nd) {
+        if (a2.faction === FACTION.INFECTION && this._committedInfectNode(a2) === nd.idx) {
+          const t2 = a2.task;
+          const id = t2.kind === TASK.CONVERT || t2.kind === TASK.DRAG ? t2.corpseId : t2.targetId;
+          const target = this.byId.get(id);
+          if (target && !target.dead) return [target.x, target.y];
+        }
+        return this._parkSlot(a2, nd);
       }
       // GRAND STAIRWELL WELL (user: flood get stuck on the staircase walls). The
       // switchback well the 3D renderer cuts into the stairwell room, expressed in

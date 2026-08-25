@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { combatMeleeImpulse, humanDeathToCorpse } from './combat.js';
+import { combatMeleeImpulse, humanDeathToCorpse, selectRifleTarget } from './combat.js';
 import { PARAMS } from '../shared/params.js';
 import { FACTION } from '../shared/agentBuffer.js';
 
@@ -17,6 +17,17 @@ assert.ok(standing.speed < charging.speed && charging.speed < jumping.speed,
 assert.ok(jumping.up > standing.up && jumping.spin > standing.spin && jumping.kick > standing.kick,
   'a jumping strike must loft and tumble a body harder than a standing strike');
 assert.ok(standing.dirX > 0 && standing.dirY > 0, 'impact must point away from the attacker');
+
+const far = { id: 10 }, near = { id: 20 }, newcomer = { id: 30 };
+assert.equal(selectRifleTarget(undefined, [
+  { target: far, range: 8 }, { target: near, range: 4 },
+]).target, near, 'a fresh rifle acquisition must take the closest Flood form');
+assert.equal(selectRifleTarget(near.id, [
+  { target: near, range: 4 }, { target: newcomer, range: 4 },
+]).target, near, 'an equal-range arrival must not make the shooter flick targets');
+assert.equal(selectRifleTarget(near.id, [
+  { target: near, range: 4 }, { target: newcomer, range: 3.9 },
+]).target, newcomer, 'a newly closer form must take the shooter\'s attention');
 
 const graph = { node: () => ({ x: 0, y: 0, deck: 1 }) };
 const spawned = [];
