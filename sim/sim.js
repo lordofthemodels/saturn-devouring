@@ -1647,6 +1647,19 @@ export class Sim {
           a.path = [];
           continue;
         }
+        // LIVE ODDS AT THE THRESHOLD. The strategic planner already stages
+        // against believed defenses, but pursuit used to bypass it and a
+        // stale attack path could still feed one form at a time into marines
+        // who had moved next door. The explicit DART bait and forced patience
+        // launch are deliberate sacrifices; ordinary movement holds here.
+        if (a.faction === FACTION.COMBAT && link.kind === 'std'
+          && a.task?.kind !== TASK.DART
+          && !this.hive.canPressCombatRoom(a.node, step.to, a.task?.force)) {
+          a.path = [];
+          a.charging = false;
+          if (a.task?.kind === TASK.ATTACK) a.task.node = a.node;
+          continue;
+        }
         // COMMITTED INFECTION (user rule: once a form commits to infecting a
         // body it must NEVER be interrupted). A form whose very next step
         // enters the room holding its own infect target — a corpse to burrow
@@ -1938,8 +1951,9 @@ export class Sim {
           // every open route is sealed, path THROUGH the locked doors anyway:
           // the blocked-step check upgrades each closed door on the way into
           // a dedicated charge that busts it open for good (user rule)
-          if (pn2 >= 0 && (this.setPathTo(a, pn2, ['std'], (l) => !l.locked)
-            || this.setPathTo(a, pn2, ['std'], (l) => l.kind === 'std' && !l.armorySeal))) {
+          if (pn2 >= 0 && this.hive.canPressCombatRoom(pn, pn2, a.task?.force)
+            && (this.setPathTo(a, pn2, ['std'], (l) => !l.locked)
+              || this.setPathTo(a, pn2, ['std'], (l) => l.kind === 'std' && !l.armorySeal))) {
             a.charging = true; a.state = STATE.MOVE;
             return false; // _advanceMovement walks the path through the doorway
           }

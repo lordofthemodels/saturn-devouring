@@ -77,6 +77,7 @@ export function makeAgent(kind, node, graph) {
     pnode: node, climbingLink: null,
     // combat & reaction timers (sim.js / combat.js / humans.js)
     nextShotAt: undefined, nextSwingAt: undefined, meleeUntil: undefined,
+    fireTargetId: undefined,
     nextHostShotAt: undefined, _sawThreatT: undefined, _reactUntil: undefined,
     _ffSide: undefined, _ffFlipAt: undefined, _ffBlockedSince: undefined,
     firstStruckIn: undefined, lastHurtBy: undefined, lastHurtTick: undefined,
