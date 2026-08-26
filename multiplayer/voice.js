@@ -12,8 +12,8 @@ const MAX_OFFERS_PER_WINDOW = 6;
 const SIGNAL_WINDOW_MS = 10_000;
 const MAX_SIGNAL_BYTES_PER_WINDOW = 256 * 1_024;
 const DEFAULT_ICE_SERVERS = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
   { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
   { urls: 'stun:global.stun.twilio.com:3478' },
   { urls: 'stun:stun.relay.metered.ca:80' },
 ];

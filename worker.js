@@ -1,5 +1,16 @@
 const TURN_CREDENTIALS_PATH = '/api/turn-credentials';
 const TURN_CREDENTIAL_TTL_SECONDS = 6 * 60 * 60;
+const isBrowserIceUrl = (url) => typeof url === 'string'
+  && !/^(?:stun|turns?):[^/?#]+:53(?:[/?#]|$)/i.test(url);
+
+function browserIceServers(iceServers) {
+  return iceServers.flatMap((server) => {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    const supported = [...new Set(urls.filter(isBrowserIceUrl))];
+    if (!supported.length) return [];
+    return [{ ...server, urls: Array.isArray(server.urls) ? supported : supported[0] }];
+  });
+}
 
 function json(body, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(body), {
@@ -50,7 +61,7 @@ export async function turnCredentials(request, env, {
     if (!upstream.ok) throw new Error(`TURN credential service returned ${upstream.status}`);
     const payload = await upstream.json();
     if (!Array.isArray(payload?.iceServers)) throw new Error('TURN credential response was malformed');
-    return json({ iceServers: payload.iceServers });
+    return json({ iceServers: browserIceServers(payload.iceServers) });
   } catch (error) {
     console.error(JSON.stringify({ event: 'turn_credentials_failed', message: error?.message || String(error) }));
     return json({ error: { code: 'TURN_UNAVAILABLE', message: 'WebRTC relay credentials are temporarily unavailable.' } }, 503, {

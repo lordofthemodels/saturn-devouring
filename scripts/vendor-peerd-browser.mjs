@@ -4,7 +4,7 @@
 // runtime because its trusted parent bridge owns the network.
 
 import { build } from 'esbuild';
-import { access, mkdir } from 'fs/promises';
+import { access, mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
@@ -45,6 +45,13 @@ await build({
     },
   }],
 });
+
+// why normalize: esbuild annotates modules with their source path. The peerd
+// checkout may be a sibling locally or a release-stage directory in CI; keeping
+// one logical prefix prevents identical vendor bytes from producing path-only
+// diffs.
+const bundled = await readFile(OUT, 'utf8');
+await writeFile(OUT, bundled.replace(/^\/\/ .*?\/extension\//gm, '// peerd/extension/'));
 
 // Execute the browser-format module in Node as a no-DOM smoke test. This
 // catches UMD/ESM wrapper mistakes that compile successfully but initialize an

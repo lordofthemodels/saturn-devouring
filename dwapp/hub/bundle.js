@@ -65040,7 +65040,7 @@ var<${access}> ${name} : ${structName};`;
   }
 });
 
-// multiplayer/peerd-browser.js?v=2
+// multiplayer/peerd-browser.js?v=3
 var peerd_browser_exports = {};
 __export(peerd_browser_exports, {
   DEFAULT_ICE_SERVERS: () => DEFAULT_ICE_SERVERS2,
@@ -65054,7 +65054,7 @@ __export(peerd_browser_exports, {
 });
 var __require2, ALPHABET, BASE, LOOKUP, base58encode, base58decode, ED25519_PUB_PREFIX, DID_PREFIX, DID_KEY_LENGTH, encodeDidKey, decodeDidKey, utf8, toHex, toBase64, fromBase64, base64ByteLength, concat, generateIdentity, PKCS8_ED25519_PREFIX, MATERIAL_PROOF, importVerifyKey, verifySignature, createBufferedChannel, DirectPathUnavailableError, summarizeCandidates, famOf, connectionPath, DWEB_LOG, on, BADGE, TAG, dlog, dwarn, DEFAULT_ICE_SERVERS2, DISCONNECT_GRACE_MS, MAX_DATA_CHANNEL_FRAME_BYTES, decode, createPeer, requireSignaling, orderedCandidates, abortClosesPc, createWebrtcTransport, DEFAULT_SIGNALING, openRendezvous, canonicalize, DOMAIN, signingBytes, buildEnvelope, signEnvelope, envelopeBytes, verifyEnvelope, CHUNK_SIZE, sha256hex, withoutSig, canonicalManifestBytes, manifestHash, DEFAULT_MAX_PACKED_BYTES, DEFAULT_MAX_DECODED_BYTES, MAX_NETWORK_BUNDLE_BYTES, pako, Deflate, Inflate, BUNDLE_TRANSPORT_VERSION, BUNDLE_TRANSPORT_ENCODING, BUNDLE_TRANSPORT_CODEC, MAX_BUNDLE_CONTAINER_BYTES, MAX_BUNDLE_DECODED_BYTES, MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_FILES, MAX_BUNDLE_PATH_CHARS, SHA256_HEX, assertBundleTransportDescriptor, CODEC_OUTPUT_CHUNK_BYTES, CODEC_INPUT_CHUNK_BYTES, signingBytes2, MAX_BUNDLE_BYTES, MAX_BUNDLE_CHUNKS, MAX_MANIFEST_BYTES, SHA256_HEX2, assertBundleWithinLimits, decodeCommittedChunk, verifyManifest, SCHEME, HASH_RE, parsePeerdUri, ALPHA, createContentResponder, fetchBundle, CTRL, CONTENT_REQ, CONTENT_RESP, newId, DEFAULT_BUDGET, createRoomMesh, newId2, createSession, short, newId3, ANSWER_TIMEOUT_MS, joinRoom, PUB, MAX_GOSSIP_ENVELOPE_BYTES, createGossip, SYNC, MAX_HAVES, MAX_RESP, createMemoryTopicStore, createTopicSync, PRESENCE_TOPIC, FORGET_SUPPRESS_MS, createPresence, MSG, createDirect;
 var init_peerd_browser = __esm({
-  "multiplayer/peerd-browser.js?v=2"() {
+  "multiplayer/peerd-browser.js?v=3"() {
     __require2 = /* @__PURE__ */ ((x2) => typeof __require !== "undefined" ? __require : typeof Proxy !== "undefined" ? new Proxy(x2, {
       get: (a2, b2) => (typeof __require !== "undefined" ? __require : a2)[b2]
     }) : x2)(function(x2) {
@@ -65385,8 +65385,8 @@ var init_peerd_browser = __esm({
       }
     };
     DEFAULT_ICE_SERVERS2 = [
-      { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
       { urls: "stun:stun.cloudflare.com:3478" },
+      { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
       { urls: "stun:global.stun.twilio.com:3478" },
       { urls: "stun:stun.relay.metered.ca:80" }
       // :80 also slips past some 3478-blocking firewalls
@@ -65405,7 +65405,7 @@ var init_peerd_browser = __esm({
       onCandidate = null
     } = {}) => {
       if (!RTCPeerConnection) throw new Error("createPeer: WebRTC unavailable in this context");
-      const pc = new RTCPeerConnection({ iceCandidatePoolSize: 4, bundlePolicy: "max-bundle", ...config });
+      const pc = new RTCPeerConnection({ bundlePolicy: "max-bundle", iceTransportPolicy: "all", ...config });
       if (onCandidate) {
         pc.addEventListener("icecandidate", (e2) => {
           if (e2.candidate) onCandidate(e2.candidate.toJSON ? e2.candidate.toJSON() : e2.candidate);
@@ -94810,8 +94810,8 @@ var MAX_OFFERS_PER_WINDOW = 6;
 var SIGNAL_WINDOW_MS = 1e4;
 var MAX_SIGNAL_BYTES_PER_WINDOW = 256 * 1024;
 var DEFAULT_ICE_SERVERS = [
-  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
   { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] },
   { urls: "stun:global.stun.twilio.com:3478" },
   { urls: "stun:stun.relay.metered.ca:80" }
 ];
@@ -95237,6 +95237,7 @@ function createRoomVoice({
 var scopedTopic = (scope, topic) => `charon/${scope || "lobby"}/${topic}`;
 var PEER_FAILURE_EVENTS = /* @__PURE__ */ new Set(["room_dial_failed", "room_accept_failed"]);
 var TURN_CREDENTIALS_PATH = "/api/turn-credentials";
+var isBrowserRelayUrl = (url) => typeof url === "string" && url.startsWith("turn") && !/^turns?:[^/?#]+:53(?:[/?#]|$)/i.test(url);
 function cancelledJoinError() {
   const error2 = new Error("multiplayer join cancelled");
   error2.code = "JOIN_CANCELLED";
@@ -95284,7 +95285,7 @@ async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
   const iceServers = payload?.iceServers;
   const relayServers = Array.isArray(iceServers) ? iceServers.flatMap((server) => {
     const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
-    const relayUrls = urls.filter((url) => typeof url === "string" && url.startsWith("turn"));
+    const relayUrls = [...new Set(urls.filter(isBrowserRelayUrl))];
     if (!relayUrls.length || typeof server?.username !== "string" || typeof server?.credential !== "string") return [];
     return [{ ...server, urls: Array.isArray(server.urls) ? relayUrls : relayUrls[0] }];
   }) : [];
