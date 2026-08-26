@@ -598,4 +598,52 @@ const formHp = doorwayForm.hp;
 resolveCombat(doorwaySim, doorwaySim.dt);
 assert.ok(doorwayForm.hp < formHp, 'the marine must fire through the same sightline it detected');
 
+// A locked panel is an absolute combat LOS blocker. The damaged render leaves
+// a narrow seam, but AI must neither acquire nor shoot a perfectly aligned
+// target through it; unlocking the same geometry restores the sightline.
+const closedDoorSim = new Sim('closed-door-los-check');
+for (const agent of closedDoorSim.agents) agent.dead = true;
+const closedDoor = closedDoorSim.graph.edges.find((edge) => edge.kind === 'std'
+  && edge.door && edge.losOpen
+  && closedDoorSim.graph.node(edge.a).deck === closedDoorSim.graph.node(edge.b).deck);
+assert.ok(closedDoor, 'closed-door fixture needs a same-deck rendered door');
+const closedA = closedDoorSim.graph.node(closedDoor.a);
+const closedB = closedDoorSim.graph.node(closedDoor.b);
+const nearDoor = (room) => {
+  const dx = room.x - closedDoor.door.x, dy = room.y - closedDoor.door.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return [closedDoor.door.x + dx / length * 0.7, closedDoor.door.y + dy / length * 0.7];
+};
+const closedMarine = makeAgent(FACTION.MARINE, closedDoor.a, closedDoorSim.graph);
+const closedForm = makeAgent(FACTION.COMBAT, closedDoor.b, closedDoorSim.graph);
+[closedMarine.x, closedMarine.y] = nearDoor(closedA);
+[closedForm.x, closedForm.y] = nearDoor(closedB);
+closedForm.hp = closedForm.maxHp = 90;
+closedMarine._sawThreatT = closedDoorSim.t;
+closedMarine._reactUntil = 0;
+closedDoorSim.spawn(closedMarine);
+closedDoorSim.spawn(closedForm);
+closedDoor.locked = true;
+closedDoorSim._doorMutated();
+closedDoorSim._refreshOccupancy();
+assert.equal(closedDoorSim.hasLineOfSight(closedMarine, closedForm), false,
+  'a locked door must block a target centered in its visible panel seam');
+const closedHp = closedForm.hp;
+resolveCombat(closedDoorSim, closedDoorSim.dt);
+assert.equal(closedMarine.fireTargetId, undefined,
+  'a marine must not acquire a Flood form through a locked door');
+assert.equal(closedForm.hp, closedHp, 'a marine must not damage a Flood form through a locked door');
+
+closedDoor.locked = false;
+closedDoorSim._doorMutated();
+closedDoorSim._refreshOccupancy();
+assert.equal(closedDoorSim.hasLineOfSight(closedMarine, closedForm), true,
+  'unlocking the same doorway must restore geometric LOS');
+closedDoorSim.P.combat.marine.gun.accNear = 1;
+closedDoorSim.P.combat.marksmanSpread = 0;
+closedDoorSim.P.darkness.darkAccMult = 1;
+closedDoorSim.P.darkness.fogAccMult = 1;
+resolveCombat(closedDoorSim, closedDoorSim.dt);
+assert.ok(closedForm.hp < closedHp, 'the marine may fire once the door is open');
+
 console.log('combat LOS tactics ✓');

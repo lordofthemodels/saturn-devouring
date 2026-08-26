@@ -272,14 +272,11 @@ export class Sim {
   // GEOMETRIC LINE OF SIGHT (per-room combat retirement — user: "NPCs should
   // be operating on line of sight"). A 2D segment walk from room to room:
   // sight passes only where the segment crosses a doorway's opening span.
-  // Openings are precomputed on the graph (edge.losOpen); the half-width is
-  // decided here — the full doorway when the door is unlocked (it slides for
-  // anyone approaching, and a covered doorway is effectively open), the
-  // sealed door's AJAR SLOT when locked (the render leaves broken doors
-  // resting a hand-width apart, so a perfectly-lined shot passes and a
-  // glancing one hits panel). Deterministic, pure math, render-free.
+  // Openings are precomputed on the graph (edge.losOpen). An unlocked door
+  // contributes its full opening because it slides for anyone approaching;
+  // a locked door contributes NONE. The rendered panel seam is visual damage,
+  // not a loophole through which AI can acquire and shoot a target.
   //   DOOR_HALF mirrors game/world.js DOOR_W (1.7) / 2.
-  //   SLOT_HALF mirrors the ajar gap: DOORS.ajar01 (0.22) * panel travel.
   losClear(x1, y1, r1, x2, y2, r2) {
     if (r1 === r2) return true;
     const g = this.graph;
@@ -298,7 +295,7 @@ export class Sim {
       let bestTo = -1, bestT = Infinity;
       for (const { to, link } of g.adj.std[cur]) {
         const o = link.losOpen;
-        if (!o) continue;
+        if (!o || link.locked) continue;
         let t, cross;
         if (o.axis === 'x') {          // wall at x = o.at, opening spans y
           if (Math.abs(dx) < 1e-9) continue;
@@ -310,8 +307,7 @@ export class Sim {
           cross = x1 + dx * t;
         }
         if (t <= prevT || t > 1 + 1e-9) continue;
-        const half = link.locked ? 0.15 : 0.85;
-        if (Math.abs(cross - o.c) > half) continue;
+        if (Math.abs(cross - o.c) > 0.85) continue;
         if (t < bestT) { bestT = t; bestTo = to; }
       }
       if (bestTo === -1) return false;

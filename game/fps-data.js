@@ -58,7 +58,7 @@ export const DOORS = {
   openRadius: 2.6,   // any body this close slides the door open
   slideSpeed: 4.5,   // m/s of panel travel
   // a SEALED door is stuck ajar, not shut (user: red-painted broken doors
-  // killed the realism): open enough to see and shoot through the gap,
-  // far too narrow to walk through. 0.22 of full travel ≈ a 28 cm slot.
+  // killed the realism): the damaged seam is visible, but it is too narrow
+  // for reliable target acquisition or fire. 0.22 travel ≈ a 28 cm slot.
   ajar01: 0.22,
 };
