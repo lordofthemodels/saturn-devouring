@@ -6,6 +6,7 @@ import { updateHumansTick } from './humans.js';
 import { updateFloodTick } from './floodExec.js';
 import { resolveCombat } from './combat.js';
 import { Sim } from './sim.js';
+import { CLEAR_H, clearHeightOf } from '../shared/geometry.js';
 
 function openEscapeDoor(sim) {
   return sim.graph.edges.find((edge) => {
@@ -357,6 +358,56 @@ stackSim._separate(1);
 assert.ok(Math.abs(Math.hypot(stacked[0].x - stacked[1].x, stacked[0].y - stacked[1].y)
     - baseCombatPair * stackSim.P.combat.combatForm.crowdRadiusScale) < 1e-9,
   'combat-form pairs must keep the configured extra crowd spacing');
+
+// A long combat-form leap in an open volume starts its five-second cooldown
+// at touchdown, not launch. The form keeps charging on foot during the wait.
+const leapSim = new Sim('combat-leap-cooldown-check');
+for (const agent of leapSim.agents) agent.dead = true;
+const leapRoom = leapSim.graph.nodes.find((node) =>
+  node.w >= 12 && node.d >= 8 && clearHeightOf(node) > CLEAR_H + 0.5);
+assert.ok(leapRoom, 'leap cooldown fixture needs a large room with headroom');
+const leaper = makeAgent(FACTION.COMBAT, leapRoom.idx, leapSim.graph);
+const leapTarget = makeAgent(FACTION.MARINE, leapRoom.idx, leapSim.graph);
+leaper.hp = leaper.maxHp = 90;
+leapTarget.hp = leapTarget.maxHp = 100;
+leaper.x = leapRoom.x - 5;
+leaper.y = leapTarget.y = leapRoom.y;
+leapTarget.x = leapRoom.x + 5;
+leapSim.spawn(leaper);
+leapSim.spawn(leapTarget);
+leapSim.tickCount = 1;
+leapSim.t = leapSim.dt;
+leapSim._refreshOccupancy();
+leaper.lastHurtBy = leapTarget.id;
+leaper.lastHurtTick = leapSim.tickCount;
+leapSim._spatialSteer(leaper, leapSim.dt);
+assert.equal(leaper.leaping, true, 'a fresh combat form may leap across a large room');
+let leapGuard = 0;
+while (leaper.leaping && leapGuard++ < 100) {
+  leapSim.tickCount++;
+  leapSim.t += leapSim.dt;
+  leapSim._spatialSteer(leaper, leapSim.dt);
+}
+assert.ok(leapGuard < 100, 'the cooldown fixture leap must land');
+const landedAt = leapSim.t;
+assert.equal(leaper.nextCombatLeapAt, landedAt + leapSim.P.combat.combatForm.leapCooldownSec,
+  'the five-second cooldown must begin when the previous leap ends');
+
+const resetLeapRun = (time) => {
+  leapSim.t = time;
+  leapSim.tickCount = Math.round(time / leapSim.dt);
+  leaper.x = leapRoom.x - 5;
+  leaper.y = leapRoom.y;
+  leapTarget.x = leapRoom.x + 5;
+  leapTarget.y = leapRoom.y;
+  leaper.lastHurtBy = leapTarget.id;
+  leaper.lastHurtTick = leapSim.tickCount;
+  leapSim._spatialSteer(leaper, leapSim.dt);
+};
+resetLeapRun(leaper.nextCombatLeapAt - leapSim.dt);
+assert.equal(leaper.leaping, false, 'the form must keep charging on foot before five seconds pass');
+resetLeapRun(leaper.nextCombatLeapAt);
+assert.equal(leaper.leaping, true, 'the form may leap again once five seconds have elapsed');
 
 // Under live pressure with no infection economy, scarcity roots one or two
 // rearmost carrier seeds and turns the remaining forms into a screen.

@@ -69511,6 +69511,8 @@ var init_params = __esm({
           // spawn hp varies ±18%
           crowdRadiusScale: 1.15,
           // slightly looser combat-form rushes; pair separation only
+          leapCooldownSec: 5,
+          // begins on landing; ordinary charge movement continues
           swing: {
             dmg: 18,
             cooldownSec: 0.9,
@@ -70942,6 +70944,7 @@ function makeAgent(kind, node, graph) {
     // flight budget in ticks. A distance test alone can be unsatisfiable.
     leapRem: 0,
     leapTicks: 0,
+    nextCombatLeapAt: 0,
     chargeTargetId: -1,
     // sticky spatial-charge target for LOS pursuit (sim.js)
     followNode: -1,
@@ -76275,9 +76278,7 @@ var init_sim = __esm({
           }
           a2.hoverY = 0;
           if (a2.leaping && (a2.dead || a2.faction === FACTION.CORPSE || a2.downed || a2.hp <= 0 || a2.isPlayer || a2.closeFollow || a2.held === this.tickCount)) {
-            a2.leaping = false;
-            a2.leapDist0 = 0;
-            a2.leapTicks = 0;
+            this._endLeap(a2);
           }
           if (a2.dead || a2.faction === FACTION.CORPSE || a2.downed || a2.hp <= 0) continue;
           if (a2.isPlayer) {
@@ -76308,11 +76309,7 @@ var init_sim = __esm({
             continue;
           }
           if (this._spatialSteer(a2, dt)) continue;
-          if (a2.leaping) {
-            a2.leaping = false;
-            a2.leapDist0 = 0;
-            a2.leapTicks = 0;
-          }
+          if (a2.leaping) this._endLeap(a2);
           if (a2.state === STATE.FIGHT || a2.state === STATE.GRABBING || a2.state === STATE.COWER || a2.state === STATE.AMBUSHING) {
             if (!a2.move) {
               if (a2.state === STATE.COWER) this._parkDrift(a2, dt);
@@ -76804,7 +76801,7 @@ var init_sim = __esm({
         const LEAP_MIN = 5, PEAK_FRAC = 0.2;
         const C2 = P2.combat;
         const clearH = clearHeightOf(room);
-        const canLeap = a2.faction === FACTION.COMBAT && a2.charging && clearH > CLEAR_H + 0.5;
+        const canLeap = a2.faction === FACTION.COMBAT && a2.charging && clearH > CLEAR_H + 0.5 && this.t >= a2.nextCombatLeapAt;
         const canPounce = a2.faction === FACTION.INFECTION && !target.dead && target.hp > 0 && !target.downed && target.faction !== FACTION.CORPSE;
         const gap = Math.hypot(target.x - a2.x, target.y - a2.y);
         if (!a2.leaping && canLeap && gap > LEAP_MIN) {
@@ -76812,9 +76809,7 @@ var init_sim = __esm({
         } else if (!a2.leaping && canPounce && gap > C2.grabRangeM && gap <= C2.pounce.rangeM) {
           this._commitLeap(a2, target, room, mps, Math.min(C2.pounce.peakM, clearH - C2.pounce.clearM), C2.pounce.landM);
         } else if (a2.leaping && !canLeap && !canPounce) {
-          a2.leaping = false;
-          a2.leapDist0 = 0;
-          a2.leapTicks = 0;
+          this._endLeap(a2);
         }
         const aimX = a2.leaping ? a2.leapTX : target.x;
         const aimY = a2.leaping ? a2.leapTY : target.y;
@@ -76835,14 +76830,25 @@ var init_sim = __esm({
           a2.hoverY = a2.leapPeak * 4 * p2 * (1 - p2);
           a2.leapTicks--;
           if (rem <= a2.leapLand || rem >= a2.leapRem - 1e-4 || a2.leapTicks <= 0) {
-            a2.leaping = false;
-            a2.leapDist0 = 0;
-            a2.leapTicks = 0;
-            a2.hoverY = 0;
+            this._endLeap(a2);
           } else a2.leapRem = rem;
         }
         a2.animTime += dt;
         return true;
+      }
+      // A combat form gets one long leap, then must keep charging on foot for a
+      // full cooldown measured FROM touchdown. Centralizing every exit matters:
+      // landing, losing a target, being interrupted and getting shot down all end
+      // an arc through different branches. Infection-form pounces stay unchanged.
+      _endLeap(a2) {
+        if (!a2.leaping) return;
+        a2.leaping = false;
+        a2.leapDist0 = 0;
+        a2.leapTicks = 0;
+        a2.hoverY = 0;
+        if (a2.faction === FACTION.COMBAT) {
+          a2.nextCombatLeapAt = this.t + this.P.combat.combatForm.leapCooldownSec;
+        }
       }
       // COMMIT AN ARC. The user has asked twice for this shape ("their body
       // direction and location are both locked until they land"), so EVERY term

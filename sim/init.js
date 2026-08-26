@@ -48,7 +48,7 @@ export function makeAgent(kind, node, graph) {
     // ...plus the two terms that GUARANTEE it comes down: last tick's distance
     // to the landing spot (no progress = it is as landed as it can get) and a
     // flight budget in ticks. A distance test alone can be unsatisfiable.
-    leapRem: 0, leapTicks: 0,
+    leapRem: 0, leapTicks: 0, nextCombatLeapAt: 0,
     chargeTargetId: -1, // sticky spatial-charge target for LOS pursuit (sim.js)
     followNode: -1,     // escort: last node re-pathed toward (humans.js)
     firePost: null,     // [x,y] firing stance a shooter holds in a firefight (sim.js _firingSlot)
