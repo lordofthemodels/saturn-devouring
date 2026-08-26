@@ -76,6 +76,7 @@ let lobbyConsensus = createLobbyConsensus();
 let lobbyMaintenanceTimer = 0;
 let singletonSettleTimer = 0;
 let lobbyMaintenanceBusy = false;
+let lobbyTransportError = '';
 
 const lobbyRevisionKey = (id, host) => `${String(id)}\u0000${String(host)}`;
 
@@ -219,6 +220,11 @@ function renderRoster() {
     byId('lobby-status').textContent = committing
       ? 'Fireteam confirmed. Entering the match room…'
       : `Confirming fireteam · ${pendingMatch.acknowledgements.size} / ${pendingMatch.payload.members.length}`;
+    return;
+  }
+  if (lobbyTransportError) {
+    byId('lobby-status').dataset.tone = 'error';
+    byId('lobby-status').textContent = lobbyTransportError;
     return;
   }
   if (!lobbyId) {
@@ -997,6 +1003,7 @@ async function joinLobby(mode) {
   closedLobbyRevisions.clear();
   hostScores.clear();
   lobbyNames.clear();
+  lobbyTransportError = '';
   const name = playerName();
   byId('multiplayer-error').hidden = true;
   byId('invite-code').removeAttribute('aria-invalid');
@@ -1025,7 +1032,13 @@ async function joinLobby(mode) {
   byId('lobby-roster').textContent = '';
   byId('lobby-status').dataset.tone = '';
   byId('lobby-status').textContent = 'Opening a peer-to-peer room…';
+  let slowConnectionTimer = 0;
   try {
+    slowConnectionTimer = setTimeout(() => {
+      if (generation === joinGeneration && !session) {
+        byId('lobby-status').textContent = 'Still negotiating direct WebRTC connectivity… VPN, NAT, or firewall traversal may take up to 15 seconds.';
+      }
+    }, 5_000);
     const joined = await joinMultiplayerRoom({ roomId, name, signal: controller.signal });
     if (generation !== joinGeneration) {
       await joined.close();
@@ -1058,6 +1071,12 @@ async function joinLobby(mode) {
             term: lobbyConsensus.recovery.term,
           }).catch(() => {});
         }
+      }),
+      session.on('transport-status', (status) => {
+        lobbyTransportError = status?.state === 'failed'
+          ? status.error?.message || 'Another player reached this lobby, but WebRTC could not connect.'
+          : '';
+        renderRoster();
       }),
       session.on('voice', updateVoice),
       session.on('peer-leave', (did) => {
@@ -1108,6 +1127,7 @@ async function joinLobby(mode) {
       }
     }
   } finally {
+    clearTimeout(slowConnectionTimer);
     if (joinController === controller) joinController = null;
     if (generation === joinGeneration) setJoinButtons(false);
   }

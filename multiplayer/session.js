@@ -2,6 +2,73 @@ import { createDwebClient } from './dweb-client.js';
 import { createRoomVoice, isRoomVoiceSignal } from './voice.js';
 
 const scopedTopic = (scope, topic) => `charon/${scope || 'lobby'}/${topic}`;
+const PEER_FAILURE_EVENTS = new Set(['room_dial_failed', 'room_accept_failed']);
+const TURN_CREDENTIALS_PATH = '/api/turn-credentials';
+
+function cancelledJoinError() {
+  const error = new Error('multiplayer join cancelled');
+  error.code = 'JOIN_CANCELLED';
+  return error;
+}
+
+export class PeerConnectionError extends Error {
+  constructor({ relayAvailable = false } = {}) {
+    super(relayAvailable
+      ? 'Another player reached matchmaking, but WebRTC timed out even with relay fallback. Check whether the VPN or firewall allows WebRTC, then try again.'
+      : 'Another player reached matchmaking, but the WebRTC data channel timed out. Direct connectivity was blocked by a VPN, NAT, or firewall, and relay credentials were unavailable.');
+    this.name = 'PeerConnectionError';
+    this.code = 'PEER_CONNECTION_FAILED';
+  }
+}
+
+export class SignalingConnectionError extends Error {
+  constructor({ cause } = {}) {
+    super('Could not reach the multiplayer matchmaking service. Check the connection and try again.', { cause });
+    this.name = 'SignalingConnectionError';
+    this.code = 'SIGNALING_UNAVAILABLE';
+  }
+}
+
+export class RelayCredentialsError extends Error {
+  constructor({ cause } = {}) {
+    super('WebRTC relay credentials are temporarily unavailable.', { cause });
+    this.name = 'RelayCredentialsError';
+    this.code = 'TURN_UNAVAILABLE';
+  }
+}
+
+// The vendored room transport reports both initiator and responder ICE
+// failures through its audit seam. Converting those low-level events here
+// keeps networking internals out of the launcher while giving people an
+// honest, actionable error instead of a false singleton lobby.
+export function peerConnectionFailure(event, options) {
+  return PEER_FAILURE_EVENTS.has(event) ? new PeerConnectionError(options) : null;
+}
+
+export async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
+  let response;
+  try {
+    response = await fetcher(TURN_CREDENTIALS_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      cache: 'no-store',
+      signal,
+    });
+  } catch (cause) {
+    throw new RelayCredentialsError({ cause });
+  }
+  if (!response.ok) throw new RelayCredentialsError();
+  const payload = await response.json().catch(() => null);
+  const iceServers = payload?.iceServers;
+  const hasRelay = Array.isArray(iceServers) && iceServers.some((server) => {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    return urls.some((url) => typeof url === 'string' && url.startsWith('turn'))
+      && typeof server?.username === 'string' && typeof server?.credential === 'string';
+  });
+  if (!hasRelay) throw new RelayCredentialsError();
+  return iceServers;
+}
 
 async function browserCapacity(room) {
   const samples = await Promise.all(room.peers().map(async (peer) => {
@@ -186,20 +253,15 @@ export class BridgeSession extends SessionBase {
 
 async function bridgeSession({ roomId, name, signal }) {
   const client = createDwebClient();
-  const cancelled = () => {
-    const error = new Error('multiplayer join cancelled');
-    error.code = 'JOIN_CANCELLED';
-    return error;
-  };
   const onAbort = () => client.dispose();
-  if (signal?.aborted) { client.dispose(); throw cancelled(); }
+  if (signal?.aborted) { client.dispose(); throw cancelledJoinError(); }
   signal?.addEventListener('abort', onAbort, { once: true });
   let hello;
   try { hello = await client.hello(); }
   catch (error) {
     client.dispose();
     signal?.removeEventListener('abort', onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     error.code = 'BRIDGE_UNAVAILABLE';
     throw error;
   }
@@ -217,7 +279,7 @@ async function bridgeSession({ roomId, name, signal }) {
   catch (error) {
     client.dispose();
     signal?.removeEventListener('abort', onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     throw error;
   }
   // Bridge v0 advertises no optional media/RTC-stat surface. Future hosts may
@@ -248,7 +310,7 @@ async function bridgeSession({ roomId, name, signal }) {
   } catch (error) {
     await session.close().catch(() => {});
     signal?.removeEventListener('abort', onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     throw error;
   }
   signal?.removeEventListener('abort', onAbort);
@@ -271,6 +333,7 @@ class BrowserSession extends SessionBase {
     this.voice = createRoomVoice({
       selfDid: this.did,
       scope: this.roomId,
+      iceServers: args.iceServers,
       sendSignal: (to, signal) => this.direct.send(to, signal),
       onState: (status) => this.emit('voice', status),
     });
@@ -373,9 +436,11 @@ class BrowserSession extends SessionBase {
   }
 }
 
-async function browserSession({ roomId, name, identity: suppliedIdentity }) {
+async function browserSession({ roomId, name, identity: suppliedIdentity, signal }) {
   if (!globalThis.RTCPeerConnection || !globalThis.WebSocket || !globalThis.crypto?.subtle) {
-    throw new Error('this browser does not provide WebRTC and WebCrypto');
+    const error = new Error('This browser does not provide the WebRTC and WebCrypto features multiplayer requires.');
+    error.code = 'BROWSER_UNSUPPORTED';
+    throw error;
   }
   const {
     generateIdentity, joinRoom, createGossip, createPresence, createDirect,
@@ -388,19 +453,54 @@ async function browserSession({ roomId, name, identity: suppliedIdentity }) {
   let presence;
   let direct;
   let session;
+  let transportFailure = null;
+  let iceServers;
   const unsubscribers = [];
   try {
-    room = await joinRoom({ roomId, identity, kind: 'website' });
+    try {
+      iceServers = await fetchRelayIceServers({ signal });
+    } catch (error) {
+      if (signal?.aborted) throw cancelledJoinError();
+      // Direct ICE remains useful when the credential service has a transient
+      // problem. If it also fails, PeerConnectionError explains that the relay
+      // fallback was unavailable instead of pretending the room was empty.
+    }
+    try {
+      room = await joinRoom({
+        roomId,
+        identity,
+        kind: 'website',
+        iceServers,
+        audit(event) {
+          const failure = peerConnectionFailure(event, { relayAvailable: !!iceServers });
+          if (!failure) return;
+          transportFailure = failure;
+          session?.emit('transport-status', { state: 'failed', error: failure });
+        },
+      });
+    } catch (error) {
+      if (signal?.aborted) throw cancelledJoinError();
+      if (error instanceof PeerConnectionError) throw error;
+      throw new SignalingConnectionError({ cause: error });
+    }
+    if (signal?.aborted) throw cancelledJoinError();
+    // A rendezvous member answered, but every ICE path failed. Treating that
+    // as an empty room is what made both players create believable singleton
+    // lobbies. Fail the join while the incumbent gets the matching status
+    // event from its responder path.
+    if (transportFailure && room.peers().length === 0) throw transportFailure;
     gossip = createGossip({ mesh: room.mesh });
     sync = createTopicSync({ mesh: room.mesh, gossip, store: createMemoryTopicStore() });
     presence = createPresence({ gossip, selfDid: identity.did, meta: () => ({ name, mediaVoice: 1 }) });
     direct = createDirect({ mesh: room.mesh });
     session = new BrowserSession({
-      roomId, name, did: identity.did, identity, room, gossip, sync, presence, direct, unsubscribers,
+      roomId, name, did: identity.did, identity, room, gossip, sync, presence, direct, iceServers, unsubscribers,
     });
   unsubscribers.push(
     room.onPeer(({ did } = {}) => {
       if (!did || did === session.did) return;
+      transportFailure = null;
+      session.emit('transport-status', { state: 'connected' });
       if (!session.members.has(did)) {
         session.members.set(did, { did, name: '' });
         session.emit('roster', session.roster());
@@ -466,9 +566,8 @@ export async function joinMultiplayerRoom(options) {
     try {
       return await browserSession(options);
     } catch (browserError) {
-      const error = new Error(browserError.message || 'multiplayer connection failed');
-      error.cause = { bridgeError, browserError };
-      throw error;
+      browserError.bridgeError = bridgeError;
+      throw browserError;
     }
   }
 }
