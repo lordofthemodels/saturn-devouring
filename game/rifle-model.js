@@ -12,7 +12,7 @@ import { RIFLE_MESHES } from './rifle-model-data.js';
 
 // Halo's MA5 reads as near-black gunmetal until a highlight catches an edge.
 // One shared tint keeps the first-person and carried versions identical.
-export const MA5_GUNMETAL = 0x030405;
+export const MA5_GUNMETAL = 0x080a0d;
 
 // muzzle tip in the rifle's authored local space (first-strike js/models.js)
 export const RIFLE_MUZZLE = new THREE.Vector3(0, 0.015, 0.515);
@@ -59,21 +59,21 @@ function tex(name) {
 // viewmodel — one instance on screen, so the extra draw calls are free.
 export function buildRifleViewmodel() {
   const group = new THREE.Group();
-  // MATTE GREY, color only (user: the body rendered striped/white). Bisected
-  // live: this vendored WebGPU build compiles the viewmodel body's shader
-  // with a constant lighting term — output ≈ material.color regardless of
-  // every light in the scene (all locked to 0: no change; magenta in →
-  // magenta out) — and an async-loading map bakes in as its white
-  // placeholder, which is also what striped the original: the port's
-  // negative Vs edge-clamped into the atlas's white top row. So the color
-  // IS the on-screen pixel: the games' gunmetal, straight up.
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: MA5_GUNMETAL,
-    roughness: 0.90, metalness: 0.08,
+  // TONE-STABLE RECEIVER. A near-black lit material can still be multiplied
+  // into grey by the player-centered room fill at point-blank range (and PBR
+  // adds a 4% white specular floor before albedo). The first-person receiver
+  // therefore owns its near-black value outright; its silhouette and separate
+  // illuminated display meshes preserve the readable shape.
+  const bodyMat = new THREE.MeshBasicMaterial({ color: MA5_GUNMETAL });
+  // These are luminous decals, not chunks of white plastic. Their PNGs carry
+  // transparent backgrounds; the old opaque Standard materials ignored that
+  // alpha and the hidden pale RGB filled the whole rear housing under light.
+  const decalMat = (name) => new THREE.MeshBasicMaterial({
+    map: tex(name), transparent: true, alphaTest: 0.02, depthWrite: false,
   });
-  const dispMat = new THREE.MeshStandardMaterial({ map: tex('display'), emissive: 0xffffff, emissiveMap: tex('display'), emissiveIntensity: 0.8, roughness: 0.6 });
-  const compassMat = new THREE.MeshStandardMaterial({ map: tex('compass'), emissive: 0xffffff, emissiveMap: tex('compass'), emissiveIntensity: 0.8 });
-  const numberMat = (d) => new THREE.MeshStandardMaterial({ map: tex(`number-${d}`), emissive: 0xffffff, emissiveMap: tex(`number-${d}`), emissiveIntensity: 1.1, transparent: true });
+  const dispMat = decalMat('display');
+  const compassMat = decalMat('compass');
+  const numberMat = (d) => decalMat(`number-${d}`);
 
   group.add(new THREE.Mesh(geometryFor('grip'), bodyMat));
   group.add(new THREE.Mesh(geometryFor('gun'), bodyMat));
