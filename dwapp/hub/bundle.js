@@ -69955,6 +69955,12 @@ var init_agentBuffer = __esm({
 function elevOf(deck) {
   return (5 - deck) * DECK_H + (deck < 5 ? HANGAR_LIFT : 0);
 }
+function floorBandOf(worldY, tolerance = 0.15) {
+  for (let deck = 1; deck < 5; deck++) {
+    if (worldY + tolerance >= elevOf(deck)) return deck;
+  }
+  return 5;
+}
 function isTallRoom(node) {
   return node.type === "open" || (node.roles ?? []).some((r2) => TALL_ROLES.includes(r2));
 }
@@ -78528,7 +78534,7 @@ var init_world = __esm({
       _mergeStaticPass() {
         const moving = new Set(this.doors.map((d2) => d2.mesh));
         const byMat = /* @__PURE__ */ new Map();
-        const deckOf = (y2) => Math.max(1, Math.min(5, 5 - Math.floor((y2 + 0.15) / DECK_H)));
+        const deckOf = floorBandOf;
         let minX = Infinity, maxX = -Infinity;
         for (const n2 of this.graph.nodes) {
           minX = Math.min(minX, n2.x - n2.w / 2);
