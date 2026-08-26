@@ -72067,6 +72067,45 @@ var init_hive = __esm({
         this._combatResponseCache.add(responseKey);
         return form.task?.kind === TASK.ATTACK && !form.task.retreat;
       }
+      // A retreat is only real if its FIRST physical leg moves away from every
+      // visible gun. Graph distance alone cannot express a shooter standing
+      // between a form and a ladder/door: topologically the hatch is an escape,
+      // but in the room it requires running straight past the threat.
+      retreatApproachSafe(form, step3, threats = null) {
+        if (!step3?.link) return false;
+        const sim2 = this.sim, g2 = sim2.graph;
+        const from = form.pnode ?? form.node;
+        const room = g2.node(from);
+        const link = step3.link;
+        let mouth = link.door ?? (link.a === from ? link.padA : link.padB);
+        if (!mouth && link.type === "stairwell") {
+          const to = g2.node(step3.to);
+          const upper = room.deck < to.deck ? room : to;
+          const points = sim2._stairWaypoints(upper);
+          const point = room === upper ? points.top : points.foot;
+          mouth = { x: point.x, y: point.y + sim2._bandC(room.deck) - sim2._bandC(upper.deck) };
+        }
+        mouth ??= { x: g2.node(step3.to).x, y: g2.node(step3.to).y };
+        const armed = threats ?? sim2.lineOfSightAgents(
+          form,
+          (human) => isLivingHuman(human) && (human.faction === FACTION.ARMED || human.faction === FACTION.MARINE)
+        );
+        const vx = mouth.x - form.x, vy = mouth.y - form.y;
+        const lengthSq3 = vx * vx + vy * vy;
+        for (const human of armed) {
+          if (human.deck !== form.deck) continue;
+          const hx = human.x - form.x, hy = human.y - form.y;
+          const startDistance = Math.hypot(hx, hy);
+          const endDistance = Math.hypot(human.x - mouth.x, human.y - mouth.y);
+          if (endDistance < startDistance - 0.25) return false;
+          if (lengthSq3 <= 1e-6) continue;
+          const t2 = Math.max(0, Math.min(1, (hx * vx + hy * vy) / lengthSq3));
+          if (t2 <= 0.02 || t2 >= 0.98) continue;
+          const closest = Math.hypot(hx - vx * t2, hy - vy * t2);
+          if (closest < Math.max(3, sim2.P.combat.meleeRangeM * 1.25) && closest < startDistance - 0.25) return false;
+        }
+        return true;
+      }
       // Losing doorway odds have only two outcomes: withdraw or, if every open
       // route is cut off, fight. The retreat is ground-truth pathing because a
       // form deciding under visible guns cannot afford a stale-belief shortcut
@@ -72087,6 +72126,7 @@ var init_hive = __esm({
           if (node.idx === from) continue;
           const path = g2.path(from, node.idx, ["std"], openEscape);
           if (!path?.length) continue;
+          if (!this.retreatApproachSafe(form, path[0])) continue;
           const away = g2.hops(threatNode, node.idx, ["std"], () => true);
           const exits = [...g2.neighbors(node.idx, ["std"], (link) => !link.locked)].length;
           const score = (away === -1 ? g2.n : away) * 100 - this.localThreat(node.idx) * 20 + exits * 2 - this.trafficPenalty(node.idx) - path.length * 0.25;
@@ -72103,10 +72143,16 @@ var init_hive = __esm({
         return true;
       }
       // Returns true only when escape is impossible and the form must attack.
-      retreatOrFight(form, threatNode) {
-        if (form.task?.retreat && form.task.threatNode === threatNode && (form.move || form.path.length)) return false;
+      retreatOrFight(form, threatNode, replan = false, targetId = void 0) {
+        if (!replan && form.task?.retreat && form.task.threatNode === threatNode && (form.move || form.path.length)) return false;
         if (this.retreatCombatForm(form, threatNode)) return false;
-        this.assign(form, { kind: TASK.ATTACK, node: threatNode, force: true, cornered: true });
+        this.assign(form, {
+          kind: TASK.ATTACK,
+          node: threatNode,
+          targetId,
+          force: true,
+          cornered: true
+        });
         return true;
       }
       // ======================= strategic tick =======================
@@ -76074,13 +76120,21 @@ var init_sim = __esm({
           if (a2.downed || a2.hp <= 0 || a2.dragging !== -1) return false;
           const k2 = a2.task?.kind;
           const shotAt = this.tickCount - (a2.lastHurtTick ?? -999) < 45;
-          if (this.hive.isRetreating(a2) && !shotAt) return false;
           if (k2 === TASK.TRANSFORM || !shotAt && (k2 === TASK.DECOY || k2 === TASK.BAIT || k2 === TASK.DART)) return false;
           const source = shotAt ? this.byId.get(a2.lastHurtBy) : null;
           const ordered = a2.task?.surge && a2.task.targetId !== void 0 ? this.byId.get(a2.task.targetId) : null;
           let best = this.hive.nearestCombatTarget(a2);
           if (!best && source && !source.dead && source.hp > 0) best = source;
           if (!best && ordered && !ordered.dead && ordered.hp > 0) best = ordered;
+          if (this.hive.isRetreating(a2)) {
+            const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
+            const step3 = committed ? null : a2.move ? { to: a2.move.to, link: a2.move.link } : a2.path[0];
+            if (best && step3 && !this.hive.retreatApproachSafe(a2, step3)) {
+              this.hive.retreatOrFight(a2, best.pnode ?? best.node, true, best.id);
+              return false;
+            }
+            if (!shotAt) return false;
+          }
           if (!best) {
             a2.chargeTargetId = -1;
             if (a2.state === STATE.FIGHT) {
