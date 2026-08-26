@@ -29,6 +29,26 @@ function segDist2(px, py, ax, ay, bx, by) {
   return dx * dx + dy * dy;
 }
 
+// Hull containment includes the graph-authored throat between non-flush
+// rooms, not just the room rectangles. The rendered walls already enclose
+// this segment; omitting it made the recovery backstop pull a player out of a
+// perfectly legal connector after two frames (Gymnasium → Security exposed
+// it first). Graph geometry keeps future layouts correct without room IDs.
+export function insideHullPoint(graph, deck, sx, sy, pad = 0.6) {
+  for (const n of graph.nodes) {
+    if (n.deck !== deck) continue;
+    if (sx > n.x - n.w / 2 - pad && sx < n.x + n.w / 2 + pad
+      && sy > n.y - n.d / 2 - pad && sy < n.y + n.d / 2 + pad) return true;
+  }
+  for (const edge of graph.edges) {
+    if (!edge.doorA || !edge.doorB) continue;
+    if (graph.node(edge.a).deck !== deck || graph.node(edge.b).deck !== deck) continue;
+    if (segDist2(sx, sy, edge.doorA.x, edge.doorA.y, edge.doorB.x, edge.doorB.y)
+      < (DOOR_W / 2) ** 2) return true;
+  }
+  return false;
+}
+
 // axis-aligned rect minus square holes -> list of rects (for hatched floors).
 // A hole may carry its own half-extents (hw, hd) — a grand stairwell cuts a
 // much bigger opening than a ladder hatch.
@@ -1947,12 +1967,7 @@ export class World {
   // on the deck; `pad` is the same 0.6 m forgiveness roomAt() uses at the
   // seams, so a body standing in a doorway throat never reads as outside.
   insideHull(deck, sx, sy, pad = 0.6) {
-    for (const n of this.graph.nodes) {
-      if (n.deck !== deck) continue;
-      if (sx > n.x - n.w / 2 - pad && sx < n.x + n.w / 2 + pad
-        && sy > n.y - n.d / 2 - pad && sy < n.y + n.d / 2 + pad) return true;
-    }
-    return false;
+    return insideHullPoint(this.graph, deck, sx, sy, pad);
   }
 
   // Nearest point INSIDE a room on this deck — the recovery target when

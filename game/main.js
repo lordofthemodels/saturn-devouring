@@ -418,9 +418,21 @@ if (LAUNCH.session) {
 const marineMap = new MarineMap(
   document.getElementById('mapcanvas'), document.getElementById('mapside'),
   sim, fireteam.id, player.agent.id);
+const mapDeckButtons = [...document.querySelectorAll('#mapdecks [data-deck]')];
+function selectMapDeck(deck) {
+  marineMap.selectDeck(deck);
+  for (const button of mapDeckButtons) button.classList.toggle('active', Number(button.dataset.deck) === deck);
+}
+for (const button of mapDeckButtons) {
+  button.addEventListener('click', () => selectMapDeck(Number(button.dataset.deck)));
+}
 let mapOpen = false;
 function toggleMap(open = !mapOpen) {
   mapOpen = open;
+  if (mapOpen) {
+    marineMap.followPlayer();
+    selectMapDeck(marineMap.selectedDeck());
+  }
   document.getElementById('mapview').classList.toggle('mv-hidden', !mapOpen);
 }
 const audio = new GameAudio();
@@ -2322,10 +2334,17 @@ window.addEventListener('wheel', (e) => {
 }, { passive: true });
 window.addEventListener('keydown', (e) => {
   if (!introGone) return; // still on the briefing — keys only skip the typing
+  if (e.code === 'KeyM') { toggleMap(); return; }
+  if (mapOpen) {
+    const deck = /^[1-5]$/.test(e.key) ? e.key : /^Digit([1-5])$/.exec(e.code)?.[1];
+    if (deck) selectMapDeck(Number(deck));
+    if (e.code === 'ArrowLeft') selectMapDeck(Math.max(1, marineMap.selectedDeck() - 1));
+    if (e.code === 'ArrowRight') selectMapDeck(Math.min(5, marineMap.selectedDeck() + 1));
+    return;
+  }
   if (e.code === 'KeyR') reloadPressed = true;
   if (e.code === 'KeyF') meleePressed = true;
   if (e.code === 'KeyG') fragPressed = true;
-  if (e.code === 'KeyM') toggleMap();
   if (e.code === 'KeyK') toggleSoundBoard();
   if (e.code === 'KeyJ') toggleAudioLog();
   if (e.code === 'KeyH') toggleFloodHud();

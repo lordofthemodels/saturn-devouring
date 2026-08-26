@@ -77494,6 +77494,18 @@ function segDist2(px2, py2, ax, ay, bx, by) {
   const dx = px2 - (ax + vx * t2), dy = py2 - (ay + vy * t2);
   return dx * dx + dy * dy;
 }
+function insideHullPoint(graph, deck, sx, sy, pad = 0.6) {
+  for (const n2 of graph.nodes) {
+    if (n2.deck !== deck) continue;
+    if (sx > n2.x - n2.w / 2 - pad && sx < n2.x + n2.w / 2 + pad && sy > n2.y - n2.d / 2 - pad && sy < n2.y + n2.d / 2 + pad) return true;
+  }
+  for (const edge of graph.edges) {
+    if (!edge.doorA || !edge.doorB) continue;
+    if (graph.node(edge.a).deck !== deck || graph.node(edge.b).deck !== deck) continue;
+    if (segDist2(sx, sy, edge.doorA.x, edge.doorA.y, edge.doorB.x, edge.doorB.y) < (DOOR_W / 2) ** 2) return true;
+  }
+  return false;
+}
 function rectMinusHoles(x0, z0, x1, z1, holes) {
   let rects = [[x0, z0, x1, z1]];
   for (const h2 of holes) {
@@ -79315,11 +79327,7 @@ var init_world = __esm({
       // on the deck; `pad` is the same 0.6 m forgiveness roomAt() uses at the
       // seams, so a body standing in a doorway throat never reads as outside.
       insideHull(deck, sx, sy, pad = 0.6) {
-        for (const n2 of this.graph.nodes) {
-          if (n2.deck !== deck) continue;
-          if (sx > n2.x - n2.w / 2 - pad && sx < n2.x + n2.w / 2 + pad && sy > n2.y - n2.d / 2 - pad && sy < n2.y + n2.d / 2 + pad) return true;
-        }
-        return false;
+        return insideHullPoint(this.graph, deck, sx, sy, pad);
       }
       // Nearest point INSIDE a room on this deck — the recovery target when
       // something has put a body out in the void. Returns sim coords.
@@ -83827,6 +83835,7 @@ var init_map = __esm({
         this._marineRep = /* @__PURE__ */ new Map();
         this._link = /* @__PURE__ */ new Map();
         this._pd = -1;
+        this._viewDeck = null;
         this._panelAt = 0;
         this.marines0 = sim2.agents.filter((a2) => a2.faction === FACTION.MARINE).length;
         this.s = 1;
@@ -83860,6 +83869,15 @@ var init_map = __esm({
       // seconds until the current state flips — drives the countdown on the band
       linkFor(deck) {
         return Math.max(0, (this._link.get(deck)?.until ?? 0) - this.sim.t);
+      }
+      followPlayer() {
+        this._viewDeck = null;
+      }
+      selectedDeck() {
+        return this._viewDeck ?? this._pd;
+      }
+      selectDeck(deck) {
+        this._viewDeck = Math.max(1, Math.min(5, deck));
       }
       observe() {
         const { sim: sim2 } = this;
@@ -83949,12 +83967,30 @@ var init_map = __esm({
         if (canvas2.width !== Math.round(cw * dpr)) canvas2.width = Math.round(cw * dpr);
         if (canvas2.height !== Math.round(ch * dpr)) canvas2.height = Math.round(ch * dpr);
         const W2 = canvas2.width, H2 = canvas2.height;
-        const gutter = 280 * dpr;
-        const s2 = Math.min((W2 - gutter) / (g2.width + 6), H2 / (g2.height + 6)) * 0.98;
+        const compact = cw < 900;
+        const gutter = compact ? 0 : 280 * dpr;
+        const top = 28 * dpr, bottom = 32 * dpr;
+        const plotW = W2 - gutter, plotH = H2 - top - bottom;
+        this._shownDeck = this._viewDeck ?? this._pd;
+        this.canvas.dataset.deck = String(this._shownDeck);
+        const deckNodes = g2.nodes.filter((n2) => n2.deck === this._shownDeck);
+        const x0 = Math.min(...deckNodes.map((n2) => n2.x - n2.w / 2)) - 3;
+        const x1 = Math.max(...deckNodes.map((n2) => n2.x + n2.w / 2)) + 3;
+        const y0 = Math.min(...deckNodes.map((n2) => n2.y - n2.d / 2)) - 4;
+        const y1 = Math.max(...deckNodes.map((n2) => n2.y + n2.d / 2)) + 3;
+        this._view = { x0, x1, y0, y1 };
+        const s2 = Math.min(plotW / (x1 - x0), plotH / (y1 - y0)) * 0.98;
         this.s = s2;
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, W2, H2);
-        ctx.setTransform(s2, 0, 0, s2, gutter + (W2 - gutter) / 2 - g2.width / 2 * s2, H2 / 2 - g2.height / 2 * s2);
+        ctx.setTransform(
+          s2,
+          0,
+          0,
+          s2,
+          gutter + plotW / 2 - (x0 + x1) / 2 * s2,
+          top + plotH / 2 - (y0 + y1) / 2 * s2
+        );
         this._deckBands(g2);
         this._rooms(g2);
         this._doorsAndPads(g2);
@@ -83969,8 +84005,10 @@ var init_map = __esm({
         const { ctx } = this;
         ctx.font = this._font(11);
         for (let d2 = 1; d2 <= 5; d2++) {
+          if (d2 !== this._shownDeck) continue;
           const band = g2.deckBands[d2 - 1];
-          ctx.fillStyle = d2 % 2 ? "#0d1117" : "#0b0e14";
+          const current = d2 === this._pd;
+          ctx.fillStyle = current ? "#111a27" : d2 % 2 ? "#0d1117" : "#0b0e14";
           ctx.fillRect(0, band.y0, g2.width, band.y1 - band.y0);
           const deckNodes = g2.nodes.filter((n2) => n2.deck === d2);
           if (deckNodes.length) {
@@ -83978,9 +84016,9 @@ var init_map = __esm({
             const x1 = Math.max(...deckNodes.map((n2) => n2.x + n2.w / 2)) + 1.6;
             const y0 = Math.min(...deckNodes.map((n2) => n2.y - n2.d / 2)) - 1.6;
             const y1 = Math.max(...deckNodes.map((n2) => n2.y + n2.d / 2)) + 1.6;
-            ctx.fillStyle = "#11161f";
-            ctx.strokeStyle = "#232d40";
-            ctx.lineWidth = this._lw(1.4);
+            ctx.fillStyle = current ? "#151f2d" : "#11161f";
+            ctx.strokeStyle = current ? "#526b8e" : "#2c3850";
+            ctx.lineWidth = this._lw(current ? 2 : 1.4);
             ctx.beginPath();
             ctx.roundRect(x0, y0, x1 - x0, y1 - y0, 3);
             ctx.fill();
@@ -84003,24 +84041,31 @@ var init_map = __esm({
             }
             ctx.restore();
           }
-          ctx.fillStyle = down ? "#7a5a2c" : "#38445a";
-          ctx.fillText(`DECK ${d2} — ${["COMMAND", "HABITATION", "OPERATIONS", "ENGINEERING", "FLIGHT"][d2 - 1]}`, 3, band.y0 + this._lw(13));
+          ctx.fillStyle = down ? "#9a7135" : current ? "#b9cce8" : "#60708a";
+          ctx.font = this._font(current ? 12 : 11);
+          const labelX = this._view.x0 + 1;
+          ctx.fillText(`DECK ${d2} — ${["COMMAND", "HABITATION", "OPERATIONS", "ENGINEERING", "FLIGHT"][d2 - 1]}`, labelX, band.y0 + this._lw(13));
           if (down) {
             ctx.fillStyle = "#e09a4a";
             ctx.fillText("◆ LINK LOST — RETRYING", g2.width - this._lw(150), band.y0 + this._lw(13));
           }
         }
-        ctx.fillStyle = "#232b38";
-        ctx.fillText("BOW ◄", 3, g2.deckBands[0].y0 - this._lw(4));
-        ctx.fillText("► STERN", g2.width - this._lw(58), g2.deckBands[0].y0 - this._lw(4));
+        ctx.fillStyle = "#526178";
+        const firstBand = g2.deckBands[this._shownDeck - 1];
+        const bowX = this._view.x0 + 1;
+        const sternX = this._view.x1 - this._lw(58);
+        ctx.fillText("BOW ◄", bowX, firstBand.y0 - this._lw(4));
+        ctx.fillText("► STERN", sternX, firstBand.y0 - this._lw(4));
       }
       _rooms(g2) {
         const { ctx, sim: sim2 } = this;
         for (const n2 of g2.nodes) {
+          if (n2.deck !== this._shownDeck) continue;
           const seen = this.lastSeenT[n2.idx] >= 0;
           const live = this.liveObs[n2.idx] === 1;
           const age = seen ? sim2.t - this.lastSeenT[n2.idx] : Infinity;
           const conf = live ? 1 : Math.max(0.3, 1 - age / STALE_FADE_SEC);
+          const current = n2.deck === this._pd;
           const x0 = n2.x - n2.w / 2, y0 = n2.y - n2.d / 2;
           ctx.fillStyle = !seen ? "#0a0d12" : live ? "#1a2231" : "#12161f";
           ctx.fillRect(x0, y0, n2.w, n2.d);
@@ -84039,17 +84084,19 @@ var init_map = __esm({
               ctx.fillRect(x0, y0, n2.w, n2.d);
             }
           }
-          ctx.strokeStyle = live ? "#4d6f9f" : seen ? "#2a3547" : "#1b2330";
-          ctx.lineWidth = this._lw(live ? 1.6 : 1);
+          ctx.strokeStyle = live ? "#78a7e0" : seen ? "#42536d" : current ? "#34445d" : "#263247";
+          ctx.lineWidth = this._lw(live ? 1.8 : current ? 1.35 : 1);
           ctx.strokeRect(x0, y0, n2.w, n2.d);
-          if (n2.w >= 15 || live || seen && (this.seenFlood[n2.idx] > 0.05 || this.seenDark[n2.idx])) {
-            ctx.fillStyle = seen ? "#7e90aa" : "#3a4557";
-            ctx.font = this._font(10);
-            ctx.textAlign = "center";
-            const above = n2.type === "corridor" ? n2.y + this._lw(3) : y0 - this._lw(3);
-            ctx.fillText(n2.name, n2.x, above);
-            ctx.textAlign = "left";
-          }
+          ctx.fillStyle = current ? "#dce9fa" : seen ? "#a6b7cf" : "#64748b";
+          ctx.font = this._font(current ? 10.5 : 10);
+          ctx.textAlign = "center";
+          const above = n2.type === "corridor" ? n2.y + this._lw(3) : y0 - this._lw(3);
+          ctx.strokeStyle = "rgba(2, 4, 8, 0.96)";
+          ctx.lineWidth = this._lw(3);
+          ctx.lineJoin = "round";
+          ctx.strokeText(n2.name, n2.x, above);
+          ctx.fillText(n2.name, n2.x, above);
+          ctx.textAlign = "left";
           const corpses = live ? this._corpseScratch[n2.idx] : seen ? this.seenCorpses[n2.idx] : 0;
           if (corpses > 0) {
             ctx.fillStyle = `rgba(150, 150, 150, ${0.85 * conf})`;
@@ -90963,8 +91010,16 @@ function setTeamSpots(n2) {
     scene.add(teamTorches[i2].target);
   }
 }
+function selectMapDeck(deck) {
+  marineMap.selectDeck(deck);
+  for (const button of mapDeckButtons) button.classList.toggle("active", Number(button.dataset.deck) === deck);
+}
 function toggleMap(open = !mapOpen) {
   mapOpen = open;
+  if (mapOpen) {
+    marineMap.followPlayer();
+    selectMapDeck(marineMap.selectedDeck());
+  }
   document.getElementById("mapview").classList.toggle("mv-hidden", !mapOpen);
 }
 function toggleSoundBoard() {
@@ -92871,7 +92926,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, marineMap, mapOpen, audio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, reloadPressed, meleePressed, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
+var canvas, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, marineMap, mapDeckButtons, mapOpen, audio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, reloadPressed, meleePressed, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -93115,6 +93170,10 @@ var init_main = __esm({
       fireteam.id,
       player.agent.id
     );
+    mapDeckButtons = [...document.querySelectorAll("#mapdecks [data-deck]")];
+    for (const button of mapDeckButtons) {
+      button.addEventListener("click", () => selectMapDeck(Number(button.dataset.deck)));
+    }
     mapOpen = false;
     audio = new GameAudio();
     canvas.addEventListener("click", () => audio.ensure());
@@ -93971,10 +94030,20 @@ var init_main = __esm({
     }, { passive: true });
     window.addEventListener("keydown", (e2) => {
       if (!introGone) return;
+      if (e2.code === "KeyM") {
+        toggleMap();
+        return;
+      }
+      if (mapOpen) {
+        const deck = /^[1-5]$/.test(e2.key) ? e2.key : /^Digit([1-5])$/.exec(e2.code)?.[1];
+        if (deck) selectMapDeck(Number(deck));
+        if (e2.code === "ArrowLeft") selectMapDeck(Math.max(1, marineMap.selectedDeck() - 1));
+        if (e2.code === "ArrowRight") selectMapDeck(Math.min(5, marineMap.selectedDeck() + 1));
+        return;
+      }
       if (e2.code === "KeyR") reloadPressed = true;
       if (e2.code === "KeyF") meleePressed = true;
       if (e2.code === "KeyG") fragPressed = true;
-      if (e2.code === "KeyM") toggleMap();
       if (e2.code === "KeyK") toggleSoundBoard();
       if (e2.code === "KeyJ") toggleAudioLog();
       if (e2.code === "KeyH") toggleFloodHud();
