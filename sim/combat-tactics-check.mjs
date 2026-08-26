@@ -58,6 +58,60 @@ assert.equal(attacker.task.kind, TASK.ATTACK, 'a cornered form must attack');
 assert.equal(attacker.task.force, true, 'the cornered attack must bypass the odds gate');
 for (const [edge, locked] of originalLocks) edge.locked = locked;
 
+// Life-sense must carry exact room makeup through enclosed vertical trunks.
+// A lone form should withdraw before climbing into a firing squad, while a
+// pack that satisfies the same shared odds rule may commit. The fixture finds
+// the connection from graph structure so future ship layouts need no updates.
+const verticalSim = new Sim('vertical-life-sense-check');
+for (const agent of verticalSim.agents) agent.dead = true;
+let vertical = null;
+for (const edge of verticalSim.graph.edges) {
+  if (edge.kind !== 'std' || (edge.type !== 'ladder' && edge.type !== 'lift')) continue;
+  if (verticalSim.graph.node(edge.a).deck === verticalSim.graph.node(edge.b).deck) continue;
+  for (const [from, to] of [[edge.a, edge.b], [edge.b, edge.a]]) {
+    const escape = [...verticalSim.graph.neighbors(from, ['std'], (candidate) => !candidate.locked)]
+      .find(({ to: other }) => other !== to);
+    if (escape) { vertical = { edge, from, to }; break; }
+  }
+  if (vertical) break;
+}
+assert.ok(vertical, 'vertical sensing fixture needs a ladder/lift with an alternate escape');
+const loneClimber = makeAgent(FACTION.COMBAT, vertical.from, verticalSim.graph);
+const landingSquad = [0, 1, 2].map(() => makeAgent(FACTION.MARINE, vertical.to, verticalSim.graph));
+verticalSim.spawn(loneClimber);
+for (const defender of landingSquad) verticalSim.spawn(defender);
+verticalSim.tickCount = 1;
+verticalSim.t = verticalSim.dt;
+verticalSim._refreshOccupancy();
+assert.equal(verticalSim.lineOfSightAgents(loneClimber, (agent) => landingSquad.includes(agent)).length, 0,
+  'an enclosed vertical trunk must remain opaque to ordinary LOS');
+verticalSim.hive.updateBeliefs();
+assert.ok(landingSquad.every((defender) => verticalSim.hive.beliefs.get(defender.id)?.conf === 1),
+  'life-sense must learn every living occupant on the adjacent landing');
+assert.ok(verticalSim.hive.believedHardness[vertical.to] >= landingSquad.length,
+  'the sensed landing must contribute its full firing-squad strength');
+loneClimber.task = { kind: TASK.ATTACK, node: vertical.to };
+verticalSim.setPath(loneClimber, [{ to: vertical.to, link: vertical.edge, layer: 'std' }]);
+verticalSim._advanceMovement(verticalSim.dt);
+assert.equal(loneClimber.task.retreat, true,
+  'a lone form must retreat before climbing into a sensed firing squad');
+assert.notEqual(loneClimber.move?.to ?? loneClimber.path[0]?.to, vertical.to,
+  'the retreat must not enter the defended vertical trunk');
+
+const enoughClimbers = Array.from({ length: 9 }, () => makeAgent(FACTION.COMBAT, vertical.from, verticalSim.graph));
+loneClimber.dead = true;
+for (const form of enoughClimbers) {
+  verticalSim.spawn(form);
+  form.task = { kind: TASK.ATTACK, node: vertical.to };
+  verticalSim.setPath(form, [{ to: vertical.to, link: vertical.edge, layer: 'std' }]);
+}
+verticalSim.tickCount++;
+verticalSim.t += verticalSim.dt;
+verticalSim._refreshOccupancy();
+verticalSim._advanceMovement(verticalSim.dt);
+assert.ok(enoughClimbers.some((form) => form.move?.to === vertical.to),
+  'a pack with sufficient sensed odds must be allowed to start the crossing');
+
 // A retreat issued during a doorway leg must replace that leg. Otherwise the
 // old crossing lands first and the new path begins with an edge connected to
 // the room left behind, which lets the form traverse an unrelated lift.

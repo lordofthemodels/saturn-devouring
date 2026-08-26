@@ -3,7 +3,7 @@
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "Halo Charon POC \u2014 simulation core + VAT rendering validation harness",
+  "description": "Halo Charon POC — simulation core + VAT rendering validation harness",
   "scripts": {
     "serve": "python3 -m http.server 8000",
     "headless": "node sim/headless.js",
@@ -25,6 +25,7 @@
     "deploy": "npm run build:site && wrangler deploy"
   },
   "devDependencies": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "wrangler": "^4.126.0"
   }
 }

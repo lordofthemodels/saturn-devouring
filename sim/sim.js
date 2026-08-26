@@ -1714,14 +1714,21 @@ export class Sim {
         if (a.faction === FACTION.COMBAT && link.kind === 'std' && a.task?.kind !== TASK.DART) {
           const retreating = this.hive.isRetreating(a);
           const visibleFight = this.hive.combatLineOfSight(a);
+          // Enclosed lifts/ladders have no sightline, but they are adjacent in
+          // the same topology. Life-sense therefore gets an equal veto: an
+          // understrength pack withdraws before entering the trunk instead of
+          // discovering the firing squad one body at a time at the far end.
+          const sensedCrossing = retreating || this.hive.respondToSensedRoom(a, step.to);
           const retreatBlocked = retreating && visibleFight.defense > 0
             && visibleFight.threatNode === step.to;
           const attackOutmatched = !retreating
             && !this.hive.canPressCombatContact(a, !!a.task?.surge, a.task?.force);
-          if (retreatBlocked || attackOutmatched) {
+          if (!sensedCrossing || retreatBlocked || attackOutmatched) {
             a.path = [];
             a.charging = false;
-            this.hive.retreatOrFight(a, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step.to);
+            if (sensedCrossing) {
+              this.hive.retreatOrFight(a, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step.to);
+            }
             continue;
           }
         }
