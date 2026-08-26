@@ -1,3 +1,5 @@
+// 15: sliding doors are deterministic sim state, so combat LOS cannot pass
+// through a visibly shut but unlocked panel.
 // 14: marine grenade drops and pickup claims synchronize as world state.
 // 13: player snapshot rows carry a per-player afterlife body and the
 // authority-owned 30-second co-op respawn clock.
@@ -24,7 +26,7 @@
 // positional array validated on its LENGTH, so a v2 peer would reject every
 // v3 row wholesale — the version is what keeps the two builds from meeting in
 // the same room at all instead of staring at frozen NPCs.
-export const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 15;
 export const MAX_PLAYERS = 4;
 export const QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
 const ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;

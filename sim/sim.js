@@ -35,6 +35,9 @@ export class Sim {
 
     const { graph, agents, squads } = initRun(this.seed, this.rng, this.P);
     this.graph = graph;
+    for (const edge of graph.edges) {
+      if (edge.door) edge.open01 = edge.locked ? this.P.door.ajarFraction : 0;
+    }
     this.agents = agents;
     this.squads = squads;
     this.byId = new Map(agents.map((a) => [a.id, a]));
@@ -320,10 +323,9 @@ export class Sim {
   // GEOMETRIC LINE OF SIGHT (per-room combat retirement — user: "NPCs should
   // be operating on line of sight"). A 2D segment walk from room to room:
   // sight passes only where the segment crosses a doorway's opening span.
-  // Openings are precomputed on the graph (edge.losOpen). An unlocked door
-  // contributes its full opening because it slides for anyone approaching;
-  // a locked door contributes NONE. The rendered panel seam is visual damage,
-  // not a loophole through which AI can acquire and shoot a target.
+  // Openings are precomputed on the graph (edge.losOpen), but a sliding panel
+  // contributes one only after the deterministic sim says it is physically
+  // clear. Lock state alone is not sight: an unlocked but shut panel is steel.
   //   DOOR_HALF mirrors game/world.js DOOR_W (1.7) / 2.
   losClear(x1, y1, r1, x2, y2, r2) {
     if (r1 === r2) return true;
@@ -343,7 +345,8 @@ export class Sim {
       let bestTo = -1, bestT = Infinity;
       for (const { to, link } of g.adj.std[cur]) {
         const o = link.losOpen;
-        if (!o || link.locked) continue;
+        if (!o || link.locked || (!link.busted
+          && (link.open01 ?? 0) < this.P.door.sightOpenFraction)) continue;
         let t, cross;
         if (o.axis === 'x') {          // wall at x = o.at, opening spans y
           if (Math.abs(dx) < 1e-9) continue;
@@ -952,6 +955,37 @@ export class Sim {
     a.charging = charging;
   }
 
+  // One authoritative sliding-door clock serves AI sight, rifle damage, and
+  // the renderer. The old renderer-only clock let marines acquire targets
+  // through an unlocked panel while the player was visibly watching it shut.
+  _advanceDoors(dt) {
+    const D = this.P.door;
+    const radius2 = D.openRadiusM * D.openRadiusM;
+    const byDeck = (this._doorAgentsByDeck ??= [[], [], [], [], [], []]);
+    for (const deck of byDeck) deck.length = 0;
+    for (const agent of this.agents) {
+      if (agent.dead || agent.hp <= 0 || agent.faction === FACTION.CORPSE) continue;
+      (byDeck[agent.deck] ??= []).push(agent);
+    }
+    const rate = D.slideSpeedMps / (CLEAR_H - 0.3);
+    let changed = false;
+    for (const edge of this.graph.edges) {
+      if (!edge.door) continue;
+      let want = edge.busted ? 0.62 : edge.locked ? D.ajarFraction : 0;
+      if (!edge.busted && !edge.locked) {
+        const deck = this.graph.node(edge.a).deck;
+        for (const agent of byDeck[deck] ?? []) {
+          const dx = agent.x - edge.door.x, dy = agent.y - edge.door.y;
+          if (dx * dx + dy * dy < radius2) { want = 1; break; }
+        }
+      }
+      const was = edge.open01 ?? 0;
+      edge.open01 = was + Math.sign(want - was) * Math.min(Math.abs(want - was), rate * dt);
+      if (edge.open01 !== was) changed = true;
+    }
+    if (changed) this._losAgentCache.clear();
+  }
+
   // ======================= main tick =======================
   tick() {
     const dt = this.dt;
@@ -1018,6 +1052,7 @@ export class Sim {
     this._separate(dt);
     this._fireAvoid(dt);
     this._fireDamage(dt);
+    this._advanceDoors(dt);
     this._refreshOccupancy();
     this._advanceDarkness(dt);
     resolveCombat(this, dt);

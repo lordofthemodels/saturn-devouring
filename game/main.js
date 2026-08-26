@@ -3613,7 +3613,6 @@ function placeDeathCamera(agent) {
   return anchor;
 }
 let last = performance.now();
-const doorMovers = [];
 function frame(now) {
   // ONE BAD FRAME MUST NOT KILL THE GAME (playtest: a first-ever hard freeze
   // with a black canvas and a live-looking HUD). The re-request used to be the
@@ -3982,22 +3981,10 @@ function frame(now) {
   syncGrenadeDropMeshes();
   shake = Math.max(0, shake - dtReal * 3);
 
-  // sliding doors open for ANY movement near them (user rule) — mover
-  // records come from a reused pool (perf pass 2: ~200 object literals per
-  // frame was measurable GC churn)
-  let nMovers = 0;
-  const takeMover = () => doorMovers[nMovers] ?? (doorMovers[nMovers] = { deck: 0, x: 0, z: 0 });
-  { const m = takeMover(); m.deck = player.deck; m.x = player.x; m.z = player.z; nMovers++; }
-  const buf = sim.buffer;
-  for (let i = 0; i < buf.count; i++) {
-    if (buf.faction[i] === 6) continue; // the dead don't trip doors
-    const deck = buf.posZ[i];
-    const [wx, wz] = world.simToWorld(buf.posX[i], buf.posY[i], deck);
-    const m = takeMover();
-    m.deck = deck; m.x = wx; m.z = wz;
-    nMovers++;
-  }
-  world.updateDoors(dtReal, doorMovers, nMovers);
+  // Non-authority peers do not run sim ticks; advance the same pure door clock
+  // from their received poses so their panels still track the host's geometry.
+  if (!isSimAuthority()) sim._advanceDoors(dtReal);
+  world.updateDoors(dtReal, sim.P.door.slideSpeedMps);
   // keep the door colliders on the sim's lock state (setDoorClosed is a
   // dirty-checked no-op when nothing changed — ~60 cheap comparisons)
   if (physics) for (let i = 0; i < world.doors.length; i++) {

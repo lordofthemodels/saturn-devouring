@@ -69032,7 +69032,7 @@ function validGamePacket(packet) {
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 14;
+    PROTOCOL_VERSION = 15;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
@@ -69265,6 +69265,12 @@ var init_params = __esm({
       // form-seconds of battering (two forms halve it), blast doors hold longer.
       door: {
         lockedFraction: 0.25,
+        // Sliding panels are simulation state, not render dressing: LOS and rifle
+        // damage stay blocked until the same panel the player sees is clear.
+        openRadiusM: 2.6,
+        slideSpeedMps: 4.5,
+        ajarFraction: 0.22,
+        sightOpenFraction: 0.92,
         // the ship graph is nearly a tree (52 of 53 doors are sole-route), so
         // closures are almost always the short choke kind — a fatter latent
         // population keeps the ship visibly alive without ever caging anyone
@@ -73235,6 +73241,16 @@ var init_hive = __esm({
           this.assign(guard, { kind: TASK.GUARD, node: chosenScreen.node, screen: chosenScreen.seed.id });
           chosenGuards.add(guard.id);
         }
+        const disruptors = [];
+        for (let index = 0; index < Math.min(mobileReserve, availableGuards.length); index++) {
+          const form = availableGuards[index];
+          const threatNode = threatNodes[index % threatNodes.length];
+          const staging = this.stagingNodeNear(threatNode);
+          const show = staging !== -1 ? staging : form.pnode ?? form.node;
+          if (form.move) sim2._interruptMove(form);
+          this.assign(form, { kind: TASK.DECOY, show, stage: 0, pressured: true });
+          disruptors.push(form.id);
+        }
         for (const guard of combat) {
           if (guard.task?.screen === void 0 || chosenGuards.has(guard.id)) continue;
           if (guard.move) sim2._interruptMove(guard);
@@ -73242,7 +73258,7 @@ var init_hive = __esm({
         }
         if (!this._pressureSeedLogged) {
           this._pressureSeedLogged = true;
-          sim2.log("hive", `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? "" : "s"} behind a ${chosenGuards.size}-form screen`);
+          sim2.log("hive", `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? "" : "s"} behind a ${chosenGuards.size}-form screen while ${disruptors.length} disruptor${disruptors.length === 1 ? "" : "s"} draw the guns`);
         }
       }
       // Shared coverage planner for every mobile appendage. The target ordering
@@ -75301,6 +75317,9 @@ var init_sim = __esm({
         this.strategicEvery = Math.round(this.P.sim.strategicTickSec * this.P.sim.tickHz);
         const { graph, agents: agents2, squads } = initRun(this.seed, this.rng, this.P);
         this.graph = graph;
+        for (const edge of graph.edges) {
+          if (edge.door) edge.open01 = edge.locked ? this.P.door.ajarFraction : 0;
+        }
         this.agents = agents2;
         this.squads = squads;
         this.byId = new Map(agents2.map((a2) => [a2.id, a2]));
@@ -75535,10 +75554,9 @@ var init_sim = __esm({
       // GEOMETRIC LINE OF SIGHT (per-room combat retirement — user: "NPCs should
       // be operating on line of sight"). A 2D segment walk from room to room:
       // sight passes only where the segment crosses a doorway's opening span.
-      // Openings are precomputed on the graph (edge.losOpen). An unlocked door
-      // contributes its full opening because it slides for anyone approaching;
-      // a locked door contributes NONE. The rendered panel seam is visual damage,
-      // not a loophole through which AI can acquire and shoot a target.
+      // Openings are precomputed on the graph (edge.losOpen), but a sliding panel
+      // contributes one only after the deterministic sim says it is physically
+      // clear. Lock state alone is not sight: an unlocked but shut panel is steel.
       //   DOOR_HALF mirrors game/world.js DOOR_W (1.7) / 2.
       losClear(x1, y1, r1, x2, y2, r2) {
         if (r1 === r2) return true;
@@ -75556,7 +75574,7 @@ var init_sim = __esm({
           let bestTo = -1, bestT = Infinity;
           for (const { to, link } of g2.adj.std[cur]) {
             const o2 = link.losOpen;
-            if (!o2 || link.locked) continue;
+            if (!o2 || link.locked || !link.busted && (link.open01 ?? 0) < this.P.door.sightOpenFraction) continue;
             let t2, cross4;
             if (o2.axis === "x") {
               if (Math.abs(dx) < 1e-9) continue;
@@ -76117,6 +76135,39 @@ var init_sim = __esm({
         }
         a2.charging = charging;
       }
+      // One authoritative sliding-door clock serves AI sight, rifle damage, and
+      // the renderer. The old renderer-only clock let marines acquire targets
+      // through an unlocked panel while the player was visibly watching it shut.
+      _advanceDoors(dt) {
+        const D2 = this.P.door;
+        const radius2 = D2.openRadiusM * D2.openRadiusM;
+        const byDeck = this._doorAgentsByDeck ??= [[], [], [], [], [], []];
+        for (const deck of byDeck) deck.length = 0;
+        for (const agent of this.agents) {
+          if (agent.dead || agent.hp <= 0 || agent.faction === FACTION.CORPSE) continue;
+          (byDeck[agent.deck] ??= []).push(agent);
+        }
+        const rate = D2.slideSpeedMps / (CLEAR_H - 0.3);
+        let changed = false;
+        for (const edge of this.graph.edges) {
+          if (!edge.door) continue;
+          let want = edge.busted ? 0.62 : edge.locked ? D2.ajarFraction : 0;
+          if (!edge.busted && !edge.locked) {
+            const deck = this.graph.node(edge.a).deck;
+            for (const agent of byDeck[deck] ?? []) {
+              const dx = agent.x - edge.door.x, dy = agent.y - edge.door.y;
+              if (dx * dx + dy * dy < radius2) {
+                want = 1;
+                break;
+              }
+            }
+          }
+          const was = edge.open01 ?? 0;
+          edge.open01 = was + Math.sign(want - was) * Math.min(Math.abs(want - was), rate * dt);
+          if (edge.open01 !== was) changed = true;
+        }
+        if (changed) this._losAgentCache.clear();
+      }
       // ======================= main tick =======================
       tick() {
         const dt = this.dt;
@@ -76153,6 +76204,7 @@ var init_sim = __esm({
         this._separate(dt);
         this._fireAvoid(dt);
         this._fireDamage(dt);
+        this._advanceDoors(dt);
         this._refreshOccupancy();
         this._advanceDarkness(dt);
         resolveCombat(this, dt);
@@ -78663,81 +78715,6 @@ var init_lights = __esm({
   }
 });
 
-// game/fps-data.js
-var MA5, ODST, FRAG, DOORS;
-var init_fps_data = __esm({
-  "game/fps-data.js"() {
-    MA5 = {
-      name: "MA5 ASSAULT RIFLE",
-      // what every marine aboard carries
-      rpm: 900,
-      damage: 8,
-      mag: 60,
-      reserve: 240,
-      reloadS: 2.3,
-      spreadBaseDeg: 1.35,
-      spreadMaxDeg: 6.2,
-      bloomPerShotDeg: 0.38,
-      spreadDecayDegS: 4.4,
-      kickDeg: 0.2,
-      meleeDamage: 45,
-      meleeRange: 2.2,
-      meleeCooldownS: 0.9
-    };
-    ODST = {
-      // "an ODST with extra life": ballistic armor over meat — the armor layer
-      // soaks damage and recovers when you break contact; the health under it
-      // does not.
-      armor: 50,
-      health: 45,
-      armorDelayS: 4.2,
-      armorRegenPerS: 22,
-      // movement (first-strike player feel — the old 2.4 m/s walk read as mud)
-      walkSpeed: 5.6,
-      sprintSpeed: 7.6,
-      accel: 14,
-      airControl: 0.35,
-      gravity: 24,
-      jumpVel: 8.2,
-      eyeHeight: 1.62,
-      climbSpeed: 2.6,
-      // how fast a knockback bleeds off (see FpsController.shoveX). 7/s puts a
-      // A claw hit moves the capsule about a metre, then returns control promptly.
-      // The wall sweep still spends the impulse harmlessly against solid geometry.
-      shoveDecayPerSec: 6
-    };
-    FRAG = {
-      count: 4,
-      // you board with four
-      max: 12,
-      // how many you can carry (resupply at the armory)
-      throwSpeed: 24,
-      // m/s out of the hand — a real hard throw, reaches across a bay
-      upBoost: 4.2,
-      // lofted arc so it carries down a long corridor
-      gravity: 20,
-      fuseS: 2.04,
-      // 15% shorter fuse; still long enough for the full throw arc
-      bounce: 0.42,
-      // velocity kept on impact
-      radiusM: 8,
-      // heavy blast — clears a room, not just a corner
-      damage: 135
-      // sim explodeAt payload (falls off to ~40% at the edge)
-    };
-    DOORS = {
-      openRadius: 2.6,
-      // any body this close slides the door open
-      slideSpeed: 4.5,
-      // m/s of panel travel
-      // a SEALED door is stuck ajar, not shut (user: red-painted broken doors
-      // killed the realism): the damaged seam is visible, but it is too narrow
-      // for reliable target acquisition or fire. 0.22 travel ≈ a 28 cm slot.
-      ajar01: 0.22
-    };
-  }
-});
-
 // game/world.js
 function observationSideForRoom(room) {
   if (!room?.row || room.type === "corridor") return null;
@@ -78825,7 +78802,6 @@ var init_world = __esm({
   "game/world.js"() {
     init_three_webgpu_module();
     init_lights();
-    init_fps_data();
     init_rng();
     init_geometry();
     DOOR_W = 1.7;
@@ -80368,7 +80344,7 @@ var init_world = __esm({
             // a sealed door BOOTS ajar (no boot-time hiss chorus from 16 sealed
             // doors all grinding open on frame one)
             lampSlots,
-            open01: e2.locked ? DOORS.ajar01 ?? 0.22 : 0,
+            open01: e2.open01 ?? 0,
             // deterministic buckle for the jammed doors (user: broken doors
             // being just red is unrealistic) — a slight ajar gap and tilt
             buckle: bad ? {
@@ -80561,15 +80537,9 @@ var init_world = __esm({
         this._strips.commit();
         this._lamps.commit();
       }
-      updateDoors(dt, movers, nMovers = movers.length) {
-        const r2 = DOORS.openRadius * DOORS.openRadius;
+      updateDoors(dt, slideSpeedMps) {
         let anyStamp = false;
-        const byDeck = this._moversByDeck ??= [[], [], [], [], [], []];
-        for (const b2 of byDeck) b2.length = 0;
-        for (let i2 = 0; i2 < nMovers; i2++) {
-          const m2 = movers[i2];
-          (byDeck[m2.deck] ?? (byDeck[m2.deck] = [])).push(m2);
-        }
+        const renderRate = slideSpeedMps / (CLEAR_H - 0.3);
         const flick = Math.sin(performance.now() * 0.013) * Math.sin(performance.now() * 37e-4);
         for (const d2 of this.doors) {
           if (d2.edge.busted && d2._busted) {
@@ -80588,7 +80558,6 @@ var init_world = __esm({
             for (const s2 of d2.lampSlots) this.doorLamps.setColorAt(s2, c2);
             this.doorLamps.instanceColor.needsUpdate = true;
           }
-          let want = 0;
           if (d2.edge.busted) {
             if (!d2._busted) {
               d2._busted = true;
@@ -80603,23 +80572,10 @@ var init_world = __esm({
               this._stampDoor(d2);
               anyStamp = true;
             }
-            want = 0.62;
-          } else if (d2.edge.locked) {
-            want = DOORS.ajar01 ?? 0.22;
-          } else {
-            const list = byDeck[d2.deck] ?? [];
-            for (let i2 = 0; i2 < list.length; i2++) {
-              const m2 = list[i2];
-              const ddx = m2.x - d2.x, ddz = m2.z - d2.z;
-              if (ddx * ddx + ddz * ddz < r2) {
-                want = 1;
-                break;
-              }
-            }
           }
-          const rate = DOORS.slideSpeed / (CLEAR_H - 0.3);
           const was = d2.open01;
-          d2.open01 += Math.sign(want - d2.open01) * Math.min(Math.abs(want - d2.open01), rate * dt);
+          const target = d2.edge.open01 ?? 0;
+          d2.open01 += Math.sign(target - d2.open01) * Math.min(Math.abs(target - d2.open01), renderRate * dt);
           if (was <= 0.03 && d2.open01 > 0.03) this.doorEvents.push({ x: d2.x, z: d2.z, deck: d2.deck });
           if (d2.open01 !== was) {
             this._stampDoor(d2);
@@ -83766,6 +83722,71 @@ var init_fps_controller = __esm({
           pitch: this.pitch
         };
       }
+    };
+  }
+});
+
+// game/fps-data.js
+var MA5, ODST, FRAG;
+var init_fps_data = __esm({
+  "game/fps-data.js"() {
+    MA5 = {
+      name: "MA5 ASSAULT RIFLE",
+      // what every marine aboard carries
+      rpm: 900,
+      damage: 8,
+      mag: 60,
+      reserve: 240,
+      reloadS: 2.3,
+      spreadBaseDeg: 1.35,
+      spreadMaxDeg: 6.2,
+      bloomPerShotDeg: 0.38,
+      spreadDecayDegS: 4.4,
+      kickDeg: 0.2,
+      meleeDamage: 45,
+      meleeRange: 2.2,
+      meleeCooldownS: 0.9
+    };
+    ODST = {
+      // "an ODST with extra life": ballistic armor over meat — the armor layer
+      // soaks damage and recovers when you break contact; the health under it
+      // does not.
+      armor: 50,
+      health: 45,
+      armorDelayS: 4.2,
+      armorRegenPerS: 22,
+      // movement (first-strike player feel — the old 2.4 m/s walk read as mud)
+      walkSpeed: 5.6,
+      sprintSpeed: 7.6,
+      accel: 14,
+      airControl: 0.35,
+      gravity: 24,
+      jumpVel: 8.2,
+      eyeHeight: 1.62,
+      climbSpeed: 2.6,
+      // how fast a knockback bleeds off (see FpsController.shoveX). 7/s puts a
+      // A claw hit moves the capsule about a metre, then returns control promptly.
+      // The wall sweep still spends the impulse harmlessly against solid geometry.
+      shoveDecayPerSec: 6
+    };
+    FRAG = {
+      count: 4,
+      // you board with four
+      max: 12,
+      // how many you can carry (resupply at the armory)
+      throwSpeed: 24,
+      // m/s out of the hand — a real hard throw, reaches across a bay
+      upBoost: 4.2,
+      // lofted arc so it carries down a long corridor
+      gravity: 20,
+      fuseS: 2.04,
+      // 15% shorter fuse; still long enough for the full throw arc
+      bounce: 0.42,
+      // velocity kept on impact
+      radiusM: 8,
+      // heavy blast — clears a room, not just a corner
+      damage: 135
+      // sim explodeAt payload (falls off to ~40% at the edge)
     };
   }
 });
@@ -94800,27 +94821,8 @@ function frame(now) {
   for (const m2 of armorPackMeshes) m2.mesh.visible = !m2.pack.used;
   syncGrenadeDropMeshes();
   shake = Math.max(0, shake - dtReal * 3);
-  let nMovers = 0;
-  const takeMover = () => doorMovers[nMovers] ?? (doorMovers[nMovers] = { deck: 0, x: 0, z: 0 });
-  {
-    const m2 = takeMover();
-    m2.deck = player.deck;
-    m2.x = player.x;
-    m2.z = player.z;
-    nMovers++;
-  }
-  const buf = sim.buffer;
-  for (let i2 = 0; i2 < buf.count; i2++) {
-    if (buf.faction[i2] === 6) continue;
-    const deck = buf.posZ[i2];
-    const [wx, wz] = world.simToWorld(buf.posX[i2], buf.posY[i2], deck);
-    const m2 = takeMover();
-    m2.deck = deck;
-    m2.x = wx;
-    m2.z = wz;
-    nMovers++;
-  }
-  world.updateDoors(dtReal, doorMovers, nMovers);
+  if (!isSimAuthority()) sim._advanceDoors(dtReal);
+  world.updateDoors(dtReal, sim.P.door.slideSpeedMps);
   if (physics) for (let i2 = 0; i2 < world.doors.length; i2++) {
     physics.setDoorClosed(i2, !!world.doors[i2].edge.locked);
   }
@@ -95052,7 +95054,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -96303,7 +96305,6 @@ var init_main = __esm({
     deathDesired = new Vector3();
     deathDirection = new Vector3();
     last = performance.now();
-    doorMovers = [];
     requestAnimationFrame(frame);
     window.__game = {
       sim,

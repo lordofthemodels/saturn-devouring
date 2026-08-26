@@ -9,7 +9,12 @@ import { Sim } from './sim.js';
 import { CLEAR_H, clearHeightOf } from '../shared/geometry.js';
 
 function openEscapeDoor(sim) {
-  return sim.graph.edges.find((edge) => {
+  // These tactics fixtures exercise cross-room behavior, not door timing.
+  // Make their available passages explicitly open before looking for one.
+  for (const candidate of sim.graph.edges) {
+    if (candidate.door && !candidate.locked) candidate.open01 = 1;
+  }
+  const edge = sim.graph.edges.find((edge) => {
     if (edge.kind !== 'std' || edge.locked) return false;
     const a = sim.graph.node(edge.a), b = sim.graph.node(edge.b);
     return a.deck === b.deck
@@ -18,6 +23,7 @@ function openEscapeDoor(sim) {
       && [...sim.graph.neighbors(edge.a, ['std'], (candidate) => !candidate.locked)]
         .some(({ to }) => to !== edge.b);
   });
+  return edge;
 }
 
 const sim = new Sim('combat-tactics-check');
@@ -410,7 +416,7 @@ resetLeapRun(leaper.nextCombatLeapAt);
 assert.equal(leaper.leaping, true, 'the form may leap again once five seconds have elapsed');
 
 // Under live pressure with no infection economy, scarcity roots one or two
-// rearmost carrier seeds and turns the remaining forms into a screen.
+// rearmost carrier seeds, assigns a bounded screen, and keeps disruptors free.
 const seedSim = new Sim('pressured-carrier-seed-check');
 for (const agent of seedSim.agents) agent.dead = true;
 const seedDoor = openEscapeDoor(seedSim);
@@ -435,8 +441,11 @@ const roots = seedForms.filter((form) => form.task?.kind === TASK.TRANSFORM);
 assert.ok(roots.length >= 1 && roots.length <= 2, 'a cornered pocket must root one or two carrier seeds');
 assert.ok(roots.some((form) => (form.pnode ?? form.node) === rear.to),
   'the pressured carrier plan must choose the rearmost available ground');
-assert.ok(seedForms.filter((form) => form.task?.screen !== undefined).length >= seedForms.length - roots.length - 1,
-  'the remaining pocket must screen the carrier seeds instead of wandering');
+assert.equal(seedForms.filter((form) => form.task?.screen !== undefined).length, 2,
+  'the carrier seeds must receive a bounded two-form screen');
+assert.equal(seedForms.filter((form) => form.task?.kind === TASK.DECOY
+  && form.task.pressured).length, 2,
+  'the carrier portfolio must send two bodies to disrupt the gun line');
 
 // The screenshot regression: a roomful of forms outside four rifles is one
 // connected hive response. The appendage with the sightline commits the whole
@@ -616,6 +625,9 @@ for (const [from, to] of [[stair.upper, stair.lower], [stair.lower, stair.upper]
 // target must enter FIGHT and actually fire through the aligned openings.
 const doorwaySim = new Sim('marine-los-check');
 for (const agent of doorwaySim.agents) agent.dead = true;
+for (const edge of doorwaySim.graph.edges) {
+  if (edge.door && !edge.locked) edge.open01 = 1;
+}
 let sightPair = null;
 for (const a of doorwaySim.graph.nodes) {
   for (const b of doorwaySim.graph.nodes) {
@@ -663,9 +675,9 @@ const formHp = doorwayForm.hp;
 resolveCombat(doorwaySim, doorwaySim.dt);
 assert.ok(doorwayForm.hp < formHp, 'the marine must fire through the same sightline it detected');
 
-// A locked panel is an absolute combat LOS blocker. The damaged render leaves
-// a narrow seam, but AI must neither acquire nor shoot a perfectly aligned
-// target through it; unlocking the same geometry restores the sightline.
+// A shut panel is an absolute combat LOS blocker even when unlocked. The same
+// deterministic opening fraction drives the visible panel, acquisition, and
+// rifle damage, so marines cannot fire into steel while waiting for it to move.
 const closedDoorSim = new Sim('closed-door-los-check');
 for (const agent of closedDoorSim.agents) agent.dead = true;
 const closedDoor = closedDoorSim.graph.edges.find((edge) => edge.kind === 'std'
@@ -702,13 +714,23 @@ assert.equal(closedForm.hp, closedHp, 'a marine must not damage a Flood form thr
 closedDoor.locked = false;
 closedDoorSim._doorMutated();
 closedDoorSim._refreshOccupancy();
+assert.equal(closedDoorSim.hasLineOfSight(closedMarine, closedForm), false,
+  'unlocking a still-shut panel must not make it transparent');
+for (let tick = 0; tick < 20; tick++) closedDoorSim._advanceDoors(closedDoorSim.dt);
+closedDoorSim._refreshOccupancy();
 assert.equal(closedDoorSim.hasLineOfSight(closedMarine, closedForm), true,
-  'unlocking the same doorway must restore geometric LOS');
+  'approaching bodies must restore geometric LOS once the panel is visibly clear');
 closedDoorSim.P.combat.marine.gun.accNear = 1;
 closedDoorSim.P.combat.marksmanSpread = 0;
 closedDoorSim.P.darkness.darkAccMult = 1;
 closedDoorSim.P.darkness.fogAccMult = 1;
 resolveCombat(closedDoorSim, closedDoorSim.dt);
 assert.ok(closedForm.hp < closedHp, 'the marine may fire once the door is open');
+
+closedMarine.dead = true;
+closedForm.dead = true;
+for (let tick = 0; tick < 20; tick++) closedDoorSim._advanceDoors(closedDoorSim.dt);
+assert.ok(closedDoor.open01 < closedDoorSim.P.door.sightOpenFraction,
+  'an unattended door must close back across the combat sightline');
 
 console.log('combat LOS tactics ✓');
