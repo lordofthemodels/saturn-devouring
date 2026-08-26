@@ -80800,7 +80800,11 @@ function tex(name) {
 }
 function buildRifleViewmodel() {
   const group = new Group();
-  const bodyMat = new MeshBasicMaterial({ color: MA5_GUNMETAL });
+  const bodyMat = new MeshStandardMaterial({
+    color: MA5_GUNMETAL,
+    roughness: 0.58,
+    metalness: 0.76
+  });
   const decalMat = (name) => new MeshBasicMaterial({
     map: tex(name),
     transparent: true,
@@ -80964,7 +80968,7 @@ var init_rifle_model = __esm({
   "game/rifle-model.js"() {
     init_three_webgpu_module();
     init_rifle_model_data();
-    MA5_GUNMETAL = 526861;
+    MA5_GUNMETAL = 658964;
     RIFLE_MUZZLE = new Vector3(0, 0.015, 0.515);
     GUN_TUNE = { x: 0.1485, y: -0.235, z: 0.2115, ry: -0.08, rx: -0.045, rz: 0.02, s: 1.15 };
     texLoader = new TextureLoader();
