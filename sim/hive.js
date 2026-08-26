@@ -152,13 +152,16 @@ export class Hive {
       // the old fear-inflated muster threshold.
       if (b.conf < 0.05) b.conf = 0;
     }
-    // any form with LOS resets the record
+    // Any form with LOS OR adjacent life-sense resets the record. The latter
+    // follows real graph adjacency, so a ladder/lift landing contributes its
+    // actual occupants without teaching the hive anything about distant rooms
+    // or hard-coding the ship's current deck layout.
     const seen = new Set();
-    const observed = new Map(); // node -> shooter weight actually seen this round
+    const observed = new Map(); // node -> shooter weight actually sensed this round
     for (const f of sim.agents) {
       if (f.dead || !isActiveFloodForm(f)) continue;
       const shootersByNode = new Map();
-      for (const h of sim.lineOfSightAgents(f, isLivingHuman)) {
+      for (const h of this.sensedHumans(f)) {
         const n = h.pnode ?? h.node;
         const weight = h.faction === FACTION.MARINE ? 1 : h.faction === FACTION.ARMED ? 0.6 : 0;
         shootersByNode.set(n, (shootersByNode.get(n) ?? 0) + weight);
@@ -411,6 +414,22 @@ export class Hive {
       && form.transformingUntil === undefined && form.task?.kind !== TASK.TRANSFORM;
   }
 
+  // Flood perception is the union of geometric sight and the living bodies in
+  // its own/adjacent graph nodes. Using floodSenses keeps sealed doors and
+  // vertical trunks opaque to guns but not to the hive's life-sense, and makes
+  // the behavior follow any future room graph without tactical room lists.
+  sensedHumans(form) {
+    const humans = new Map();
+    for (const human of this.sim.lineOfSightAgents(form, isLivingHuman)) humans.set(human.id, human);
+    const from = form.pnode ?? form.node;
+    for (const node of this.sim.floodSenses(from)) {
+      for (const human of this.sim.occupants(node)) {
+        if (isLivingHuman(human)) humans.set(human.id, human);
+      }
+    }
+    return [...humans.values()];
+  }
+
   // A local pack is a connected component of forms that can see one another.
   // It follows the actual openings and open stair volumes, so changing the
   // room graph changes the group naturally without tactical room IDs.
@@ -482,6 +501,43 @@ export class Hive {
       threat, threatNode: threat ? (threat.pnode ?? threat.node) : -1 };
     for (const member of pack) this._combatSituationCache.set(member.id, situation);
     return situation;
+  }
+
+  // Exact odds in one life-sensed adjacent room. Allies already fighting on
+  // the far landing count with the approaching pack: they are appendages of
+  // one hive even though an enclosed ladder/lift prevents geometric LOS.
+  sensedRoomCombat(form, node) {
+    const from = form.pnode ?? form.node;
+    if (!this.sim.floodSenses(from).includes(node)) return null;
+    const pack = this.combatPack(form);
+    const flood = new Map(pack.map((ally) => [ally.id, ally]));
+    const humans = [];
+    for (const occupant of this.sim.occupants(node)) {
+      if (isLivingHuman(occupant)) humans.push(occupant);
+      else if (isActiveFloodForm(occupant) || occupant.faction === FACTION.CARRIER) {
+        flood.set(occupant.id, occupant);
+      }
+    }
+    let strength = 0, defense = 0;
+    for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
+    for (const human of humans) defense += W_HUMAN[human.faction] ?? 0;
+    return { pack, humans, strength, defense };
+  }
+
+  // A losing sensed crossing gives the whole connected pack the same binary
+  // response as visible combat: withdraw, or fight only if no escape exists.
+  // Returns whether the crossing may proceed.
+  respondToSensedRoom(form, node) {
+    const situation = this.sensedRoomCombat(form, node);
+    if (!situation || situation.defense === 0 || form.task?.force
+      || situation.strength >= situation.defense * this.sim.P.swarm.killRatio) return true;
+    const responseKey = situation.pack[0]?.id ?? form.id;
+    if (this._combatResponseCache.has(responseKey)) return false;
+    for (const member of situation.pack) {
+      if (!this.isRetreating(member)) this.retreatOrFight(member, node);
+    }
+    this._combatResponseCache.add(responseKey);
+    return false;
   }
 
   visibleHumanTarget(form, preferredId = -1) {

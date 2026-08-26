@@ -71451,7 +71451,7 @@ var init_hive = __esm({
         for (const f2 of sim2.agents) {
           if (f2.dead || !isActiveFloodForm(f2)) continue;
           const shootersByNode = /* @__PURE__ */ new Map();
-          for (const h2 of sim2.lineOfSightAgents(f2, isLivingHuman)) {
+          for (const h2 of this.sensedHumans(f2)) {
             const n2 = h2.pnode ?? h2.node;
             const weight = h2.faction === FACTION.MARINE ? 1 : h2.faction === FACTION.ARMED ? 0.6 : 0;
             shootersByNode.set(n2, (shootersByNode.get(n2) ?? 0) + weight);
@@ -71673,6 +71673,21 @@ var init_hive = __esm({
       _combatResponder(form) {
         return form.faction === FACTION.COMBAT && !form.dead && !form.downed && form.hp > 0 && !form.isPlayer && form.dragging === -1 && form.transformingUntil === void 0 && form.task?.kind !== TASK.TRANSFORM;
       }
+      // Flood perception is the union of geometric sight and the living bodies in
+      // its own/adjacent graph nodes. Using floodSenses keeps sealed doors and
+      // vertical trunks opaque to guns but not to the hive's life-sense, and makes
+      // the behavior follow any future room graph without tactical room lists.
+      sensedHumans(form) {
+        const humans = /* @__PURE__ */ new Map();
+        for (const human of this.sim.lineOfSightAgents(form, isLivingHuman)) humans.set(human.id, human);
+        const from = form.pnode ?? form.node;
+        for (const node of this.sim.floodSenses(from)) {
+          for (const human of this.sim.occupants(node)) {
+            if (isLivingHuman(human)) humans.set(human.id, human);
+          }
+        }
+        return [...humans.values()];
+      }
       // A local pack is a connected component of forms that can see one another.
       // It follows the actual openings and open stair volumes, so changing the
       // room graph changes the group naturally without tactical room IDs.
@@ -71749,6 +71764,40 @@ var init_hive = __esm({
         };
         for (const member of pack2) this._combatSituationCache.set(member.id, situation);
         return situation;
+      }
+      // Exact odds in one life-sensed adjacent room. Allies already fighting on
+      // the far landing count with the approaching pack: they are appendages of
+      // one hive even though an enclosed ladder/lift prevents geometric LOS.
+      sensedRoomCombat(form, node) {
+        const from = form.pnode ?? form.node;
+        if (!this.sim.floodSenses(from).includes(node)) return null;
+        const pack2 = this.combatPack(form);
+        const flood = new Map(pack2.map((ally) => [ally.id, ally]));
+        const humans = [];
+        for (const occupant of this.sim.occupants(node)) {
+          if (isLivingHuman(occupant)) humans.push(occupant);
+          else if (isActiveFloodForm(occupant) || occupant.faction === FACTION.CARRIER) {
+            flood.set(occupant.id, occupant);
+          }
+        }
+        let strength = 0, defense = 0;
+        for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
+        for (const human of humans) defense += W_HUMAN[human.faction] ?? 0;
+        return { pack: pack2, humans, strength, defense };
+      }
+      // A losing sensed crossing gives the whole connected pack the same binary
+      // response as visible combat: withdraw, or fight only if no escape exists.
+      // Returns whether the crossing may proceed.
+      respondToSensedRoom(form, node) {
+        const situation = this.sensedRoomCombat(form, node);
+        if (!situation || situation.defense === 0 || form.task?.force || situation.strength >= situation.defense * this.sim.P.swarm.killRatio) return true;
+        const responseKey = situation.pack[0]?.id ?? form.id;
+        if (this._combatResponseCache.has(responseKey)) return false;
+        for (const member of situation.pack) {
+          if (!this.isRetreating(member)) this.retreatOrFight(member, node);
+        }
+        this._combatResponseCache.add(responseKey);
+        return false;
       }
       visibleHumanTarget(form, preferredId = -1) {
         let best = null, bestScore = Infinity;
@@ -75647,12 +75696,15 @@ var init_sim = __esm({
             if (a2.faction === FACTION.COMBAT && link.kind === "std" && a2.task?.kind !== TASK.DART) {
               const retreating = this.hive.isRetreating(a2);
               const visibleFight = this.hive.combatLineOfSight(a2);
+              const sensedCrossing = retreating || this.hive.respondToSensedRoom(a2, step3.to);
               const retreatBlocked = retreating && visibleFight.defense > 0 && visibleFight.threatNode === step3.to;
               const attackOutmatched = !retreating && !this.hive.canPressCombatContact(a2, !!a2.task?.surge, a2.task?.force);
-              if (retreatBlocked || attackOutmatched) {
+              if (!sensedCrossing || retreatBlocked || attackOutmatched) {
                 a2.path = [];
                 a2.charging = false;
-                this.hive.retreatOrFight(a2, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step3.to);
+                if (sensedCrossing) {
+                  this.hive.retreatOrFight(a2, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step3.to);
+                }
                 continue;
               }
             }
