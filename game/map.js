@@ -42,6 +42,7 @@ export class MarineMap {
     this._link = new Map();      // deck -> { up, until }
     this._pd = -1;               // player's deck, stamped each draw
     this._viewDeck = null;       // null follows the player; 1–5 is a manual map selection
+    this.omniscient = false;
     this._panelAt = 0;
     this.marines0 = sim.agents.filter((a) => a.faction === FACTION.MARINE).length;
     this.s = 1;
@@ -53,6 +54,7 @@ export class MarineMap {
   // Advance every deck's relay. Driven off SIM time, not wall time, so an
   // outage does not tick away while the game is paused or the tab is hidden.
   _stepLinks() {
+    if (this.omniscient) return;
     const { sim } = this;
     const P = sim.P.tacnet;
     for (let d = 1; d <= 5; d++) {
@@ -75,7 +77,7 @@ export class MarineMap {
   }
 
   // is this deck reporting? your own always is
-  linkUp(deck) { return deck === this._pd || (this._link.get(deck)?.up ?? true); }
+  linkUp(deck) { return this.omniscient || deck === this._pd || (this._link.get(deck)?.up ?? true); }
   // seconds until the current state flips — drives the countdown on the band
   linkFor(deck) { return Math.max(0, (this._link.get(deck)?.until ?? 0) - this.sim.t); }
   followPlayer() { this._viewDeck = null; }
@@ -83,6 +85,7 @@ export class MarineMap {
   selectDeck(deck) {
     this._viewDeck = Math.max(1, Math.min(5, deck));
   }
+  setOmniscient(on) { this.omniscient = !!on; }
 
   observe() {
     const { sim } = this;
@@ -106,7 +109,7 @@ export class MarineMap {
         // husk marker. So the `a.dead` guard below never fired for any of
         // them, and a room of husks scored as a heavy contact.
         if (!a.downed
-          && !(a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden)) {
+          && (this.omniscient || !(a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden))) {
           this._floodScratch[a.node] += a.faction === FACTION.CARRIER ? 2 : 1;
         }
         continue;
@@ -146,6 +149,15 @@ export class MarineMap {
             x: a.x, y: a.y, deck: a.deck, hp: a.hp, maxHp: a.maxHp, heading: a.heading, t: sim.t,
           });
         }
+      }
+    }
+    if (this.omniscient) {
+      this.liveObs.fill(1);
+      for (const a of sim.agents) {
+        if (a.dead || a.hp <= 0 || a.faction !== FACTION.MARINE) continue;
+        this._marineRep.set(a.id, {
+          x: a.x, y: a.y, deck: a.deck, hp: a.hp, maxHp: a.maxHp, heading: a.heading, t: sim.t,
+        });
       }
     }
     for (let n = 0; n < sim.graph.n; n++) {
@@ -426,7 +438,7 @@ export class MarineMap {
     // hostiles and civilians — only where a marine has eyes right now
     for (const a of sim.agents) {
       if (a.dead || !this.liveObs[a.node]) continue;
-      if (a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden) continue; // hidden mid-crawl — unseen
+      if (!this.omniscient && a.move && (a.move.layer === 'vent' || a.move.layer === 'shaft') && a.move.hidden) continue; // hidden mid-crawl — unseen
       const f = a.faction;
       if (f === FACTION.INFECTION || f === FACTION.COMBAT || f === FACTION.CARRIER) {
         const r = f === FACTION.INFECTION ? this._rr(0.35, 2) : f === FACTION.CARRIER ? this._rr(0.85, 4) : this._rr(0.6, 3);

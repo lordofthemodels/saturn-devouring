@@ -74,6 +74,8 @@ function agentRow(agent) {
     // has to reach the peer or its HUD would show a buffer it does not have
     pack(agent.armor ?? 0),
     hiddenTransit,
+    agent.afterlifeId ?? -1,
+    pack(agent.respawnReadyAt ?? -1),
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === 'melee') row.push(
@@ -109,12 +111,14 @@ function snapshotState(sim, cache, full) {
 }
 
 function validSnapshotRow(row, graph) {
-  // 21 fields, or 27 with a melee death impulse on the tail. The two at
-  // 17/18 are the leap arc and 20 is hidden transit (see agentRow); positional
+  // 23 fields, or 29 with a melee death impulse on the tail. The two at
+  // 17/18 are the leap arc, 20 is hidden transit, and 21/22 carry each
+  // player's physical afterlife target and authority-owned revive clock;
+  // positional
   // layout changes are why
   // PROTOCOL_VERSION moved — a peer on the old shape rejects every row rather
   // than misreading one.
-  return Array.isArray(row) && (row.length === 21 || row.length === 27)
+  return Array.isArray(row) && (row.length === 23 || row.length === 29)
     && packedIntegers(row.slice(0, 12))
     && Number.isSafeInteger(row[0]) && row[0] > 0
     && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6
@@ -131,7 +135,9 @@ function validSnapshotRow(row, graph) {
     && (row[18] === 0 || row[18] === 1)                                             // leaping
     && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1_000 * WIRE_SCALE // armor
     && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2                 // hidden transit kind
-    && row.slice(21).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+    && Number.isSafeInteger(row[21]) && row[21] >= -1
+    && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE
+    && row.slice(23).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 
 export function createGameSync({
@@ -235,7 +241,10 @@ export function createGameSync({
     if (packet.talk === 1) talkingUntil.set(from, performance.now() + 900);
     else if (packet.talk === 0) talkingUntil.delete(from);
     const agent = playerAgents.get(from);
-    if (!agent || agent.dead) return;
+    // A dead peer keeps emitting its last controller pose until the authority's
+    // revive snapshot reaches it. Its state packet says hp=0; never let that
+    // stale pose pull the newly revived authority agent back to the death room.
+    if (!agent || agent.dead || packet.hp <= 0) return;
     const [simX, simY] = world.worldToSim(x, z, packet.deck);
     agent.x = simX;
     agent.y = simY;
@@ -262,7 +271,7 @@ export function createGameSync({
     for (const row of rows) {
       const [id, faction, state, node, x, y, deck, hp, maxHp, damage,
         heading, animTime, dead, downed, helpless, panicked, meleeUntil, hoverY, leaping, armor,
-        hiddenTransit] = row;
+        hiddenTransit, afterlifeId, respawnReadyAt] = row;
       live.add(id);
       let agent = sim.byId.get(id);
       if (!agent) {
@@ -271,9 +280,10 @@ export function createGameSync({
         sim.spawn(agent);
       }
       const isLocal = agent === player.agent;
+      const revivingLocal = isLocal && agent.dead && dead === 0;
       agent.faction = faction;
       agent.state = state;
-      if (!isLocal) {
+      if (!isLocal || revivingLocal) {
         agent.node = node;
         agent.x = unpack(x);
         agent.y = unpack(y);
@@ -295,9 +305,11 @@ export function createGameSync({
       agent.animTime = unpack(animTime);
       agent.meleeUntil = unpack(meleeUntil);
       agent.armor = unpack(armor);
-      agent.deathImpulse = row.length === 27 ? {
-        kind: 'melee', dirX: unpack(row[21]), dirY: unpack(row[22]),
-        speed: unpack(row[23]), up: unpack(row[24]), spin: unpack(row[25]), kick: unpack(row[26]),
+      agent.afterlifeId = afterlifeId;
+      agent.respawnReadyAt = unpack(respawnReadyAt);
+      agent.deathImpulse = row.length === 29 ? {
+        kind: 'melee', dirX: unpack(row[23]), dirY: unpack(row[24]),
+        speed: unpack(row[25]), up: unpack(row[26]), spin: unpack(row[27]), kick: unpack(row[28]),
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -340,8 +352,6 @@ export function createGameSync({
       if (packet.world.outcome === null || packet.world.outcome === 'contained' || packet.world.outcome === 'lost') {
         sim.outcome = packet.world.outcome;
       }
-      if (packet.world.convertedTo === null) sim.playerConvertedTo = undefined;
-      else if (Number.isSafeInteger(packet.world.convertedTo)) sim.playerConvertedTo = packet.world.convertedTo;
       if (packet.world.outcomeAt === null) sim.outcomeAt = null;
       else if (Number.isSafeInteger(packet.world.outcomeAt)) sim.outcomeAt = unpack(packet.world.outcomeAt);
       sim.lastStand = !!packet.world.lastStand;
@@ -561,10 +571,6 @@ export function createGameSync({
               // sim.t, which is a checkpoint behind. One number, and both ends
               // read the same run time.
               outcomeAt: sim.outcomeAt === null ? null : pack(sim.outcomeAt),
-              // which form is wearing a player, if any — without this a peer
-              // taken by the flood got the flat KIA card instead of the
-              // "you are riding it now" spectate flow the host shows
-              convertedTo: Number.isSafeInteger(sim.playerConvertedTo) ? sim.playerConvertedTo : null,
               lastStand: sim.lastStand,
               armoryStock: sim.armoryStock,
               armoryLocked: sim.armoryLocked,

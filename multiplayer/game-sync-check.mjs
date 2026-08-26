@@ -54,7 +54,7 @@ const row = (hiddenTransit) => [
   Math.round(target.x * 1_000), Math.round(target.y * 1_000), target.deck,
   Math.round(target.hp * 1_000), Math.round(target.maxHp * 1_000), Math.round(target.damage * 1_000),
   Math.round(target.heading * 1_000), Math.round(target.animTime * 1_000),
-  0, 0, 0, 0, -1_000, 0, 0, 0, hiddenTransit,
+  0, 0, 0, 0, -1_000, 0, 0, 0, hiddenTransit, -1, -1_000,
 ];
 const direct = listeners.get('direct');
 assert.equal(typeof direct, 'function', 'game sync must subscribe to direct packets');

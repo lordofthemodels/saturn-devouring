@@ -73,7 +73,8 @@ export function makeAgent(kind, node, graph) {
     // Keep this ONE unconditional literal — per-faction conditionals would
     // fork maps at construction and defeat the whole point.
     dead: false, claimed: false, charging: false, isPlayer: false,
-    fromPlayer: false, closeFollow: false, followSpeed: 0, taskProgress: 0,
+    fromPlayer: false, playerSourceId: -1, afterlifeId: -1, respawnReadyAt: -1,
+    closeFollow: false, followSpeed: 0, taskProgress: 0,
     pnode: node, climbingLink: null,
     // combat & reaction timers (sim.js / combat.js / humans.js)
     nextShotAt: undefined, nextSwingAt: undefined, meleeUntil: undefined,

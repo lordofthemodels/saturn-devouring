@@ -68529,7 +68529,7 @@ function validGamePacket(packet) {
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 12;
+    PROTOCOL_VERSION = 13;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
@@ -68839,7 +68839,10 @@ var init_params = __esm({
       // old ODST numbers exactly.
       // NO AUTO-REGEN (user: shields replaced by armor) — armor soaks damage
       // before health and comes back ONLY from armor packs found in the world.
-      player: { armor: 50 },
+      player: {
+        armor: 50,
+        respawnSec: 30
+      },
       // racked in the armory + scattered through the ship, per boarder — same
       // machinery as med packs: seed-stable pools, issued as players attach,
       // used on the spot with E, restores armor to full.
@@ -69003,7 +69006,7 @@ var init_params = __esm({
           swing: {
             dmg: 18,
             cooldownSec: 0.9,
-            animSec: 0.58,
+            animSec: 0.74,
             // A grounded whip drops a body nearby. A running strike
             // carries farther; an airborne pounce can clear a room.
             standSpeed: 5.5,
@@ -69025,8 +69028,8 @@ var init_params = __esm({
             // fling you across the compartment.
             shoveMps: 3.6,
             // an NPC on its feet
-            shovePlayerMps: 4.4
-            // you, who can feel it — a hard stagger
+            shovePlayerMps: 7
+            // ~1 m of visible displacement before the controller damps it
           }
         },
         hostWeaponDps: 5,
@@ -70455,6 +70458,9 @@ function makeAgent(kind, node, graph) {
     charging: false,
     isPlayer: false,
     fromPlayer: false,
+    playerSourceId: -1,
+    afterlifeId: -1,
+    respawnReadyAt: -1,
     closeFollow: false,
     followSpeed: 0,
     taskProgress: 0,
@@ -73511,6 +73517,13 @@ function updateFloodTick(sim2, dt) {
             const cf = spawnCombatForm(sim2, body.node, body);
             cf.hostArmed = body.wasArmed === true;
             cf.transformingUntil = sim2.t + sim2.P.combat.thrashSec;
+            if (body.playerSourceId >= 0) {
+              cf.fromPlayer = true;
+              cf.playerSourceId = body.playerSourceId;
+              cf.bodyType = body.bodyType;
+              const player2 = sim2.byId.get(body.playerSourceId);
+              if (player2) player2.afterlifeId = cf.id;
+            }
             sim2.stats.conversions++;
             sim2.stats.conversionsRound++;
             sim2.removeAgent(a2);
@@ -73579,7 +73592,8 @@ function updateFloodTick(sim2, dt) {
         }
         if (a2.dragging !== body.id && a2.node === body.node && !a2.move) a2.dragging = body.id;
         if (a2.dragging === body.id) {
-          body.node = a2.node;
+          body.node = body.pnode = a2.pnode ?? a2.node;
+          body.deck = a2.deck;
           body.x = a2.x;
           body.y = a2.y - 4;
           if (a2.node === t2.node && !a2.move) {
@@ -73716,7 +73730,10 @@ function convertHuman(sim2, form, target) {
   cf.transformingUntil = sim2.t + sim2.P.combat.thrashSec;
   if (target.isPlayer) {
     cf.fromPlayer = true;
-    sim2.playerConvertedTo = cf.id;
+    cf.playerSourceId = target.id;
+    cf.bodyType = target.bodyType;
+    target.afterlifeId = cf.id;
+    target.respawnReadyAt = sim2.t + sim2.P.player.respawnSec;
   }
   sim2.removeAgent(form);
   sim2.stats.conversions++;
@@ -74152,6 +74169,8 @@ function humanDeathToCorpse(sim2, a2) {
   corpse.damage = 15;
   corpse.x = a2.x;
   corpse.y = a2.y;
+  corpse.heading = a2.heading;
+  corpse.bodyType = a2.bodyType;
   corpse.lastHurtBy = a2.lastHurtBy;
   corpse.lastHurtTick = a2.lastHurtTick;
   corpse.deathImpulse = a2.deathImpulse ?? null;
@@ -74161,6 +74180,11 @@ function humanDeathToCorpse(sim2, a2) {
     corpse.flamerFuel = a2.fuel;
   }
   sim2.spawn(corpse);
+  if (a2.isPlayer) {
+    corpse.playerSourceId = a2.id;
+    a2.afterlifeId = corpse.id;
+    a2.respawnReadyAt = sim2.t + sim2.P.player.respawnSec;
+  }
 }
 var init_combat = __esm({
   "sim/combat.js"() {
@@ -75303,6 +75327,7 @@ var init_sim = __esm({
         this._refreshOccupancy();
         this._advanceDarkness(dt);
         resolveCombat(this, dt);
+        this._respawnPlayers();
         for (const a2 of this.agents) {
           if (a2.dead) continue;
           if (a2.panicked && a2.hp > 0) this.screamTick[a2.node] = this.tickCount;
@@ -75311,6 +75336,52 @@ var init_sim = __esm({
         this._reap();
         this._checkOutcome();
         this.writeBuffer();
+      }
+      // Co-op recovery is owned by the authority and therefore arrives through
+      // the normal snapshot. A surviving player is the spawn beacon, but only
+      // when both their room and every graph-adjacent room contain no active
+      // Flood. This is topology-driven: future room layouts need no special cases.
+      _respawnPlayers() {
+        const players = this.agents.filter((a2) => a2.isPlayer);
+        if (players.length < 2) return;
+        for (const fallen of players) {
+          if (!fallen.dead || fallen.respawnReadyAt < 0 || this.t < fallen.respawnReadyAt) continue;
+          const anchor = players.find((a2) => a2.id !== fallen.id && !a2.dead && a2.hp > 0 && this.playerRespawnRoomSafe(a2));
+          if (!anchor) continue;
+          const room = this.graph.node(anchor.pnode ?? anchor.node);
+          const angle = fallen.id * 2.399963 % (Math.PI * 2);
+          const radius = 0.9;
+          fallen.node = fallen.pnode = room.idx;
+          fallen.deck = room.deck;
+          fallen.x = Math.max(
+            room.x - room.w / 2 + 0.55,
+            Math.min(room.x + room.w / 2 - 0.55, anchor.x + Math.cos(angle) * radius)
+          );
+          fallen.y = Math.max(
+            room.y - room.d / 2 + 0.55,
+            Math.min(room.y + room.d / 2 - 0.55, anchor.y + Math.sin(angle) * radius)
+          );
+          fallen.hp = fallen.maxHp;
+          fallen.armor = this.P.player.armor;
+          fallen.dead = false;
+          fallen.state = STATE.IDLE;
+          fallen.move = null;
+          fallen.path = [];
+          fallen.task = null;
+          fallen.held = 0;
+          fallen.shoveX = 0;
+          fallen.shoveY = 0;
+          fallen.afterlifeId = -1;
+          fallen.respawnReadyAt = -1;
+          this.log("radio", `an ODST is back on their feet in ${room.name}`, room.idx, fallen.x, fallen.y);
+        }
+      }
+      playerRespawnRoomSafe(anchor) {
+        if (!anchor || anchor.dead || anchor.hp <= 0) return false;
+        const here = anchor.pnode ?? anchor.node;
+        const near = /* @__PURE__ */ new Set([here]);
+        for (const { to } of this.graph.neighbors(here, ["std"], () => true)) near.add(to);
+        return !this.agents.some((a2) => !a2.dead && !a2.move?.hidden && near.has(a2.pnode ?? a2.node) && (a2.faction === FACTION.INFECTION || a2.faction === FACTION.CARRIER || a2.faction === FACTION.COMBAT && (!a2.downed ? a2.hp > 0 : a2.damage < 100)));
       }
       // LAST STAND (user note): once most of the squad marines are dead, the word
       // goes out — fall back behind the garrison line on the top deck. Officers
@@ -77707,9 +77778,9 @@ var init_fps_data = __esm({
       eyeHeight: 1.62,
       climbSpeed: 2.6,
       // how fast a knockback bleeds off (see FpsController.shoveX). 7/s puts a
-      // 4.4 m/s stagger under walking pace in about a fifth of a second — you feel
-      // shoved and you recover; you are never sliding on ice.
-      shoveDecayPerSec: 7
+      // A claw hit moves the capsule about a metre, then returns control promptly.
+      // The wall sweep still spends the impulse harmlessly against solid geometry.
+      shoveDecayPerSec: 6
     };
     FRAG = {
       count: 4,
@@ -80985,6 +81056,43 @@ var init_agents3d = __esm({
           this.ragdolls.reimpulse(id, this._blastImpulse(rag.rootPos[0], rag.rootPos[2], cx, cz, d2, radius));
         }
       }
+      // Stable third-person focus for death/spectator cameras. A fresh corpse
+      // follows its cosmetic ragdoll (including a grenade toss); a living target
+      // follows the same eased position used by its rendered mesh.
+      cameraAnchor(agent) {
+        if (!agent) return null;
+        const rag = this.ragdolls?.get(agent.id);
+        if (rag) return {
+          x: rag.rootPos[0],
+          y: rag.rootPos[1],
+          z: rag.rootPos[2],
+          deck: rag.deck,
+          node: agent.pnode ?? agent.node,
+          heading: agent.heading,
+          prone: true
+        };
+        const rest = this._ragRest.get(agent.id);
+        if (rest) return {
+          x: rest[0],
+          y: rest[1],
+          z: rest[2],
+          deck: agent.deck,
+          node: agent.pnode ?? agent.node,
+          heading: agent.heading,
+          prone: agent.faction === 6 || agent.downed
+        };
+        const rp = this.rpos.get(agent.id) ?? agent;
+        const [x2, z2] = this.world.simToWorld(rp.x, rp.y, rp.deck);
+        return {
+          x: x2,
+          y: this.world.groundHeightAt(rp.deck, x2, z2) + (rp.hoverY ?? 0),
+          z: z2,
+          deck: rp.deck,
+          node: agent.pnode ?? agent.node,
+          heading: agent.heading,
+          prone: agent.faction === 6 || agent.downed
+        };
+      }
       // the blast the point sits inside (strongest = nearest to a centre), or null
       _blastAt(wx, wz, deck) {
         const R2 = this.sim.P.ragdoll;
@@ -81056,15 +81164,15 @@ var init_agents3d = __esm({
           }
           case CLIP.ATTACK:
             {
-              const u2 = Math.max(0, Math.min(1, t2 / 0.58));
-              const lead = Math.sin(Math.min(1, u2 / 0.62) * Math.PI);
-              const followU = Math.max(0, Math.min(1, (u2 - 0.16) / 0.72));
-              const follow = Math.sin(followU * Math.PI);
-              if (part === "armR") return 0.18 + lead * 2.35;
-              if (part === "armL") return 0.12 + follow * 1.95;
-              if (part === "legL") return -lead * 0.22;
-              if (part === "legR") return lead * 0.32;
-              if (part === "head") return -lead * 0.18;
+              const u2 = Math.max(0, Math.min(1, t2 / 0.74));
+              const envelope = Math.sin(u2 * Math.PI);
+              const right = Math.sin(u2 * Math.PI * 3.2) * envelope;
+              const left = Math.sin(u2 * Math.PI * 3.2 - 1.25) * envelope;
+              if (part === "armR") return 0.25 + right * 2.65;
+              if (part === "armL") return -0.18 - left * 2.45;
+              if (part === "legL") return -right * 0.28;
+              if (part === "legR") return left * 0.34;
+              if (part === "head") return (right - left) * 0.22;
             }
             return 0;
           case CLIP.WRITHE:
@@ -81256,7 +81364,18 @@ var init_agents3d = __esm({
               mesh.setMatrixAt(i2, this._m);
               continue;
             }
-            if (add3) {
+            const feral = clip === CLIP.ATTACK && (set === this.combatCivSet || set === this.combatOdstSet) && (part === "armL" || part === "armR");
+            if (feral) {
+              const u2 = Math.max(0, Math.min(1, animT / 0.74));
+              const envelope = Math.sin(u2 * Math.PI);
+              const side = part === "armR" ? 1 : -1;
+              (this._eHold ??= new Euler()).set(
+                add3 + side * envelope * 0.95,
+                side * Math.sin(u2 * Math.PI * 4.4 + id) * envelope * 0.75,
+                ang
+              );
+              this._mRot.makeRotationFromEuler(this._eHold);
+            } else if (add3) {
               (this._eHold ??= new Euler()).set(add3, 0, ang);
               this._mRot.makeRotationFromEuler(this._eHold);
             } else this._mRot.makeRotationZ(ang);
@@ -81785,7 +81904,19 @@ var init_agents3d = __esm({
                 by = riseEntry.from[1] + (elev + hover - riseEntry.from[1]) * es;
               }
               if (!hover) by -= this._gaitDip(clip, animT, id, this.combatCivSet.rig.legLen);
-              this._e.set(0, heading, -(leaping ? 0.55 : charging ? 0.42 : 0.14) + flinch);
+              let attackPitch = 0, attackYaw = 0, attackRoll = 0;
+              if (clip === CLIP.ATTACK) {
+                const u2 = Math.max(0, Math.min(1, animT / 0.74));
+                const envelope = Math.sin(u2 * Math.PI);
+                attackPitch = -0.28 * envelope;
+                attackYaw = Math.sin(u2 * Math.PI * 3.2) * 0.34 * envelope;
+                attackRoll = Math.sin(u2 * Math.PI * 4.4 + id) * 0.22 * envelope;
+              }
+              this._e.set(
+                attackRoll,
+                heading + attackYaw,
+                -(leaping ? 0.55 : charging ? 0.42 : 0.14) + flinch + attackPitch
+              );
               this._q.setFromEuler(this._e);
               if (riseEntry && riseEntry.fromQuat) {
                 const e2 = Math.min(1, (performance.now() - riseEntry.t0) / 850);
@@ -82614,6 +82745,7 @@ var init_player = __esm({
         this.agent = existingAgent ?? sim2.attachPlayer(startNode, { odst: true, bodyType });
         this.agent.bodyType = bodyType === "female" ? "female" : "male";
         this._lastHp = this.agent.hp;
+        this._wasDead = this.dead;
         this._syncAgent();
       }
       get dead() {
@@ -82636,6 +82768,19 @@ var init_player = __esm({
           return;
         }
         this._prev = this._cur;
+        if (this._wasDead && !this.dead) {
+          const [wx, wz] = this.world.simToWorld(this.agent.x, this.agent.y, this.agent.deck);
+          this.deck = this.agent.deck;
+          this.x = wx;
+          this.z = wz;
+          this.h = 0;
+          this.vx = this.vy = this.vz = this.shoveX = this.shoveZ = 0;
+          this.climb = null;
+          this._cancelQueue();
+          this.physics.teleportPlayer(wx, elevOf(this.deck), wz);
+          this._prev = this._cur = this._worldPose();
+        }
+        this._wasDead = this.dead;
         if (!this.dead) this.adoptCapsule();
         if (this.dead) {
           this.discardGamepadJump();
@@ -84178,6 +84323,7 @@ var init_map = __esm({
         this._link = /* @__PURE__ */ new Map();
         this._pd = -1;
         this._viewDeck = null;
+        this.omniscient = false;
         this._panelAt = 0;
         this.marines0 = sim2.agents.filter((a2) => a2.faction === FACTION.MARINE).length;
         this.s = 1;
@@ -84188,6 +84334,7 @@ var init_map = __esm({
       // Advance every deck's relay. Driven off SIM time, not wall time, so an
       // outage does not tick away while the game is paused or the tab is hidden.
       _stepLinks() {
+        if (this.omniscient) return;
         const { sim: sim2 } = this;
         const P2 = sim2.P.tacnet;
         for (let d2 = 1; d2 <= 5; d2++) {
@@ -84206,7 +84353,7 @@ var init_map = __esm({
       }
       // is this deck reporting? your own always is
       linkUp(deck) {
-        return deck === this._pd || (this._link.get(deck)?.up ?? true);
+        return this.omniscient || deck === this._pd || (this._link.get(deck)?.up ?? true);
       }
       // seconds until the current state flips — drives the countdown on the band
       linkFor(deck) {
@@ -84220,6 +84367,9 @@ var init_map = __esm({
       }
       selectDeck(deck) {
         this._viewDeck = Math.max(1, Math.min(5, deck));
+      }
+      setOmniscient(on2) {
+        this.omniscient = !!on2;
       }
       observe() {
         const { sim: sim2 } = this;
@@ -84235,7 +84385,7 @@ var init_map = __esm({
             continue;
           }
           if (a2.faction === FACTION.INFECTION || a2.faction === FACTION.COMBAT || a2.faction === FACTION.CARRIER) {
-            if (!a2.downed && !(a2.move && (a2.move.layer === "vent" || a2.move.layer === "shaft") && a2.move.hidden)) {
+            if (!a2.downed && (this.omniscient || !(a2.move && (a2.move.layer === "vent" || a2.move.layer === "shaft") && a2.move.hidden))) {
               this._floodScratch[a2.node] += a2.faction === FACTION.CARRIER ? 2 : 1;
             }
             continue;
@@ -84279,6 +84429,21 @@ var init_map = __esm({
                 t: sim2.t
               });
             }
+          }
+        }
+        if (this.omniscient) {
+          this.liveObs.fill(1);
+          for (const a2 of sim2.agents) {
+            if (a2.dead || a2.hp <= 0 || a2.faction !== FACTION.MARINE) continue;
+            this._marineRep.set(a2.id, {
+              x: a2.x,
+              y: a2.y,
+              deck: a2.deck,
+              hp: a2.hp,
+              maxHp: a2.maxHp,
+              heading: a2.heading,
+              t: sim2.t
+            });
           }
         }
         for (let n2 = 0; n2 < sim2.graph.n; n2++) {
@@ -84548,7 +84713,7 @@ var init_map = __esm({
         const { ctx, sim: sim2 } = this;
         for (const a2 of sim2.agents) {
           if (a2.dead || !this.liveObs[a2.node]) continue;
-          if (a2.move && (a2.move.layer === "vent" || a2.move.layer === "shaft") && a2.move.hidden) continue;
+          if (!this.omniscient && a2.move && (a2.move.layer === "vent" || a2.move.layer === "shaft") && a2.move.hidden) continue;
           const f2 = a2.faction;
           if (f2 === FACTION.INFECTION || f2 === FACTION.COMBAT || f2 === FACTION.CARRIER) {
             const r2 = f2 === FACTION.INFECTION ? this._rr(0.35, 2) : f2 === FACTION.CARRIER ? this._rr(0.85, 4) : this._rr(0.6, 3);
@@ -90825,7 +90990,9 @@ function agentRow(agent) {
     // player ballistic armor: sim-owned since the co-op death desync, so it
     // has to reach the peer or its HUD would show a buffer it does not have
     pack(agent.armor ?? 0),
-    hiddenTransit
+    hiddenTransit,
+    agent.afterlifeId ?? -1,
+    pack(agent.respawnReadyAt ?? -1)
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === "melee") row.push(
@@ -90864,7 +91031,7 @@ function snapshotState(sim2, cache3, full) {
   };
 }
 function validSnapshotRow(row, graph) {
-  return Array.isArray(row) && (row.length === 21 || row.length === 27) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && row.slice(21).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+  return Array.isArray(row) && (row.length === 23 || row.length === 29) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && Number.isSafeInteger(row[21]) && row[21] >= -1 && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE && row.slice(23).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 function createGameSync({
   session: session2,
@@ -90956,7 +91123,7 @@ function createGameSync({
     if (packet.talk === 1) talkingUntil.set(from, performance.now() + 900);
     else if (packet.talk === 0) talkingUntil.delete(from);
     const agent = playerAgents.get(from);
-    if (!agent || agent.dead) return;
+    if (!agent || agent.dead || packet.hp <= 0) return;
     const [simX, simY] = world2.worldToSim(x2, z2, packet.deck);
     agent.x = simX;
     agent.y = simY;
@@ -90995,7 +91162,9 @@ function createGameSync({
         hoverY,
         leaping,
         armor,
-        hiddenTransit
+        hiddenTransit,
+        afterlifeId,
+        respawnReadyAt
       ] = row;
       live.add(id);
       let agent = sim2.byId.get(id);
@@ -91005,9 +91174,10 @@ function createGameSync({
         sim2.spawn(agent);
       }
       const isLocal = agent === player2.agent;
+      const revivingLocal = isLocal && agent.dead && dead === 0;
       agent.faction = faction;
       agent.state = state;
-      if (!isLocal) {
+      if (!isLocal || revivingLocal) {
         agent.node = node;
         agent.x = unpack(x2);
         agent.y = unpack(y2);
@@ -91027,14 +91197,16 @@ function createGameSync({
       agent.animTime = unpack(animTime);
       agent.meleeUntil = unpack(meleeUntil);
       agent.armor = unpack(armor);
-      agent.deathImpulse = row.length === 27 ? {
+      agent.afterlifeId = afterlifeId;
+      agent.respawnReadyAt = unpack(respawnReadyAt);
+      agent.deathImpulse = row.length === 29 ? {
         kind: "melee",
-        dirX: unpack(row[21]),
-        dirY: unpack(row[22]),
-        speed: unpack(row[23]),
-        up: unpack(row[24]),
-        spin: unpack(row[25]),
-        kick: unpack(row[26])
+        dirX: unpack(row[23]),
+        dirY: unpack(row[24]),
+        speed: unpack(row[25]),
+        up: unpack(row[26]),
+        spin: unpack(row[27]),
+        kick: unpack(row[28])
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -91083,8 +91255,6 @@ function createGameSync({
       if (packet.world.outcome === null || packet.world.outcome === "contained" || packet.world.outcome === "lost") {
         sim2.outcome = packet.world.outcome;
       }
-      if (packet.world.convertedTo === null) sim2.playerConvertedTo = void 0;
-      else if (Number.isSafeInteger(packet.world.convertedTo)) sim2.playerConvertedTo = packet.world.convertedTo;
       if (packet.world.outcomeAt === null) sim2.outcomeAt = null;
       else if (Number.isSafeInteger(packet.world.outcomeAt)) sim2.outcomeAt = unpack(packet.world.outcomeAt);
       sim2.lastStand = !!packet.world.lastStand;
@@ -91280,10 +91450,6 @@ function createGameSync({
               // sim.t, which is a checkpoint behind. One number, and both ends
               // read the same run time.
               outcomeAt: sim2.outcomeAt === null ? null : pack(sim2.outcomeAt),
-              // which form is wearing a player, if any — without this a peer
-              // taken by the flood got the flat KIA card instead of the
-              // "you are riding it now" spectate flow the host shows
-              convertedTo: Number.isSafeInteger(sim2.playerConvertedTo) ? sim2.playerConvertedTo : null,
               lastStand: sim2.lastStand,
               armoryStock: sim2.armoryStock,
               armoryLocked: sim2.armoryLocked,
@@ -91753,7 +91919,12 @@ function refreshOverlayPrompt() {
 }
 function endScreen(title, text, final = true) {
   if (ended) return;
-  if (final) ended = true;
+  if (final) {
+    ended = true;
+    marineMap.setOmniscient(true);
+    el("maptitle").textContent = "AFTER ACTION TACNET — FULL SHIP PICTURE";
+    el("maplegend").innerHTML = '<span data-input-copy="keyboard">M close · 1–5 or ←/→ switch deck</span><span data-input-copy="gamepad">VIEW or B close · D-PAD ←/→ switch deck</span> · all Flood and marine positions are live; fog of war and radio uncertainty are disabled';
+  }
   document.exitPointerLock?.();
   el("ovTitle").textContent = title;
   el("ovText").textContent = text;
@@ -91829,6 +92000,18 @@ ${url}`);
   if (navigator.share) {
     mkBtn("SHARE…", () => navigator.share({ title: "Halo Charon", text: share, url }).catch(() => {
     }), true);
+  }
+  if (player.dead) {
+    mkBtn("WATCH BODY", () => {
+      toggleMap(false);
+      overlay.classList.add("hidden");
+      el("postgameHud").style.display = "block";
+    });
+    mkBtn("FULL TACNET", () => {
+      overlay.classList.add("hidden");
+      el("postgameHud").style.display = "block";
+      toggleMap(true);
+    });
   }
   const restart = mkBtn("PLAY AGAIN", () => location.reload());
   restart.dataset.primary = "true";
@@ -92711,11 +92894,12 @@ function drawTracker(now) {
     trk.fill();
     return;
   }
-  const pov = player.dead ? ghostAlive() : player.agent;
+  const pov = player.dead ? deathFocusAgent : player.agent;
   if (!pov) return;
-  const [px2, pz2] = [player.x, player.z];
-  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
-  const rightX = Math.cos(player.yaw), rightZ = -Math.sin(player.yaw);
+  const [px2, pz2] = player.dead ? world.simToWorld(pov.x, pov.y, pov.deck) : [player.x, player.z];
+  const povYaw = player.dead ? Math.atan2(-Math.cos(pov.heading), -Math.sin(pov.heading)) : player.yaw;
+  const fwdX = -Math.sin(povYaw), fwdZ = -Math.cos(povYaw);
+  const rightX = Math.cos(povYaw), rightZ = -Math.sin(povYaw);
   const buf = sim.buffer;
   for (let i2 = 0; i2 < buf.count; i2++) {
     if (buf.id[i2] === player.agent.id) continue;
@@ -92951,6 +93135,72 @@ function updateScare(now) {
   }
   scareState.eligible = eligible;
 }
+function updateAfterlife(now) {
+  const hud = el("spectatorHud");
+  document.body.classList.toggle("player-dead", player.dead);
+  if (!player.dead) {
+    if (deathStartedAt !== null) {
+      deathStartedAt = null;
+      deathFocusAgent = null;
+      playerFellAt = null;
+      if (!ended) overlay.classList.add("hidden");
+    }
+    const fallen = mates.find((mate) => mate.agent?.dead && mate.agent.respawnReadyAt >= 0);
+    if (!fallen) {
+      hud.style.display = "none";
+      return;
+    }
+    const remaining2 = Math.max(0, Math.ceil(fallen.agent.respawnReadyAt - sim.t));
+    hud.style.display = "block";
+    hud.querySelector("b").textContent = remaining2 > 0 ? `${(gameSync?.peerName(fallen.did) || fallen.label).toUpperCase()} · RESPAWN ${remaining2}s` : "TEAMMATE READY TO RESPAWN";
+    hud.querySelector("span").textContent = sim.playerRespawnRoomSafe(player.agent) ? "HOLD HERE — THIS ROOM AND ITS ADJACENT ROOMS ARE CLEAR" : "REACH A ROOM WITH NO FLOOD HERE OR IN AN ADJACENT ROOM";
+    return;
+  }
+  if (deathStartedAt === null) {
+    deathStartedAt = now;
+    playerFellAt ??= sim.t;
+    document.exitPointerLock?.();
+  }
+  const teammate = livingTeammate();
+  const reviewing = now - deathStartedAt < DEATH_REVIEW_MS;
+  deathFocusAgent = !reviewing && teammate ? teammate.agent : afterlifeBody() ?? player.agent;
+  hud.style.display = "block";
+  const name = teammate && deathFocusAgent === teammate.agent ? (gameSync?.peerName(teammate.did) || teammate.label).toUpperCase() : null;
+  hud.querySelector("b").textContent = name ? `SPECTATING ${name}` : "CASUALTY CAMERA";
+  const remaining = Math.max(0, Math.ceil((player.agent.respawnReadyAt ?? -1) - sim.t));
+  if (teammate) {
+    hud.querySelector("span").textContent = remaining > 0 ? `RESPAWN IN ${remaining}s · YOUR TEAMMATE MUST SURVIVE` : sim.playerRespawnRoomSafe(teammate.agent) ? "CLEAR ROOM CONFIRMED · REDEPLOYING" : "RESPAWN READY · WAITING FOR A ROOM WITH CLEAR ADJACENCIES";
+  } else {
+    hud.querySelector("span").textContent = reviewing ? "BODY CAMERA LOCKED · SIGNAL TRANSITIONING" : "NO SURVIVING FIRETEAM SIGNAL";
+  }
+}
+function placeDeathCamera(agent) {
+  const anchor = agents.cameraAnchor(agent);
+  if (!anchor) return null;
+  const lift = anchor.prone ? 0.45 : 1.05;
+  deathFocus.set(anchor.x, anchor.y + lift, anchor.z);
+  deathDesired.set(
+    anchor.x - Math.cos(anchor.heading) * 3.6,
+    anchor.y + (anchor.prone ? 1.65 : 2.15),
+    anchor.z - Math.sin(anchor.heading) * 3.6
+  );
+  deathDirection.subVectors(deathDesired, deathFocus);
+  const distance3 = deathDirection.length();
+  deathCamRay.set(deathFocus, deathDirection.normalize());
+  deathCamRay.near = 0.18;
+  deathCamRay.far = distance3;
+  const hit = deathCamRay.intersectObjects(solidsForShot(), false)[0];
+  if (hit) deathDesired.copy(deathFocus).addScaledVector(deathDirection, Math.max(0.35, hit.distance - 0.28));
+  const floor3 = world.groundHeightAt(anchor.deck, deathDesired.x, deathDesired.z, deathDesired.y);
+  const ceiling = elevOf(anchor.deck) + world.ceilHeightAt(anchor.deck, deathDesired.x, deathDesired.z);
+  deathDesired.y = Math.max(floor3 + 0.3, Math.min(ceiling - 0.3, deathDesired.y));
+  camera.position.copy(deathDesired);
+  camera.lookAt(deathFocus);
+  _fillX = deathDesired.x;
+  _fillY = deathDesired.y;
+  _fillZ = deathDesired.z;
+  return anchor;
+}
 function frame(now) {
   requestAnimationFrame(frame);
   const dtReal = Math.min(0.1, (now - last) / 1e3);
@@ -93065,12 +93315,20 @@ function frame(now) {
     const b2 = sim.buffer;
     for (let i2 = 0; i2 < b2.count; i2++) b2.animTime[i2] += dtReal;
   }
-  agents.viewX = player.x;
-  agents.viewZ = player.z;
-  agents._viewFX = -Math.sin(player.yaw);
-  agents._viewFZ = -Math.cos(player.yaw);
-  agents.update(dtReal);
   gameSync?.update(dtReal, now);
+  updateAfterlife(now);
+  let renderViewX = player.x, renderViewZ = player.z;
+  let renderViewFX = -Math.sin(player.yaw), renderViewFZ = -Math.cos(player.yaw);
+  if (deathFocusAgent) {
+    [renderViewX, renderViewZ] = world.simToWorld(deathFocusAgent.x, deathFocusAgent.y, deathFocusAgent.deck);
+    renderViewFX = Math.cos(deathFocusAgent.heading);
+    renderViewFZ = Math.sin(deathFocusAgent.heading);
+  }
+  agents.viewX = renderViewX;
+  agents.viewZ = renderViewZ;
+  agents._viewFX = renderViewFX;
+  agents._viewFZ = renderViewFZ;
+  agents.update(dtReal);
   if (now - _sweepAt > 66) {
     _sweepAt = now;
     soundSweep(now);
@@ -93093,7 +93351,11 @@ function frame(now) {
     }
     marineMap.draw(player.agent, player.dead);
   }
-  audio.setListener(player.x, player.z, player.yaw);
+  audio.setListener(
+    renderViewX,
+    renderViewZ,
+    deathFocusAgent ? Math.atan2(-Math.cos(deathFocusAgent.heading), -Math.sin(deathFocusAgent.heading)) : player.yaw
+  );
   audio.alarm(sim.lastStand && !ended);
   if (sim.lastStand && !window._paLastStand) {
     window._paLastStand = true;
@@ -93103,7 +93365,7 @@ function frame(now) {
   audio.ambienceTick();
   const hemiPulse = sim.lastStand ? (Math.sin(now * 4e-3) + 1) / 2 : 0;
   hemi.color.setRGB(0.62 + hemiPulse * 0.35, 0.7 - hemiPulse * 0.4, 0.82 - hemiPulse * 0.55);
-  const _povA = player.dead ? ghostAlive() : null;
+  const _povA = player.dead ? deathFocusAgent : null;
   const povNode = _povA ? _povA.node : player.agent.node;
   const povDeck = _povA ? _povA.deck : player.deck;
   let povX = player.x, povZ = player.z;
@@ -93126,7 +93388,7 @@ function frame(now) {
   ambient.intensity += (ambTarget - ambient.intensity) * dimT;
   hemi.intensity += (hemiTarget - hemi.intensity) * dimT;
   _fillI = inDark ? 0 : 4.5 * (0.3 + 0.7 * world.lightLevel(povNode));
-  torch.intensity += ((inDark ? 430 : 260) - torch.intensity) * dimT;
+  torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
   torchSpill.intensity = torch.intensity * 0.09;
   gunFill.intensity = torch.intensity * 8e-4;
   torch.distance = inFog ? sim.P.darkness.fogViewM + 2 : 30;
@@ -93177,21 +93439,32 @@ function frame(now) {
     hitFlash = Math.max(0, hitFlash - dtReal * 5);
     el("hitmarker").style.opacity = hitFlash.toFixed(2);
   }
-  if (player.sinceHit < lastSinceHit) {
+  const hurtTick = player.agent.lastHurtTick ?? -1;
+  if (hurtTick > lastPlayerHurtTick || player.agent.armor < lastPlayerArmor || player.agent.hp < lastPlayerHp) {
     const src2 = sim.byId.get(player.agent.lastHurtBy);
     if (src2 && !src2.dead) {
       const [ax, az] = world.simToWorld(src2.x, src2.y, src2.deck);
       const bearing = Math.atan2(ax - player.x, -(az - player.z));
       dmgAngle = bearing + player.yaw;
       dmgFlash = 1;
-    } else dmgFlash = 1;
+      damageTint = 1;
+    } else {
+      dmgFlash = 1;
+      damageTint = 1;
+    }
   }
-  lastSinceHit = player.sinceHit;
+  lastPlayerHurtTick = hurtTick;
+  lastPlayerArmor = player.agent.armor;
+  lastPlayerHp = player.agent.hp;
   if (dmgFlash > 0) {
     dmgFlash = Math.max(0, dmgFlash - dtReal * 1.6);
     const dd = el("dmgdir");
     dd.style.opacity = dmgFlash.toFixed(2);
     dd.style.transform = `rotate(${(-dmgAngle * 180 / Math.PI).toFixed(1)}deg)`;
+  }
+  if (damageTint > 0) {
+    damageTint = Math.max(0, damageTint - dtReal);
+    el("damageVignette").style.opacity = (damageTint * 0.8).toFixed(2);
   }
   if (healFlash > 0) {
     healFlash = Math.max(0, healFlash - dtReal * 1.4);
@@ -93224,16 +93497,9 @@ function frame(now) {
   if (physics) for (let i2 = 0; i2 < world.doors.length; i2++) {
     physics.setDoorClosed(i2, !!world.doors[i2].edge.locked);
   }
-  const ghost = player.dead ? ghostAlive() : null;
-  if (ghost) {
-    const [gx, gz] = world.simToWorld(ghost.x, ghost.y, ghost.deck);
-    const gy = elevOf(ghost.deck) + (ghost.downed ? 0.45 : 1.5);
-    camera.position.set(gx, gy, gz);
-    camera.rotation.set(0, 0, 0);
-    camera.rotateY(Math.atan2(-Math.cos(ghost.heading), -Math.sin(ghost.heading)));
-    _fillX = gx;
-    _fillY = gy + 0.2;
-    _fillZ = gz;
+  const spectating = player.dead ? deathFocusAgent : null;
+  if (spectating) {
+    placeDeathCamera(spectating);
     viewmodel.visible = false;
     flamerModel.visible = false;
   } else {
@@ -93249,19 +93515,19 @@ function frame(now) {
     flamerModel.visible = !player.dead && heldIsFlamer;
   }
   setText("clock", fmtTime(sim.t));
-  const povAgent = ghost ?? player.agent;
+  const povAgent = spectating ?? player.agent;
   const room = sim.graph.node(povAgent.node);
   setText("room", room ? room.name : "—");
   setText("deckLabel", `DECK ${povAgent.deck}`);
   const hp = Math.max(0, Math.ceil(povAgent.hp));
-  setStyle("healthBar", "width", `${ghost ? hp / 63 * 100 : hp / 45 * 100}%`);
-  setStyle("armorBar", "width", `${ghost ? 0 : player.armor / 50 * 100}%`);
-  setText("hpText", ghost ? `IT ${hp}` : `${Math.ceil(player.armor)} | ${hp}`);
-  setText("ammo", ghost ? "" : heldIsFlamer ? flamer.empty ? "TANK DRY" : `FUEL ${Math.ceil(flamer.frac * 100)}%` : weapon.reloading ? "RELOADING" : `${weapon.mag} / ${weapon.reserve}`);
-  setText("weaponName", ghost ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? inputPrompt(" · Q / WHEEL SWAP", " · Y SWAP") : ""}`);
+  setStyle("healthBar", "width", `${spectating ? hp / (povAgent.maxHp || 1) * 100 : hp / 45 * 100}%`);
+  setStyle("armorBar", "width", `${spectating ? 0 : player.armor / 50 * 100}%`);
+  setText("hpText", spectating ? "" : `${Math.ceil(player.armor)} | ${hp}`);
+  setText("ammo", spectating ? "" : heldIsFlamer ? flamer.empty ? "TANK DRY" : `FUEL ${Math.ceil(flamer.frac * 100)}%` : weapon.reloading ? "RELOADING" : `${weapon.mag} / ${weapon.reserve}`);
+  setText("weaponName", spectating ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? inputPrompt(" · Q / WHEEL SWAP", " · Y SWAP") : ""}`);
   {
     const wn = el("weaponName");
-    const wc = heldIsFlamer && !ghost ? "wn-flamer" : "";
+    const wc = heldIsFlamer && !spectating ? "wn-flamer" : "";
     if (wn.className !== wc) wn.className = wc;
   }
   {
@@ -93324,22 +93590,15 @@ function frame(now) {
   updateNameplate();
   updateMates();
   updateComms(now);
-  if (player.dead && ghost) {
-    if (!spectateShown) {
-      spectateShown = true;
-      playerFellAt ??= sim.t;
-      endScreen(
-        "YOU WERE TAKEN",
-        "It is wearing you now. You can see — but it is not you moving. A player taken never seeds a carrier; it fights until it is put down.",
-        false
+  if (player.dead) {
+    const teammate = livingTeammate();
+    if (!teammate && deathStartedAt !== null && now - deathStartedAt >= DEATH_REVIEW_MS) {
+      const body = afterlifeBody();
+      defeatScreen(
+        body?.faction === 4 ? "YOU WERE TAKEN" : "KIA",
+        body?.faction === 4 ? "The thing wearing you keeps moving. Your body is still part of the ship now." : "The ship fights on without you. The last thing you hear is the hive, singing."
       );
     }
-  } else if (player.dead) {
-    playerFellAt ??= sim.t;
-    defeatScreen(
-      sim.playerConvertedTo ? "PUT DOWN" : "KIA",
-      sim.playerConvertedTo ? "What was left of you is finally still." : "The ship fights on without you. The last thing you hear is the hive, singing."
-    );
   } else if (sim.outcome === "contained") {
     victoryScreen();
   } else if (!ended && !shownLost && sim.tickCount % 30 === 0) {
@@ -93461,7 +93720,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -94189,17 +94448,17 @@ var init_main = __esm({
         dismissIntro();
       }
     });
-    ghostAlive = () => {
-      const gh = sim.playerConvertedTo ? sim.byId.get(sim.playerConvertedTo) : null;
-      return gh && !gh.dead && gh.damage < 100 ? gh : null;
+    afterlifeBody = () => {
+      const body = sim.byId.get(player.agent.afterlifeId);
+      return body && !body.dead ? body : null;
     };
+    livingTeammate = () => mates.find((mate) => mate.agent && !mate.agent.dead && mate.agent.hp > 0) ?? null;
     overlay.addEventListener("click", (event) => {
       if (event.target.closest("button") || ended) return;
       if (gamepadPaused) {
         resumeGamepadControls();
         return;
       }
-      if (player.dead && !ghostAlive()) return;
       overlay.classList.add("hidden");
       if (!player.dead) canvas.requestPointerLock()?.catch?.(() => {
       });
@@ -94604,6 +94863,13 @@ var init_main = __esm({
     }, { passive: true });
     window.addEventListener("keydown", (e2) => {
       if (!introGone) return;
+      if (ended && overlay.classList.contains("hidden") && e2.code === "Enter") {
+        e2.preventDefault();
+        toggleMap(false);
+        el("postgameHud").style.display = "none";
+        overlay.classList.remove("hidden");
+        return;
+      }
       if (ended && !overlay.classList.contains("hidden")) {
         if (e2.code === "Tab") {
           e2.preventDefault();
@@ -94617,6 +94883,10 @@ var init_main = __esm({
         }
       }
       if (e2.code === "KeyM") {
+        if (ended) {
+          overlay.classList.add("hidden");
+          el("postgameHud").style.display = "block";
+        }
         toggleMap();
         return;
       }
@@ -94665,8 +94935,11 @@ var init_main = __esm({
     shake = 0;
     hitFlash = 0;
     dmgFlash = 0;
+    damageTint = 0;
     dmgAngle = 0;
-    lastSinceHit = 99;
+    lastPlayerHurtTick = player.agent.lastHurtTick ?? -1;
+    lastPlayerArmor = player.agent.armor;
+    lastPlayerHp = player.agent.hp;
     fragRay = new Raycaster();
     _fragMove = new Vector3();
     _fragNormal = new Vector3();
@@ -94712,7 +94985,13 @@ var init_main = __esm({
     _fpsShownAt = 0;
     ticker = new TickScheduler({ stepSec: sim.dt, run: () => sim.tick() });
     shownLost = false;
-    spectateShown = false;
+    deathStartedAt = null;
+    deathFocusAgent = null;
+    DEATH_REVIEW_MS = 3200;
+    deathCamRay = new Raycaster();
+    deathFocus = new Vector3();
+    deathDesired = new Vector3();
+    deathDirection = new Vector3();
     last = performance.now();
     doorMovers = [];
     requestAnimationFrame(frame);

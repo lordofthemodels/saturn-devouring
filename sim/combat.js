@@ -562,7 +562,8 @@ export function humanDeathToCorpse(sim, a) {
   const corpse = makeAgent(FACTION.CORPSE, a.node, sim.graph);
   corpse.state = STATE.DEAD;
   corpse.damage = 15; // shot up a little, still carrier food
-  corpse.x = a.x; corpse.y = a.y;
+  corpse.x = a.x; corpse.y = a.y; corpse.heading = a.heading;
+  corpse.bodyType = a.bodyType;
   corpse.lastHurtBy = a.lastHurtBy;
   corpse.lastHurtTick = a.lastHurtTick;
   corpse.deathImpulse = a.deathImpulse ?? null;
@@ -575,4 +576,9 @@ export function humanDeathToCorpse(sim, a) {
   // that only the player's scavenge (game/player.js) reads.
   if (a.flamer && a.fuel > 0) { corpse.hadFlamer = true; corpse.flamerFuel = a.fuel; }
   sim.spawn(corpse);
+  if (a.isPlayer) {
+    corpse.playerSourceId = a.id;
+    a.afterlifeId = corpse.id;
+    a.respawnReadyAt = sim.t + sim.P.player.respawnSec;
+  }
 }
