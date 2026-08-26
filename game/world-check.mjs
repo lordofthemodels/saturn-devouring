@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { Sim } from '../sim/sim.js';
+import { CLEAR_H, elevOf, floorBandOf } from '../shared/geometry.js';
 import { insideHullPoint } from './world.js';
+
+for (let deck = 1; deck <= 5; deck++) {
+  assert.equal(floorBandOf(elevOf(deck) + CLEAR_H / 2), deck,
+    `deck ${deck} walls must remain in their physical render band`);
+}
+assert.equal(floorBandOf(elevOf(4) - 0.2), 5,
+  'the expanded hangar airspace must remain on deck 5 below the deck-4 floor');
+assert.equal(floorBandOf(elevOf(4) + 0.2), 4,
+  'deck-4 geometry must become visible before a climber settles on deck 4');
 
 const sim = new Sim('world-connector-check');
 const { graph } = sim;

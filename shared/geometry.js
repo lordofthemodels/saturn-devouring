@@ -20,6 +20,17 @@ export function elevOf(deck) {
   return (5 - deck) * DECK_H + (deck < 5 ? HANGAR_LIFT : 0);
 }
 
+// Attribute world geometry to the floor band it physically occupies. This
+// must use elevOf rather than dividing by DECK_H: the expanded hangar makes
+// the deck-5→4 gap non-uniform, and the old division mislabeled deck-4 walls
+// as deck 3 until a climber completed the transition.
+export function floorBandOf(worldY, tolerance = 0.15) {
+  for (let deck = 1; deck < 5; deck++) {
+    if (worldY + tolerance >= elevOf(deck)) return deck;
+  }
+  return 5;
+}
+
 // The big open volumes the Flood bounds across — hangars, cargo, vehicle bay,
 // the flank weapon batteries + magazines, the grand stairwell, wide
 // berthing/mess. Keyed off sim node type/roles so the sim and render agree.

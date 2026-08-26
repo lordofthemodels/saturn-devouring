@@ -10,7 +10,7 @@ import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import { InstancedEmissiveFixtures } from '../engine/lights.js';
 import { DOORS } from './fps-data.js';
 import { RNG } from '../shared/rng.js';
-import { DECK_H, CLEAR_H, elevOf, clearHeightOf } from '../shared/geometry.js';
+import { DECK_H, CLEAR_H, elevOf, clearHeightOf, floorBandOf } from '../shared/geometry.js';
 
 // Deck stacking + per-room clear height live in shared/geometry.js so the
 // render and the deterministic sim (leap peak) read ONE source. Re-exported
@@ -207,12 +207,11 @@ export class World {
     // per material AND per deck, so whole decks can be hidden when the
     // player can't possibly see them (decks are opaque; only hatches and
     // the stairwell pierce ADJACENT decks — ±1 is always kept visible).
-    // FLOOR-BAND attribution (bugfix: user saw straight through tall rooms'
-    // ceilings): Math.round sent a ceiling at elev + tallRoomH TWO decks up,
-    // where the ±1 rule culled it. Attribute by which deck's floor band the
-    // object sits above instead — a tall ceiling lands at most one deck up,
-    // which ±1 always keeps.
-    const deckOf = (y) => Math.max(1, Math.min(5, 5 - Math.floor((y + 0.15) / DECK_H)));
+    // FLOOR-BAND attribution: use the real floors, including the expanded
+    // hangar gap. Uniform y / DECK_H math mislabeled deck-4 walls as deck 3,
+    // so they stayed culled while a player climbed up from deck 5 and snapped
+    // into view only when the climb completed.
+    const deckOf = floorBandOf;
     // FORE/AFT THIRDS (fog-exact culling): scene.fog.far never exceeds 60m
     // and three's fog is FULLY opaque at far — geometry beyond ~70m is
     // pixel-for-pixel invisible. The ship is ~220m long, so each deck merges
