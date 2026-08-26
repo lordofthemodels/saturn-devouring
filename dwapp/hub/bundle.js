@@ -68622,15 +68622,22 @@ var init_peerd_browser = __esm({
 });
 
 // game/gamepad.js
+function singleActionPress(pressed, contextualAction = false) {
+  return {
+    interactPressed: !!pressed,
+    reloadPressed: !!pressed && !contextualAction
+  };
+}
 function halo3Actions(state, contextualAction = false) {
+  const action = singleActionPress(state.pressed(HALO3_BINDINGS.action), contextualAction);
   return {
     jumpHeld: state.held(HALO3_BINDINGS.jump),
     jumpPressed: state.pressed(HALO3_BINDINGS.jump),
     fireHeld: state.held(HALO3_BINDINGS.fire),
     grenadePressed: state.pressed(HALO3_BINDINGS.grenade),
     interactHeld: state.held(HALO3_BINDINGS.action),
-    interactPressed: state.pressed(HALO3_BINDINGS.action),
-    reloadPressed: state.pressed(HALO3_BINDINGS.action) && !contextualAction,
+    interactPressed: action.interactPressed,
+    reloadPressed: action.reloadPressed,
     meleePressed: state.pressed(HALO3_BINDINGS.melee),
     swapPressed: state.pressed(HALO3_BINDINGS.swapWeapon)
   };
@@ -83145,7 +83152,7 @@ var init_player = __esm({
         this.armed = true;
         this._eLatch = false;
         this._wLatch = false;
-        this._gamepadActionConsumed = false;
+        this._actionConsumed = false;
         this._armoryIdx = sim2.graph.byId.get("armory");
         this.sinceHit = 99;
         this.agent = existingAgent ?? sim2.attachPlayer(startNode, { odst: true, bodyType });
@@ -83202,8 +83209,9 @@ var init_player = __esm({
           this.onShoved?.(Math.hypot(this.shoveX, this.shoveZ));
         }
         const gamepadInteract = this.gamepadInteractionPending();
-        if (!gamepadInteract) this._gamepadActionConsumed = false;
-        const wantInteract = this.keys.has("KeyE") || gamepadInteract;
+        const keyboardInteract = this.keys.has("KeyE");
+        const wantInteract = keyboardInteract || gamepadInteract;
+        if (!wantInteract) this._actionConsumed = false;
         let interactionConsumed = false;
         if (wantInteract && !this._eLatch) {
           this._eLatch = true;
@@ -83215,9 +83223,9 @@ var init_player = __esm({
               interactionConsumed = true;
             }
           }
-          if (gamepadInteract && interactionConsumed) this._gamepadActionConsumed = true;
+          if (interactionConsumed) this._actionConsumed = true;
         } else if (!wantInteract) this._eLatch = false;
-        const wantClimb = this.keys.has("KeyL") || gamepadInteract && !this._gamepadActionConsumed;
+        const wantClimb = this.keys.has("KeyL") || wantInteract && !this._actionConsumed;
         this.climbing = !!this.climb;
         if (this.climb) {
           this._stepClimb(dt);
@@ -94277,7 +94285,7 @@ function frame(now) {
     if (trunk) {
       const up = player.deck === trunk.lowerDeck;
       const kind = trunk.vertical ? "ladder" : "stairs";
-      setText("hint", player.queuedTrunk === trunk ? "in line for the ladder — you go next" : trunk.edge?.type === "ladder" && sim.vertBusy(trunk.edge, player.agent.id) ? `${kind} busy — ${inputPrompt("L", "RB")} to take the next slot` : `${inputPrompt("L", "RB")} — climb ${kind} ${up ? "up" : "down"} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+      setText("hint", player.queuedTrunk === trunk ? "in line for the ladder — you go next" : trunk.edge?.type === "ladder" && sim.vertBusy(trunk.edge, player.agent.id) ? `${kind} busy — ${inputPrompt("E", "RB")} to take the next slot` : `${inputPrompt("E", "RB")} — climb ${kind} ${up ? "up" : "down"} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
       setStyle("hint", "display", "block");
     } else setStyle("hint", "display", "none");
   }
@@ -95182,7 +95190,7 @@ var init_main = __esm({
       });
     });
     ended = false;
-    KEYBOARD_CONTROLS = "WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use · R reload · F melee · Q / WHEEL swap · L climb · M map · SHIFT sprint";
+    KEYBOARD_CONTROLS = "WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use / climb / reload · F melee · Q / WHEEL swap · M map · SHIFT sprint";
     CONTROLLER_CONTROLS = "HALO 3 · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB pick up / use / climb / reload · B melee · Y swap · L3 sprint · VIEW map · D-PAD orders";
     refreshInputModeCopy = refreshOverlayPrompt;
     refreshOverlayPrompt();
@@ -95615,6 +95623,7 @@ var init_main = __esm({
         if (e2.code === "ArrowRight") selectMapDeck(Math.min(5, marineMap.selectedDeck() + 1));
         return;
       }
+      if (e2.code === "KeyE" && !e2.repeat && singleActionPress(true, contextualActionAvailable()).reloadPressed) reloadPressed = true;
       if (e2.code === "KeyR") reloadPressed = true;
       if (e2.code === "KeyF") meleePressed = true;
       if (e2.code === "KeyG") fragPressed = true;
@@ -95792,7 +95801,7 @@ var init_main = __esm({
         } else if (action === "interact") {
           await pulseAgentKey("KeyE");
         } else if (action === "climb") {
-          await pulseAgentKey("KeyL");
+          await pulseAgentKey("KeyE");
         } else if (action === "map") {
           toggleMap(params.open === void 0 ? !mapOpen : !!params.open);
         } else if (action === "order") {

@@ -27,7 +27,7 @@ import { PostFX } from '../engine/post.js';
 import { LightPool } from '../engine/lights.js';
 import { createRenderer, installDeviceLostReload, QualityGovernor, TickScheduler } from '../engine/runtime.js';
 import { createGameSync } from '../multiplayer/game-sync.js';
-import { StandardGamepad, halo3Actions } from './gamepad.js';
+import { StandardGamepad, halo3Actions, singleActionPress } from './gamepad.js';
 import { SporeFX } from './spore-fx.js';
 
 const canvas = document.getElementById('c');
@@ -1530,7 +1530,7 @@ overlay.addEventListener('click', (event) => {
   if (!player.dead) canvas.requestPointerLock()?.catch?.(() => {});
 });
 let ended = false;
-const KEYBOARD_CONTROLS = 'WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use · R reload · F melee · Q / WHEEL swap · L climb · M map · SHIFT sprint';
+const KEYBOARD_CONTROLS = 'WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use / climb / reload · F melee · Q / WHEEL swap · M map · SHIFT sprint';
 const CONTROLLER_CONTROLS = 'HALO 3 · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB pick up / use / climb / reload · B melee · Y swap · L3 sprint · VIEW map · D-PAD orders';
 function refreshOverlayPrompt() {
   if (!introGone) {
@@ -2509,6 +2509,10 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'ArrowRight') selectMapDeck(Math.min(5, marineMap.selectedDeck() + 1));
     return;
   }
+  // ONE ACTION KEY, matching controller RB: a live context gets E first;
+  // without one, the same press reloads. R stays as a quiet legacy alias.
+  if (e.code === 'KeyE' && !e.repeat
+    && singleActionPress(true, contextualActionAvailable()).reloadPressed) reloadPressed = true;
   if (e.code === 'KeyR') reloadPressed = true;
   if (e.code === 'KeyF') meleePressed = true;
   if (e.code === 'KeyG') fragPressed = true;
@@ -4180,8 +4184,8 @@ function frame(now) {
       setText('hint', player.queuedTrunk === trunk
         ? 'in line for the ladder — you go next'
         : trunk.edge?.type === 'ladder' && sim.vertBusy(trunk.edge, player.agent.id)
-          ? `${kind} busy — ${inputPrompt('L', 'RB')} to take the next slot`
-          : `${inputPrompt('L', 'RB')} — climb ${kind} ${up ? 'up' : 'down'} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+          ? `${kind} busy — ${inputPrompt('E', 'RB')} to take the next slot`
+          : `${inputPrompt('E', 'RB')} — climb ${kind} ${up ? 'up' : 'down'} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
       setStyle('hint', 'display', 'block');
     } else setStyle('hint', 'display', 'none');
   }
@@ -4403,7 +4407,7 @@ globalThis.peerd?.agent?.expose({
     } else if (action === 'interact') {
       await pulseAgentKey('KeyE');
     } else if (action === 'climb') {
-      await pulseAgentKey('KeyL');
+      await pulseAgentKey('KeyE');
     } else if (action === 'map') {
       toggleMap(params.open === undefined ? !mapOpen : !!params.open);
     } else if (action === 'order') {

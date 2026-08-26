@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { StandardGamepad, halo3Actions, radialDeadzone } from './gamepad.js';
+import { StandardGamepad, halo3Actions, radialDeadzone, singleActionPress } from './gamepad.js';
 
 function button(pressed = false, value = pressed ? 1 : 0) {
   return { pressed, value };
@@ -79,5 +79,9 @@ assert.deepEqual(halo3Actions(actionState, true), {
 }, 'Halo 3 actions map to A/B/Y/RB/LT/RT and context outranks reload');
 assert.equal(halo3Actions(actionState, false).reloadPressed, true,
   'RB reloads only when no contextual action is available');
+assert.deepEqual(singleActionPress(true, true), { interactPressed: true, reloadPressed: false },
+  'the shared action resolver gives a live interaction priority over reload');
+assert.deepEqual(singleActionPress(true, false), { interactPressed: true, reloadPressed: true },
+  'the shared action resolver reloads when no interaction is available');
 
 console.log('gamepad input checks passed');
