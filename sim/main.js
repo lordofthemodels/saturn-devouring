@@ -34,6 +34,7 @@ const CONTROL_DEFAULTS = {
 for (const [id, value] of Object.entries(CONTROL_DEFAULTS)) {
   document.getElementById(id).value = value;
 }
+let infectionFormsExplicit = false;
 
 function swarmOverrides() {
   const num = (id) => {
@@ -68,7 +69,7 @@ function swarmOverrides() {
   const breachBodies = Math.min(num('inBreach'), bodyTotal);
   return {
     flood: {
-      initialInfectionForms: num('startInf'),
+      ...(infectionFormsExplicit ? { initialInfectionForms: num('startInf') } : {}),
       initialCombatForms: num('startCf'),
       initialCarriers: num('startCar'),
     },
@@ -97,6 +98,10 @@ function swarmOverrides() {
 }
 
 let sim = new Sim(document.getElementById('seed').value, swarmOverrides());
+function syncOpeningInfectionForms() {
+  if (!infectionFormsExplicit) document.getElementById('startInf').value = sim.P.flood.initialInfectionForms;
+}
+syncOpeningInfectionForms();
 let viz = new Viz(canvas, sim);
 let paused = false;
 let speed = 1;
@@ -114,6 +119,7 @@ function applyDials() {
 
 function restart() {
   sim = new Sim(document.getElementById('seed').value.trim() || 'charon-1', swarmOverrides());
+  syncOpeningInfectionForms();
   applyDials();
   viz.setSim(sim);
   syncDeckUI();
@@ -223,6 +229,7 @@ document.getElementById('seed').addEventListener('keydown', (e) => { if (e.key =
 for (const id of SCENARIO_IDS) {
   const el = document.getElementById(id);
   el.addEventListener('focus', () => el.select()); // typing REPLACES the value
+  if (id === 'startInf') el.addEventListener('input', () => { infectionFormsExplicit = true; });
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') restart(); });
 }
 document.getElementById('legendToggle').addEventListener('click', (e) => {

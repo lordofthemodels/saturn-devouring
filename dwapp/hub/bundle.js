@@ -69163,8 +69163,10 @@ var init_params = __esm({
       // flood should win most runs — the marines alone can't hold the ship. Tune
       // difficulty with the initial swarm size and comms quality, not squad nerfs.
       flood: {
-        initialInfectionForms: 20,
-        // difficulty lever (user: sim == game defaults)
+        initialInfectionForms: 12,
+        // solo base when the breach is above the lower two decks
+        lowerDeckInitialInfectionForms: 10,
+        initialInfectionFormsPerAdditionalPlayer: 3,
         initialCombatForms: 0,
         // a pure infection swarm; combat forms + carriers
         initialCarriers: 0
@@ -71066,7 +71068,13 @@ function makeAgent(kind, node, graph) {
 function resetIds() {
   NEXT_ID = 1;
 }
-function initRun(seed2, rng, P2) {
+function openingInfectionFormCount(floodParams, breachDeck, playerCount = 1) {
+  const requestedPlayers = Number(playerCount);
+  const players = Number.isFinite(requestedPlayers) ? Math.max(1, Math.floor(requestedPlayers)) : 1;
+  const soloCount = breachDeck >= 4 ? floodParams.lowerDeckInitialInfectionForms : floodParams.initialInfectionForms;
+  return soloCount + (players - 1) * floodParams.initialInfectionFormsPerAdditionalPlayer;
+}
+function initRun(seed2, rng, P2, runOptions = {}) {
   resetIds();
   const graph = new ShipGraph(SHIP);
   for (const e2 of graph.edges) {
@@ -71080,6 +71088,13 @@ function initRun(seed2, rng, P2) {
   const breach = rng.pick(graph.nodesWithRole("crash_candidate"));
   graph.breachNode = breach;
   graph.unpowered[breach] = 1;
+  if (!runOptions.initialInfectionFormsExplicit) {
+    P2.flood.initialInfectionForms = openingInfectionFormCount(
+      P2.flood,
+      graph.node(breach).deck,
+      runOptions.playerCount
+    );
+  }
   for (const n2 of graph.nodes) {
     const roll = rng.next();
     graph.lightMode[n2.idx] = graph.unpowered[n2.idx] ? roll < 0.45 ? 3 : 2 : roll < 0.6 ? 0 : roll < 0.78 ? 1 : roll < 0.9 ? 2 : 3;
@@ -75350,16 +75365,23 @@ var init_sim = __esm({
       [FACTION.CORPSE]: 9079434
     };
     Sim = class {
-      constructor(seed2, paramOverrides = null) {
+      constructor(seed2, paramOverrides = null, runOptions = null) {
         this.seed = String(seed2);
         this.P = cloneParams();
+        const initialInfectionFormsExplicit = Object.hasOwn(
+          paramOverrides?.flood ?? {},
+          "initialInfectionForms"
+        );
         if (paramOverrides) deepMerge(this.P, paramOverrides);
         this.rng = new RNG(this.seed);
         this.t = 0;
         this.tickCount = 0;
         this.dt = 1 / this.P.sim.tickHz;
         this.strategicEvery = Math.round(this.P.sim.strategicTickSec * this.P.sim.tickHz);
-        const { graph, agents: agents2, squads } = initRun(this.seed, this.rng, this.P);
+        const { graph, agents: agents2, squads } = initRun(this.seed, this.rng, this.P, {
+          playerCount: runOptions?.playerCount ?? 1,
+          initialInfectionFormsExplicit
+        });
         this.graph = graph;
         for (const edge of graph.edges) {
           if (edge.door) edge.open01 = edge.locked ? this.P.door.ajarFraction : 0;
@@ -95100,12 +95122,11 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
     init_sim();
-    init_params();
     init_agentBuffer();
     init_combat();
     init_world();
@@ -95136,7 +95157,6 @@ var init_main = __esm({
     window.addEventListener("keydown", () => setInputMode("keyboard"), true);
     window.addEventListener("pointerdown", () => setInputMode("keyboard"), true);
     QP = new URLSearchParams(location.search);
-    BASE_POD_COUNT = PARAMS.flood.initialInfectionForms;
     HD = QP.has("hd");
     QTIER = QP.get("q");
     try {
@@ -95258,7 +95278,7 @@ var init_main = __esm({
       params: { seed }
     });
     coopPlayers = LAUNCH.session ? Math.max(1, new Set(LAUNCH.members || []).size) : 1;
-    sim = new Sim(seed, coopPlayers > 1 ? { flood: { initialInfectionForms: BASE_POD_COUNT + 5 * (coopPlayers - 1) } } : null);
+    sim = new Sim(seed, null, { playerCount: coopPlayers });
     briefing = activeIntroCrawl() ?? beginIntroCrawl();
     briefing.setBody(introBody(sim.graph.node(sim.graph.breachNode).name));
     world = new World(scene, sim.graph, seed);

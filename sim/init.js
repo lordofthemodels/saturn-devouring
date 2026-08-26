@@ -107,7 +107,16 @@ export function makeAgent(kind, node, graph) {
 
 export function resetIds() { NEXT_ID = 1; }
 
-export function initRun(seed, rng, P) {
+export function openingInfectionFormCount(floodParams, breachDeck, playerCount = 1) {
+  const requestedPlayers = Number(playerCount);
+  const players = Number.isFinite(requestedPlayers) ? Math.max(1, Math.floor(requestedPlayers)) : 1;
+  const soloCount = breachDeck >= 4
+    ? floodParams.lowerDeckInitialInfectionForms
+    : floodParams.initialInfectionForms;
+  return soloCount + (players - 1) * floodParams.initialInfectionFormsPerAdditionalPlayer;
+}
+
+export function initRun(seed, rng, P, runOptions = {}) {
   resetIds();
   const graph = new ShipGraph(SHIP);
 
@@ -137,6 +146,14 @@ export function initRun(seed, rng, P) {
   const breach = rng.pick(graph.nodesWithRole('crash_candidate'));
   graph.breachNode = breach;
   graph.unpowered[breach] = 1;
+  // The higher deck-3 breaches open closer to more armed defenders, so they
+  // get two extra forms. Co-op scales from the same seeded breach on every
+  // client; an explicit simulator override remains literal.
+  if (!runOptions.initialInfectionFormsExplicit) {
+    P.flood.initialInfectionForms = openingInfectionFormCount(
+      P.flood, graph.node(breach).deck, runOptions.playerCount,
+    );
+  }
 
   // fixture states, per room (moved from the renderer into the SIM — user
   // rule: shooting in the dark is a MECHANIC now, not just a look). An
