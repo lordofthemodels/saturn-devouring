@@ -1,5 +1,6 @@
 import { joinMultiplayerRoom } from '../multiplayer/session.js';
 import { StandardGamepad } from './gamepad.js';
+import { beginIntroCrawl } from './intro-crawl.js';
 import {
   MAX_PLAYERS,
   PROTOCOL_VERSION,
@@ -1245,6 +1246,7 @@ async function launchGame(config) {
   launcher.hidden = true;
   byId('intro').style.display = '';
   byId('overlay').style.display = '';
+  beginIntroCrawl();
   try {
     await import('./main.js?v=1');
   } catch (error) {
