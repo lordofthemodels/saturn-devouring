@@ -2357,7 +2357,14 @@ export class Sim {
         const a = E[i];
         for (let j = i + 1; j < k; j++) {
           const b = E[j];
-          const need = R[i] + R[j];
+          // Combat forms are broad, irregular bodies and read as a single
+          // stacked model when their base capsules merely touch. Give only
+          // combat-form PAIRS a little more crowd space; keeping _bodyRadius
+          // unchanged preserves doorway, wall, player and attack collision.
+          const crowdScale = a.faction === FACTION.COMBAT && b.faction === FACTION.COMBAT
+            ? this.P.combat.combatForm.crowdRadiusScale
+            : 1;
+          const need = (R[i] + R[j]) * crowdScale;
           let dx = b.x - a.x, dy = b.y - a.y;
           const d2 = dx * dx + dy * dy;
           if (d2 >= need * need) continue;
