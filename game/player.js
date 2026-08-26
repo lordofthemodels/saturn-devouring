@@ -7,9 +7,9 @@
 // climbing with the sim's one-body-per-ladder reservations, the grand
 // stairwell's deck portals, and ammo scavenging.
 //
-// L (not W) climbs a ladder/stairwell you're standing at — walking past a
-// ladder shouldn't yank you up it, and a shaft only ever has ONE other end
-// from where you stand, so the direction is never a guess.
+// E climbs a ladder/stairwell you're standing at after pickups get first
+// refusal. Walking past one never yanks you up it, and a shaft only ever has
+// ONE other end from where you stand, so the direction is never a guess.
 
 import { FpsController } from '../engine/fps-controller.js';
 import { armoryStations, elevOf } from './world.js';
@@ -34,7 +34,7 @@ export class Player extends FpsController {
     this.armed = true; // ODST loadout: you board with the MA5
     this._eLatch = false;
     this._wLatch = false;
-    this._gamepadActionConsumed = false;
+    this._actionConsumed = false;
     this._armoryIdx = sim.graph.byId.get('armory');
 
     // armor over health (first-strike shield model, ODST-flavored) — the
@@ -95,10 +95,11 @@ export class Player extends FpsController {
       this.onShoved?.(Math.hypot(this.shoveX, this.shoveZ));
     }
 
-    // --- E / controller action: every contextual pickup uses one button ---
+    // --- E / controller action: one control for pickup, use, climb, reload ---
     const gamepadInteract = this.gamepadInteractionPending();
-    if (!gamepadInteract) this._gamepadActionConsumed = false;
-    const wantInteract = this.keys.has('KeyE') || gamepadInteract;
+    const keyboardInteract = this.keys.has('KeyE');
+    const wantInteract = keyboardInteract || gamepadInteract;
+    if (!wantInteract) this._actionConsumed = false;
     let interactionConsumed = false;
     if (wantInteract && !this._eLatch) {
       this._eLatch = true;
@@ -111,13 +112,15 @@ export class Player extends FpsController {
         const src = this.ammoSource();
         if (src && this.onAmmoTaken) { this.onAmmoTaken(src); interactionConsumed = true; }
       }
-      if (gamepadInteract && interactionConsumed) this._gamepadActionConsumed = true;
+      if (interactionConsumed) this._actionConsumed = true;
     } else if (!wantInteract) this._eLatch = false;
 
-    const wantClimb = this.keys.has('KeyL')
-      || (gamepadInteract && !this._gamepadActionConsumed);
+    // L remains an unadvertised compatibility alias. E follows the same
+    // priority as RB: a pickup consumes the press; otherwise a nearby trunk
+    // gets it. Main owns the final no-context fallback to reload.
+    const wantClimb = this.keys.has('KeyL') || (wantInteract && !this._actionConsumed);
 
-    // --- climbing: press L at a shaft, arrive at its only other end ---
+    // --- climbing: press action at a shaft, arrive at its only other end ---
     this.climbing = !!this.climb;
     if (this.climb) {
       this._stepClimb(dt);

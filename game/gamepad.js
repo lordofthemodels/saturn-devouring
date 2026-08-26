@@ -27,15 +27,26 @@ export const HALO3_BINDINGS = Object.freeze({
   fire: 'rt',
 });
 
+// One action control on every input device: context wins, reload is the
+// fallback. Both RB and keyboard E use this exact resolver so their behavior
+// cannot drift as new pickups or traversal interactions are added.
+export function singleActionPress(pressed, contextualAction = false) {
+  return {
+    interactPressed: !!pressed,
+    reloadPressed: !!pressed && !contextualAction,
+  };
+}
+
 export function halo3Actions(state, contextualAction = false) {
+  const action = singleActionPress(state.pressed(HALO3_BINDINGS.action), contextualAction);
   return {
     jumpHeld: state.held(HALO3_BINDINGS.jump),
     jumpPressed: state.pressed(HALO3_BINDINGS.jump),
     fireHeld: state.held(HALO3_BINDINGS.fire),
     grenadePressed: state.pressed(HALO3_BINDINGS.grenade),
     interactHeld: state.held(HALO3_BINDINGS.action),
-    interactPressed: state.pressed(HALO3_BINDINGS.action),
-    reloadPressed: state.pressed(HALO3_BINDINGS.action) && !contextualAction,
+    interactPressed: action.interactPressed,
+    reloadPressed: action.reloadPressed,
     meleePressed: state.pressed(HALO3_BINDINGS.melee),
     swapPressed: state.pressed(HALO3_BINDINGS.swapWeapon),
   };
