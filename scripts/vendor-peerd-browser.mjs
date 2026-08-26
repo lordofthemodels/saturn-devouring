@@ -20,6 +20,7 @@ await build({
   stdin: {
     contents: [
       "export { generateIdentity } from './peerd-distributed/identity/keypair.js';",
+      "export { DEFAULT_ICE_SERVERS } from './peerd-distributed/transport/peer.js';",
       "export { joinRoom } from './peerd-distributed/transport/rooms.js';",
       "export { createGossip } from './peerd-distributed/gossip/topic.js';",
       "export { createTopicSync, createMemoryTopicStore } from './peerd-distributed/gossip/sync.js';",
@@ -54,6 +55,9 @@ for (const name of [
   'createMemoryTopicStore', 'createPresence', 'createDirect',
 ]) {
   if (typeof smoke[name] !== 'function') throw new Error(`vendored browser primitive missing: ${name}`);
+}
+if (!Array.isArray(smoke.DEFAULT_ICE_SERVERS) || smoke.DEFAULT_ICE_SERVERS.length < 2) {
+  throw new Error('vendored browser direct ICE configuration missing');
 }
 
 console.log(`bundled peerd browser primitives → ${OUT}`);

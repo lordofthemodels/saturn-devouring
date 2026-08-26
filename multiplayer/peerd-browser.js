@@ -3219,6 +3219,7 @@ var createDirect = ({ mesh }) => {
   });
 };
 export {
+  DEFAULT_ICE_SERVERS,
   createDirect,
   createGossip,
   createMemoryTopicStore,
