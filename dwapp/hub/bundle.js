@@ -80779,9 +80779,9 @@ function tex(name) {
 function buildRifleViewmodel() {
   const group = new Group();
   const bodyMat = new MeshStandardMaterial({
-    color: 2764339,
-    roughness: 0.88,
-    metalness: 0.15
+    color: MA5_GUNMETAL,
+    roughness: 0.82,
+    metalness: 0.22
   });
   const dispMat = new MeshStandardMaterial({ map: tex("display"), emissive: 16777215, emissiveMap: tex("display"), emissiveIntensity: 0.8, roughness: 0.6 });
   const compassMat = new MeshStandardMaterial({ map: tex("compass"), emissive: 16777215, emissiveMap: tex("compass"), emissiveIntensity: 0.8 });
@@ -80935,11 +80935,12 @@ function carryGeometry() {
   _mergedCarry = merged;
   return merged;
 }
-var RIFLE_MUZZLE, GUN_TUNE, texLoader, texCache, FLAMER_MUZZLE, _mergedFlamer, FLAMER_TUNE, _mergedCarry;
+var MA5_GUNMETAL, RIFLE_MUZZLE, GUN_TUNE, texLoader, texCache, FLAMER_MUZZLE, _mergedFlamer, FLAMER_TUNE, _mergedCarry;
 var init_rifle_model = __esm({
   "game/rifle-model.js"() {
     init_three_webgpu_module();
     init_rifle_model_data();
+    MA5_GUNMETAL = 1053464;
     RIFLE_MUZZLE = new Vector3(0, 0.015, 0.515);
     GUN_TUNE = { x: 0.1485, y: -0.235, z: 0.2115, ry: -0.08, rx: -0.045, rz: 0.02, s: 1.15 };
     texLoader = new TextureLoader();
@@ -82009,7 +82010,7 @@ var init_agents3d = __esm({
         this._carrierLast = /* @__PURE__ */ new Map();
         this._bursting = [];
         this.corpse = makeInstanced(scene2, new BoxGeometry(1.5, 0.28, 0.55), 5921370);
-        this.rifle = makeInstanced(scene2, carryGeometry(), 2303790);
+        this.rifle = makeInstanced(scene2, carryGeometry(), MA5_GUNMETAL);
         this.rifle.material.roughness = 0.45;
         this.rifle.material.metalness = 0.65;
         this.flamer = makeInstanced(scene2, flamerGeometry(), 3553327, 2754560, 0.16);

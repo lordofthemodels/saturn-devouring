@@ -10,6 +10,10 @@
 import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import { RIFLE_MESHES } from './rifle-model-data.js';
 
+// Halo's MA5 reads as near-black gunmetal until a highlight catches an edge.
+// One shared tint keeps the first-person and carried versions identical.
+export const MA5_GUNMETAL = 0x101318;
+
 // muzzle tip in the rifle's authored local space (first-strike js/models.js)
 export const RIFLE_MUZZLE = new THREE.Vector3(0, 0.015, 0.515);
 
@@ -64,8 +68,8 @@ export function buildRifleViewmodel() {
   // negative Vs edge-clamped into the atlas's white top row. So the color
   // IS the on-screen pixel: the games' gunmetal, straight up.
   const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2e33,
-    roughness: 0.88, metalness: 0.15,
+    color: MA5_GUNMETAL,
+    roughness: 0.82, metalness: 0.22,
   });
   const dispMat = new THREE.MeshStandardMaterial({ map: tex('display'), emissive: 0xffffff, emissiveMap: tex('display'), emissiveIntensity: 0.8, roughness: 0.6 });
   const compassMat = new THREE.MeshStandardMaterial({ map: tex('compass'), emissive: 0xffffff, emissiveMap: tex('compass'), emissiveIntensity: 0.8 });

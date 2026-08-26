@@ -7,7 +7,7 @@ import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import * as TSL from '../engine/vendor/three.tsl.module.js';
 import { FACTION, FLAG, CLIP } from '../shared/agentBuffer.js';
 import { elevOf, clearHeightOf } from './world.js';
-import { carryGeometry, flamerGeometry, FLAMER_MUZZLE } from './rifle-model.js';
+import { carryGeometry, flamerGeometry, FLAMER_MUZZLE, MA5_GUNMETAL } from './rifle-model.js';
 import { characterParts } from './characters.js';
 import { buildCarrier, CarrierAnimator, SACK_BLOAT_M } from './carrier-model.js';
 import { RagdollSystem } from '../engine/physics/ragdoll.js';
@@ -418,7 +418,7 @@ export class Agents3D {
     // real MA5 silhouette (first-strike asset), merged grip+gun, one draw
     // call for every carried rifle on the ship (marines, armed crew, armed
     // combat forms) — see game/rifle-model.js
-    this.rifle = makeInstanced(scene, carryGeometry(), 0x23272e);
+    this.rifle = makeInstanced(scene, carryGeometry(), MA5_GUNMETAL);
     this.rifle.material.roughness = 0.45;
     this.rifle.material.metalness = 0.65;
     // THE FLAMETHROWER IS NOT AN MA5 (it was rendering as one, which made the
