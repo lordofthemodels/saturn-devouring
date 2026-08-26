@@ -44,7 +44,9 @@ export const PARAMS = {
   // flood should win most runs — the marines alone can't hold the ship. Tune
   // difficulty with the initial swarm size and comms quality, not squad nerfs.
   flood: {
-    initialInfectionForms: 20, // difficulty lever (user: sim == game defaults)
+    initialInfectionForms: 12, // solo base when the breach is above the lower two decks
+    lowerDeckInitialInfectionForms: 10,
+    initialInfectionFormsPerAdditionalPlayer: 3,
     initialCombatForms: 0,     // a pure infection swarm; combat forms + carriers
     initialCarriers: 0,        // are EARNED through conversions, not handed out at t=0
   },

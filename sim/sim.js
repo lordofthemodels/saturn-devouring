@@ -23,9 +23,12 @@ const TINT = {
 };
 
 export class Sim {
-  constructor(seed, paramOverrides = null) {
+  constructor(seed, paramOverrides = null, runOptions = null) {
     this.seed = String(seed);
     this.P = cloneParams();
+    const initialInfectionFormsExplicit = Object.hasOwn(
+      paramOverrides?.flood ?? {}, 'initialInfectionForms',
+    );
     if (paramOverrides) deepMerge(this.P, paramOverrides);
     this.rng = new RNG(this.seed);
     this.t = 0;
@@ -33,7 +36,10 @@ export class Sim {
     this.dt = 1 / this.P.sim.tickHz;
     this.strategicEvery = Math.round(this.P.sim.strategicTickSec * this.P.sim.tickHz);
 
-    const { graph, agents, squads } = initRun(this.seed, this.rng, this.P);
+    const { graph, agents, squads } = initRun(this.seed, this.rng, this.P, {
+      playerCount: runOptions?.playerCount ?? 1,
+      initialInfectionFormsExplicit,
+    });
     this.graph = graph;
     for (const edge of graph.edges) {
       if (edge.door) edge.open01 = edge.locked ? this.P.door.ajarFraction : 0;
