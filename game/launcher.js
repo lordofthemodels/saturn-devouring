@@ -1239,7 +1239,7 @@ async function joinLobby(mode) {
       for (const off of lobbyOff.splice(0)) off();
       await failedSession?.close().catch(() => {});
       if (error?.code !== 'JOIN_CANCELLED') {
-        displayError(error.message || 'Could not open the multiplayer room.');
+        displayError(error.message || 'Could not open the co-op room.');
       }
     }
   } finally {

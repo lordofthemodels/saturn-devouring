@@ -8,7 +8,7 @@ const isBrowserRelayUrl = (url) => typeof url === 'string' && url.startsWith('tu
   && !/^turns?:[^/?#]+:53(?:[/?#]|$)/i.test(url);
 
 function cancelledJoinError() {
-  const error = new Error('multiplayer join cancelled');
+  const error = new Error('co-op join cancelled');
   error.code = 'JOIN_CANCELLED';
   return error;
 }
@@ -25,7 +25,7 @@ export class PeerConnectionError extends Error {
 
 export class SignalingConnectionError extends Error {
   constructor({ cause } = {}) {
-    super('Could not reach the multiplayer matchmaking service. Check the connection and try again.', { cause });
+    super('Could not reach the co-op matchmaking service. Check the connection and try again.', { cause });
     this.name = 'SignalingConnectionError';
     this.code = 'SIGNALING_UNAVAILABLE';
   }
@@ -441,7 +441,7 @@ class BrowserSession extends SessionBase {
 
 async function browserSession({ roomId, name, identity: suppliedIdentity, signal }) {
   if (!globalThis.RTCPeerConnection || !globalThis.WebSocket || !globalThis.crypto?.subtle) {
-    const error = new Error('This browser does not provide the WebRTC and WebCrypto features multiplayer requires.');
+    const error = new Error('This browser does not provide the WebRTC and WebCrypto features co-op requires.');
     error.code = 'BROWSER_UNSUPPORTED';
     throw error;
   }
