@@ -250,8 +250,8 @@
     opacity: 0.88; pointer-events: none;
   }
   #frags {
-    position: absolute; right: 16px; bottom: 44px; color: #9fd4ff;
-    font: 14px/1 "SF Mono", Menlo, monospace; letter-spacing: 1px; text-align: right;
+    color: #9fd4ff; font-size: 13px; font-weight: 700;
+    letter-spacing: .12em; margin-top: 2px;
   }
   #order {
     position: absolute; right: 16px; bottom: 22px; color: #6a8fb5;
@@ -433,6 +433,7 @@ npm run build:dwapp</pre></article>
     <div id="deckLabel">DECK —</div>
     <div id="weaponName">MA5 ASSAULT RIFLE</div>
     <div id="ammo">60 / 240</div>
+    <div id="frags">FRAGS 4</div>
     <div id="roomState">—</div>
     <div id="fpsMeter"></div>
   </div>
@@ -449,7 +450,6 @@ npm run build:dwapp</pre></article>
   <div id="healflash"></div>
   <canvas id="tracker" width="150" height="150"></canvas>
   <div class="hud" id="networkHud" hidden><span id="networkState">P2P · 1 ONLINE</span><button id="gameVoice" type="button">MIC LIVE</button></div>
-  <div id="frags">4 FRAG</div>
   <div id="order">FIRETEAM: FOLLOW</div>
   <div id="mapview" class="mv-hidden">
     <canvas id="mapcanvas"></canvas>

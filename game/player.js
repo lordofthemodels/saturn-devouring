@@ -106,7 +106,7 @@ export class Player extends FpsController {
       // the "do I already have one / is the tank full" question, so it answers
       // whether it consumed the key rather than us guessing
       interactionConsumed = !!this.onFlamerTaken?.() || !!this.onMedkitUsed?.()
-        || !!this.onArmorUsed?.();
+        || !!this.onArmorUsed?.() || !!this.onGrenadesTaken?.();
       if (!interactionConsumed) {
         const src = this.ammoSource();
         if (src && this.onAmmoTaken) { this.onAmmoTaken(src); interactionConsumed = true; }
@@ -365,6 +365,11 @@ export class Player extends FpsController {
   armorSource() {
     if (this.dead || (this.agent.armor ?? 0) >= this.sim.P.player.armor) return null;
     return this.sim.armorPackNear(this.agent);
+  }
+
+  grenadeSource(have, capacity) {
+    if (this.dead || have >= capacity) return null;
+    return this.sim.grenadeDropNear(this.agent);
   }
 
   // THE FLAMETHROWER, separately (user). Kept apart from ammoSource so the two

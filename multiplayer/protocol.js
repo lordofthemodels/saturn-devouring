@@ -1,3 +1,4 @@
+// 14: marine grenade drops and pickup claims synchronize as world state.
 // 13: player snapshot rows carry a per-player afterlife body and the
 // authority-owned 30-second co-op respawn clock.
 // 12: snapshots carry hidden vent/shaft transit so peers cannot draw or aim
@@ -23,13 +24,13 @@
 // positional array validated on its LENGTH, so a v2 peer would reject every
 // v3 row wholesale — the version is what keeps the two builds from meeting in
 // the same room at all instead of staring at frozen NPCs.
-export const PROTOCOL_VERSION = 13;
+export const PROTOCOL_VERSION = 14;
 export const MAX_PLAYERS = 4;
 export const QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
 const ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
 const SAFE_CODE = /^[a-z0-9][a-z0-9-]{5,47}$/;
 const PUBLIC_LOBBY = /^lobby-[a-z0-9]{12,48}$/;
-const GAME_KINDS = new Set(['election', 'state', 'hit', 'explosion', 'shot', 'snapshot', 'medkit', 'armorpack']);
+const GAME_KINDS = new Set(['election', 'state', 'hit', 'explosion', 'shot', 'snapshot', 'medkit', 'armorpack', 'grenadepickup']);
 
 export function createInviteCode(random = globalThis.crypto) {
   if (!random?.getRandomValues) throw new Error('secure random values are unavailable');

@@ -1134,6 +1134,16 @@ player.onAmmoTaken = (src) => {
   if (src === 'armory') { sim.armoryStock--; weapon.reserve += 120; frags = Math.min(FRAG.max, frags + 4); sim.log('combat', `you strip mags and a bandolier of frags from the rack (${sim.armoryStock} rifles left)`); }
   else { src.wasArmed = false; weapon.reserve += 60; sim.log('combat', 'you take the mags off the dead'); }
 };
+player.onGrenadesTaken = () => {
+  const drop = player.grenadeSource(frags, FRAG.max);
+  if (!drop) return false;
+  const taken = sim.claimGrenadeDrop(player.agent, drop.id, FRAG.max - frags);
+  if (!taken) return false;
+  frags += taken;
+  if (!isSimAuthority()) gameSync?.grenadePickup(drop.id, taken);
+  sim.log('combat', `you recover ${taken} frag${taken === 1 ? '' : 's'} from the fallen (you)`, drop.node, drop.x, drop.y);
+  return true;
+};
 // E on a flamethrower source. Offered ahead of the ammo prompt (see the hint
 // block) because the flamer is the rarer find and a body can carry both.
 player.onFlamerTaken = () => {
@@ -1265,6 +1275,46 @@ const armorPackMeshes = [];
     g.rotation.y = (pack.id * 2654435761 % 360) * Math.PI / 180;
     scene.add(g);
     armorPackMeshes.push({ pack, mesh: g });
+  }
+}
+
+// A dead marine's unused frags remain on the deck even if the body is moved
+// or converted. Two compact olive shells are enough to read as a pickup in a
+// flashlight beam; the sim record owns count and multiplayer reconciliation.
+const grenadeDropMeshes = new Map();
+const grenadeDropGeo = new THREE.DodecahedronGeometry(0.11, 0);
+const grenadeDropMat = new THREE.MeshStandardMaterial({
+  color: 0x65734d, roughness: 0.48, metalness: 0.55,
+  emissive: 0x243018, emissiveIntensity: 0.8,
+});
+function syncGrenadeDropMeshes() {
+  const live = new Set();
+  for (const drop of sim.grenadeDrops) {
+    live.add(drop.id);
+    let group = grenadeDropMeshes.get(drop.id);
+    if (!group) {
+      group = new THREE.Group();
+      for (const offset of [-0.08, 0.08]) {
+        const grenade = new THREE.Mesh(grenadeDropGeo, grenadeDropMat);
+        grenade.position.set(offset, 0.11, Math.abs(offset) * 0.45);
+        grenade.scale.set(0.8, 1.25, 0.8);
+        group.add(grenade);
+      }
+      scene.add(group);
+      grenadeDropMeshes.set(drop.id, group);
+    }
+    const [wx, wz] = world.simToWorld(drop.x, drop.y, drop.deck);
+    group.position.set(wx, elevOf(drop.deck), wz);
+    group.rotation.y = (drop.id * 2.399963) % (Math.PI * 2);
+    group.visible = drop.count > 0;
+    for (let index = 0; index < group.children.length; index++) {
+      group.children[index].visible = index < drop.count;
+    }
+  }
+  for (const [id, group] of grenadeDropMeshes) {
+    if (live.has(id)) continue;
+    scene.remove(group);
+    grenadeDropMeshes.delete(id);
   }
 }
 
@@ -2487,6 +2537,7 @@ function contextualActionAvailable() {
   return !!(player.flamerSource(hasFlamer, flamer.frac)
     || player.medkitSource()
     || player.armorSource()
+    || player.grenadeSource(frags, FRAG.max)
     || player.ammoSource()
     || world.trunkAt(player.deck, player.x, player.z));
 }
@@ -3073,7 +3124,6 @@ function stepFrags(dt) {
       audio.play('boom', { x: p.x, z: p.z }, 1.2);
       scene.remove(f.mesh);
       liveFrags.splice(i, 1);
-      el('frags').textContent = `${frags} FRAG`;
     }
   }
 }
@@ -3706,7 +3756,7 @@ function frame(now) {
   }
   // the igniter ring lights while the stream is out
   flamerMesh.userData.setPilot?.(flamer.live ? 1 : (hasFlamer ? 0.10 : 0));
-  if (fragPressed) { throwFrag(); fragPressed = false; el('frags').textContent = `${frags} FRAG`; }
+  if (fragPressed) { throwFrag(); fragPressed = false; }
   stepFrags(dtReal);
   drainNpcBlasts();
   boomLight.intensity *= Math.exp(-7 * dtReal);
@@ -3982,6 +4032,7 @@ function frame(now) {
   // med packs vanish when spent — on this client or, in co-op, on any other
   for (const m of medkitMeshes) m.mesh.visible = !m.kit.used;
   for (const m of armorPackMeshes) m.mesh.visible = !m.pack.used;
+  syncGrenadeDropMeshes();
   shake = Math.max(0, shake - dtReal * 3);
 
   // sliding doors open for ANY movement near them (user rule) — mover
@@ -4041,6 +4092,7 @@ function frame(now) {
   setText('ammo', spectating ? ''
     : heldIsFlamer ? (flamer.empty ? 'TANK DRY' : `FUEL ${Math.ceil(flamer.frac * 100)}%`)
       : (weapon.reloading ? 'RELOADING' : `${weapon.mag} / ${weapon.reserve}`));
+  setText('frags', spectating ? '' : `FRAGS ${frags}`);
   // ...and the readout above it NAMES the weapon, with BOTH swap inputs as
   // soon as there is something to swap to. The numbers alone never told the
   // user which gun was in their hands, let alone that a second one was on the
@@ -4077,7 +4129,8 @@ function frame(now) {
   // the flamethrower prompt outranks the ammo prompt, matching the order the
   // E key resolves them in (player.js) — the rarer pickup wins the line
   const fsrc = player.dead ? null : player.flamerSource(hasFlamer, flamer.frac);
-  const src = fsrc ? null : (player.dead ? null : player.ammoSource());
+  const gsrc = fsrc ? null : player.grenadeSource(frags, FRAG.max);
+  const src = fsrc || gsrc ? null : (player.dead ? null : player.ammoSource());
   // OUTRANKS EVERY PICKUP PROMPT for its few seconds: you are standing on the
   // rack you just took the flamer off, so the 'E — swap a fuel can' line would
   // otherwise bury the one message that teaches the swap. It also retires the
@@ -4100,6 +4153,9 @@ function frame(now) {
     setStyle('hint', 'display', 'block');
   } else if (!player.dead && player.armorSource()) {
     setText('hint', `${inputPrompt('E', 'RB')} — strap on armor plates`);
+    setStyle('hint', 'display', 'block');
+  } else if (gsrc) {
+    setText('hint', `${inputPrompt('E', 'RB')} — pick up ${gsrc.count} frag${gsrc.count === 1 ? '' : 's'}`);
     setStyle('hint', 'display', 'block');
   } else if (src) {
     const use = inputPrompt('E', 'RB');

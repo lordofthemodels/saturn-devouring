@@ -17,7 +17,7 @@ const SIM_BOUND = 1_000;
 const LAG_SLACK_M = 2.2;
 const MELEE_SLACK_M = 3.5;
 const WIRE_SCALE = 1_000;
-const ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4 });
+const ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4, grenadepickup: 8 });
 
 const pack = (value) => Math.round(Number(value) * WIRE_SCALE);
 const unpack = (value) => value / WIRE_SCALE;
@@ -365,6 +365,16 @@ export function createGameSync({
         const used = new Set(packet.world.armorpacks.filter((id) => Number.isSafeInteger(id)));
         for (const pack of sim.armorPacks) pack.used = used.has(pack.id);
       }
+      if (Array.isArray(packet.world.grenadedrops) && packet.world.grenadedrops.length <= 256) {
+        sim.grenadeDrops = packet.world.grenadedrops.flatMap((row) => {
+          if (!Array.isArray(row) || row.length !== 6 || !packedIntegers(row)) return [];
+          const [id, node, deck, x, y, count] = row;
+          if (id <= 0 || node < 0 || node >= sim.graph.n || deck < 1 || deck > 5
+            || Math.abs(x) > SIM_BOUND * WIRE_SCALE || Math.abs(y) > SIM_BOUND * WIRE_SCALE
+            || count <= 0 || count > sim.P.grenade.playerMax) return [];
+          return [{ id, node, deck, x: unpack(x), y: unpack(y), count }];
+        });
+      }
       if (packet.world.stats && typeof packet.world.stats === 'object') {
         for (const key of Object.keys(sim.stats)) {
           if (Number.isFinite(packet.world.stats[key])) sim.stats[key] = packet.world.stats[key];
@@ -475,6 +485,12 @@ export function createGameSync({
       // same shape as medkit: playerUseArmorPack revalidates everything
       const sender = playerAgents.get(packet.from);
       if (sender) sim.playerUseArmorPack(sender);
+    } else if (packet.kind === 'grenadepickup') {
+      const sender = playerAgents.get(packet.from);
+      if (!sender || !Number.isSafeInteger(packet.dropId) || packet.dropId <= 0
+        || !Number.isSafeInteger(packet.count) || packet.count <= 0
+        || packet.count > sim.P.grenade.playerMax) return;
+      sim.claimGrenadeDrop(sender, packet.dropId, packet.count);
     } else if (packet.kind === 'explosion') {
       const values = [packet.deck, packet.x, packet.y, packet.radius, packet.damage];
       if (!packedIntegers(values) || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5
@@ -503,6 +519,9 @@ export function createGameSync({
     },
     armorpack() {
       send('armorpack', {});
+    },
+    grenadePickup(dropId, count) {
+      send('grenadepickup', { dropId, count });
     },
     explosion(deck, x, y, radius, damage) {
       send('explosion', { deck, x: pack(x), y: pack(y), radius: pack(radius), damage: pack(damage) });
@@ -578,6 +597,8 @@ export function createGameSync({
               // use is confirmed (or reverted) by the next full snapshot
               medkits: sim.medkits.filter((kit) => kit.used).map((kit) => kit.id),
               armorpacks: sim.armorPacks.filter((pack) => pack.used).map((pack) => pack.id),
+              grenadedrops: sim.grenadeDrops.filter((drop) => drop.count > 0)
+                .map((drop) => [drop.id, drop.node, drop.deck, pack(drop.x), pack(drop.y), drop.count]),
               stats: { ...sim.stats },
             } } : {}),
           });

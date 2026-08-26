@@ -185,7 +185,7 @@ export const PARAMS = {
   // used on the spot with E, restores armor to full.
   armorpacks: {
     perPlayerArmory: 3,
-    perPlayerScatter: 4,
+    perPlayerScatter: 5,
     useRadiusM: 2.0,
   },
   morale: {
@@ -199,6 +199,8 @@ export const PARAMS = {
   // feet, and never where a friendly is standing.
   grenade: {
     perMarine: 2,
+    pickupRadiusM: 2.2,
+    playerMax: 12,
     minTargets: 3,         // not worth a frag for one form
     rangeM: 20,
     minSafeM: 6.0,         // never throw closer than this to yourself or a friendly

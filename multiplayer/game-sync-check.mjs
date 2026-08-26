@@ -132,5 +132,69 @@ direct({
 });
 assert.equal(target.move, null, 'the form must reappear when the authority reports its exit');
 
+direct({
+  from: 'did:a',
+  data: {
+    v: PROTOCOL_VERSION,
+    kind: 'snapshot',
+    from: 'did:a',
+    authority: 'did:a',
+    authorityTerm: 1,
+    seq: 4,
+    tick: sim.tickCount + 1,
+    t: Math.round((sim.t + sim.dt) * 1_000),
+    full: false,
+    complete: true,
+    agents: [row(0)],
+    removed: [],
+    world: { grenadedrops: [[900, cic, 1, 2_000, 3_000, 2]] },
+  },
+});
+assert.deepEqual(sim.grenadeDrops, [{ id: 900, node: cic, deck: 1, x: 2, y: 3, count: 2 }],
+  'authority snapshots must recreate marine grenade drops on peers');
+
 sync.close();
+
+const authorityListeners = new Map();
+const authoritySession = {
+  did: 'did:a',
+  roster: () => [{ did: 'did:b' }],
+  on(kind, listener) {
+    authorityListeners.set(kind, listener);
+    return () => authorityListeners.delete(kind);
+  },
+  sendDirect: async () => {},
+};
+const authoritySim = new Sim('multiplayer-grenade-pickup-check');
+const authorityCic = authoritySim.graph.byId.get('cic');
+const authorityPlayers = new Map([
+  ['did:a', authoritySim.attachPlayer(authorityCic, { odst: true })],
+  ['did:b', authoritySim.attachPlayer(authorityCic, { odst: true })],
+]);
+const remote = authorityPlayers.get('did:b');
+authoritySim.grenadeDrops = [{
+  id: 901, node: remote.node, deck: remote.deck, x: remote.x, y: remote.y, count: 2,
+}];
+const authoritySync = createGameSync({
+  session: authoritySession,
+  world,
+  sim: authoritySim,
+  player: { ...player, agent: authorityPlayers.get('did:a') },
+  agents: { playerShot() {} },
+  members: ['did:a', 'did:b'],
+  host: 'did:a',
+  hostOrder: ['did:a', 'did:b'],
+  playerAgents: authorityPlayers,
+});
+authorityListeners.get('direct')({
+  from: 'did:b',
+  data: {
+    v: PROTOCOL_VERSION, kind: 'grenadepickup', from: 'did:b',
+    authority: 'did:a', authorityTerm: 1, seq: 1, dropId: 901, count: 1,
+  },
+});
+assert.equal(authoritySim.grenadeDrops[0].count, 1,
+  'authority must validate and consume a remote grenade pickup claim');
+authoritySync.close();
+
 console.log('multiplayer hidden transit ✓');
