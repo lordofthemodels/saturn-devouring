@@ -446,7 +446,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
   const {
     DEFAULT_ICE_SERVERS, generateIdentity, joinRoom, createGossip, createPresence, createDirect,
     createTopicSync, createMemoryTopicStore,
-  } = await import('./peerd-browser.js');
+  } = await import('./peerd-browser.js?v=2');
   const identity = suppliedIdentity ?? await generateIdentity();
   let room;
   let gossip;
