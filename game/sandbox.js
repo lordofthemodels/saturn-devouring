@@ -321,6 +321,7 @@ renderer.setAnimationLoop(() => {
   agents.update(dt);
   world.updateLights(now * 0.001);
   world.updateDarkness(sim, room.idx, dt);
+  world.setExteriorView(camera.position.x, camera.position.y, camera.position.z, !sim.fogAt(room.idx));
   sporeFX.update(dt, room.idx, room.deck, camera.position.x, camera.position.z);
   // drain the combat FX exactly as game/main.js does
   lightPool.frame();

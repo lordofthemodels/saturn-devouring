@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { Sim } from '../sim/sim.js';
 import { CLEAR_H, elevOf, floorBandOf } from '../shared/geometry.js';
-import { insideHullPoint } from './world.js';
+import {
+  exteriorObservationSpan,
+  insideHullPoint,
+  observationSideForRoom,
+  observationWindowForRun,
+} from './world.js';
 
 for (let deck = 1; deck <= 5; deck++) {
   assert.equal(floorBandOf(elevOf(deck) + CLEAR_H / 2), deck,
@@ -39,4 +44,18 @@ const length = Math.hypot(dx, dy);
 assert.equal(insideHullPoint(graph, 3, mx - dy / length * 2, my + dx / length * 2), false,
   'containment must not widen a connector into the surrounding void');
 
-console.log('world connectors ✓');
+const bridge = graph.node(graph.byId.get('bridge'));
+assert.equal(observationSideForRoom(bridge), 'S', 'the bridge must face the outer command-deck hull');
+assert.equal(exteriorObservationSpan(graph, bridge, 'S', bridge.x - 2, bridge.x + 2), true,
+  'the bridge observation wall must be exposed to space');
+const bridgeWindow = observationWindowForRun(graph, bridge,
+  { key: 'S', horiz: true }, [[bridge.x - bridge.w / 2, bridge.x + bridge.w / 2]]);
+assert.ok(bridgeWindow?.width >= 4, 'the bridge must receive a usable observation window');
+
+const cic = graph.node(graph.byId.get('cic'));
+assert.equal(exteriorObservationSpan(graph, cic, 'S', cic.x - 2, cic.x + 2), false,
+  'an outboard compartment must block an interior room observation wall');
+assert.equal(observationSideForRoom(graph.node(graph.byId.get('reactor'))), null,
+  'hazard and power compartments must keep solid hull plating');
+
+console.log('world connectors and observation windows ✓');

@@ -3910,6 +3910,7 @@ function frame(now) {
   scene.fog.near = inFog ? 1.5 : 18;
   scene.fog.color.setHex(inFog ? 0x1c2410 : 0x05070a);
   scene.background.setHex(inFog ? 0x151b0a : 0x05070a);
+  world.setExteriorView(camera.position.x, camera.position.y, camera.position.z, !inFog);
   // volume-scoped rendering (user: don't draw the whole ship): decks beyond
   // ±1 and fore/aft thirds beyond full fog are hidden — both pixel-exact
   world.setActiveVolume(povDeck, povX);

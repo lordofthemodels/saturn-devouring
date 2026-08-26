@@ -1,0 +1,11 @@
+Deep Star Map
+
+Source: NASA/Goddard Space Flight Center Scientific Visualization Studio
+Visualization: Ernie Wright (USRA), Tom Bridgman (Global Science and Technology, Inc.)
+Original: https://svs.gsfc.nasa.gov/3895/
+Source file: starmap_4k.jpg (4096 x 2048)
+
+The included deep-star-map.jpg is a 2048 x 1024 JPEG derivative made for
+real-time spherical mapping. NASA content is generally not subject to
+copyright in the United States and NASA asks to be acknowledged as the source.
+Usage guidelines: https://www.nasa.gov/nasa-brand-center/images-and-media/
