@@ -169,29 +169,6 @@ export class World {
     }
     return best;
   }
-  // ONE PLACARD AT A TIME: the nearest room sign on the player's deck, within
-  // range. Anything else stays hidden, so signs can never overlap or stack.
-  showRoomSign(deck, px, pz, maxM = 26) {
-    const anchors = this.roomSigns;
-    if (!anchors) return;
-    let best = -1, bestD = maxM * maxM;
-    for (let i = 0; i < anchors.length; i++) {
-      const a = anchors[i];
-      if (!a || this.graph.node(i).deck !== deck) continue;
-      const dx = a.x - px, dz = a.z - pz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < bestD) { bestD = d2; best = i; }
-    }
-    if (best === this._signShown) return;
-    this._signShown = best;
-    const spr = this._signSprite();
-    if (best < 0) { spr.visible = false; return; }
-    const a = anchors[best];
-    this._paintSign(a.name);
-    spr.position.set(a.x, a.y, a.z);
-    spr.visible = true;
-  }
-
   // Both return a REUSED scratch pair (perf pass 3): every caller in the
   // codebase destructures immediately (verified — no site retains the
   // array), and these run in per-agent per-frame loops — ~12k fresh
@@ -550,41 +527,6 @@ export class World {
     return tex;
   }
 
-  // ONE PLACARD, REUSED (perf pass 5). Every room used to own a private
-  // 512x96 CanvasTexture — 63 of them, ~15.7 MB of GPU texture plus ~11.8 MB
-  // of retained 2D backing store — to display exactly ONE sign at a time
-  // (showRoomSign picks the nearest and hides the rest). There is now a
-  // single sprite that moves to whichever room you are in and repaints its
-  // canvas when the name changes. Same look, ~27 MB back on a machine that
-  // shares 8 GB with its GPU.
-  _signSprite() {
-    if (this._sign) return this._sign;
-    const c = document.createElement('canvas');
-    c.width = 512; c.height = 96;
-    this._signCtx = c.getContext('2d');
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.95 }));
-    // smaller than it was: at 4.6 m wide a sign a few metres away filled the
-    // screen and ran off its edge (user)
-    spr.scale.set(3.0, 0.56, 1);
-    spr.visible = false;
-    this._signTex = tex;
-    this._sign = spr;
-    this.scene.add(spr);
-    return spr;
-  }
-
-  _paintSign(text) {
-    const x = this._signCtx;
-    x.clearRect(0, 0, 512, 96);
-    x.fillStyle = 'rgba(8, 12, 18, 0.85)'; x.fillRect(0, 0, 512, 96);
-    x.strokeStyle = '#31435f'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 92);
-    x.fillStyle = '#9fc3ef'; x.font = '600 44px monospace'; x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.fillText(String(text).toUpperCase(), 256, 50);
-    this._signTex.needsUpdate = true;
-  }
-
   _build() {
     const g = this.graph;
     const floorTexBase = this._deckTex('#242c3a', '#161d28');
@@ -709,10 +651,6 @@ export class World {
         slab.position.set((a0 + a1) / 2, elev + roomH, (b0 + b1) / 2);
         this.scene.add(slab);
       }
-      // just the anchor — the single shared placard moves here when this is
-      // the room you are standing in (see showRoomSign)
-      (this.roomSigns ??= [])[n.idx] = { x: wx, y: elev + roomH - 0.45, z: wz, name: n.name };
-
       // flood-darkness veil: fills the room volume; invisible until the sim
       // says the flood has held the room long enough (updateDarkness)
       {
