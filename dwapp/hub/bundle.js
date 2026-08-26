@@ -75125,14 +75125,11 @@ var init_sim = __esm({
       // GEOMETRIC LINE OF SIGHT (per-room combat retirement — user: "NPCs should
       // be operating on line of sight"). A 2D segment walk from room to room:
       // sight passes only where the segment crosses a doorway's opening span.
-      // Openings are precomputed on the graph (edge.losOpen); the half-width is
-      // decided here — the full doorway when the door is unlocked (it slides for
-      // anyone approaching, and a covered doorway is effectively open), the
-      // sealed door's AJAR SLOT when locked (the render leaves broken doors
-      // resting a hand-width apart, so a perfectly-lined shot passes and a
-      // glancing one hits panel). Deterministic, pure math, render-free.
+      // Openings are precomputed on the graph (edge.losOpen). An unlocked door
+      // contributes its full opening because it slides for anyone approaching;
+      // a locked door contributes NONE. The rendered panel seam is visual damage,
+      // not a loophole through which AI can acquire and shoot a target.
       //   DOOR_HALF mirrors game/world.js DOOR_W (1.7) / 2.
-      //   SLOT_HALF mirrors the ajar gap: DOORS.ajar01 (0.22) * panel travel.
       losClear(x1, y1, r1, x2, y2, r2) {
         if (r1 === r2) return true;
         const g2 = this.graph;
@@ -75149,7 +75146,7 @@ var init_sim = __esm({
           let bestTo = -1, bestT = Infinity;
           for (const { to, link } of g2.adj.std[cur]) {
             const o2 = link.losOpen;
-            if (!o2) continue;
+            if (!o2 || link.locked) continue;
             let t2, cross4;
             if (o2.axis === "x") {
               if (Math.abs(dx) < 1e-9) continue;
@@ -75161,8 +75158,7 @@ var init_sim = __esm({
               cross4 = x1 + dx * t2;
             }
             if (t2 <= prevT || t2 > 1 + 1e-9) continue;
-            const half = link.locked ? 0.15 : 0.85;
-            if (Math.abs(cross4 - o2.c) > half) continue;
+            if (Math.abs(cross4 - o2.c) > 0.85) continue;
             if (t2 < bestT) {
               bestT = t2;
               bestTo = to;
@@ -78217,8 +78213,8 @@ var init_fps_data = __esm({
       slideSpeed: 4.5,
       // m/s of panel travel
       // a SEALED door is stuck ajar, not shut (user: red-painted broken doors
-      // killed the realism): open enough to see and shoot through the gap,
-      // far too narrow to walk through. 0.22 of full travel ≈ a 28 cm slot.
+      // killed the realism): the damaged seam is visible, but it is too narrow
+      // for reliable target acquisition or fire. 0.22 travel ≈ a 28 cm slot.
       ajar01: 0.22
     };
   }

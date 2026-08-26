@@ -45,8 +45,8 @@ function floodThreatVisible(sim, a) {
   // LINE OF SIGHT, not room membership (user: the per-room model was a dated
   // early-dev thing): the threat a human reacts to is the flood it can SEE —
   // its own compartment plus whatever shows through real openings (open
-  // doorways, the sealed doors' ajar slots, the grand stairwell's open
-  // volume). sim.losClear walks the actual geometry.
+  // doorways and the grand stairwell's open volume). Closed doors block both
+  // acquisition and fire; sim.losClear walks the actual geometry.
   return sim.losFloodThreat(a);
 }
 

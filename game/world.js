@@ -1648,8 +1648,8 @@ export class World {
     const c = (this._dc ??= new THREE.Color());
     // status colors, second pass (user: even the dim red ember "takes away
     // from the realism and is unnecessary"): a sealed door's track is DEAD —
-    // its lamp is simply off, and the tell is physical: the panels sit ajar
-    // (updateDoors) with a gap you can see and shoot through.
+    // its lamp is simply off, and the tell is physical: the damaged panels
+    // sit slightly ajar (updateDoors), though sim LOS treats them as sealed.
     if (d.edge.busted) c.setHex(0x000000);            // blown off its track: dead
     else if (d.bad) c.setHex(0xd77a1c);               // jammed: amber gutter
     else if (d.edge.locked) c.setHex(0x000000);       // sealed: lamp dead
@@ -1861,11 +1861,9 @@ export class World {
         this.doorLamps.instanceColor.needsUpdate = true;
       }
       // SEALED DOORS SIT AJAR (user): the broken track leaves a hand-width
-      // slot — you can see the far room through it and shoot through it (the
-      // shot raycast tests the panel instances where they actually are, so
-      // the gap is genuinely open to fire both ways), but the slot is far
-      // narrower than a body: sim pathing still refuses the edge, the player
-      // capsule cannot fit, and isWalkable is unchanged.
+      // seam, but it is not a combat sightline. Sim pathing and LOS both
+      // refuse the edge, the player capsule cannot fit, and isWalkable is
+      // unchanged.
       let want = 0;
       if (d.edge.busted) {
         // BUSTED OUTWARD (user: a dedicated flood charge breaks the door
