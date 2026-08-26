@@ -260,12 +260,7 @@ torch.castShadow = true;
 // inverse-square a wide cone from the eye puts 100+ lux on a rifle held 0.6 m
 // away and the gun renders as a white cutout. The world cannot tell the
 // difference between an apex at the eye and one at arm's length.
-// The broad spill is a fill, not the reflector's hot core. A full inverse-
-// square curve from an origin ahead of the rifle makes a nearby pale uniform
-// sit almost on the singularity and clip white while well outside the reticle.
-// A softer decay plus half the candela preserves the 4 m deck/wall level while
-// removing that point-blank blowout; the narrow shadowed core stays physical.
-const torchSpill = new THREE.SpotLight(0xeaf2ff, 0, 14, 0.50, 0.95, 1.5);
+const torchSpill = new THREE.SpotLight(0xeaf2ff, 0, 14, 0.50, 0.95, 2);
 torchSpill.castShadow = false;
 torchSpill.target = torchTarget;
 scene.add(torchSpill);
@@ -982,8 +977,13 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
       const stepW = longSpan / (nFix + (nFix > 1 ? 0.2 : 1));
       for (let f = 0; f < nFix; f++) {
         const off = nFix === 1 ? 0 : (f - (nFix - 1) / 2) * stepW;
+        // A ceiling strip is an AREA source. Approximating it with a compact
+        // inverse-square point made anyone directly beneath it clip white,
+        // while the rest of the room stayed dark. The softer curve and lower
+        // candela keep the same level at 4 m, halve the near-field hotspot,
+        // and spread the fixture more evenly across the compartment.
         lightPool.add(L.x + (alongX ? off : 0), L.y - 1.25, L.z + (alongX ? 0 : off),
-          0xbfd4f2, L.mode === 'steady' ? 14 : 15 * L.lvl, 19 * leak, 1.9);
+          0xbfd4f2, L.mode === 'steady' ? 6 : 6.4 * L.lvl, 19 * leak, 1.3);
       }
     }
   }
@@ -3866,7 +3866,7 @@ function frame(now) {
   // the viewmodel rig a four-hundredth — both ride the same dial so the whole
   // lamp brightens and dims as one.
   torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
-  torchSpill.intensity = torch.intensity * 0.045;
+  torchSpill.intensity = torch.intensity * 0.09;
   // 0.0038 put ~40 lux on the receiver — past the ~30-lux white point, so
   // the gun clipped white no matter its albedo (user: white/striped rifle).
   // Keep only a narrow edge read on the near-black receiver. A brighter fill

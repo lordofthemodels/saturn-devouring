@@ -93155,9 +93155,9 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
           L2.y - 1.25,
           L2.z + (alongX ? 0 : off),
           12571890,
-          L2.mode === "steady" ? 14 : 15 * L2.lvl,
+          L2.mode === "steady" ? 6 : 6.4 * L2.lvl,
           19 * leak,
-          1.9
+          1.3
         );
       }
     }
@@ -94813,7 +94813,7 @@ function frame(now) {
   hemi.intensity += (hemiTarget - hemi.intensity) * dimT;
   _fillI = inDark ? 0 : 4.5 * (0.3 + 0.7 * world.lightLevel(povNode));
   torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
-  torchSpill.intensity = torch.intensity * 0.045;
+  torchSpill.intensity = torch.intensity * 0.09;
   gunFill.intensity = torch.intensity * 25e-5;
   torch.distance = inFog ? sim.P.darkness.fogViewM + 2 : 30;
   torchSpill.distance = inFog ? sim.P.darkness.fogViewM + 1 : 14;
@@ -95262,7 +95262,7 @@ var init_main = __esm({
     scene.add(torch, torchTarget);
     torch.target = torchTarget;
     torch.castShadow = true;
-    torchSpill = new SpotLight(15397631, 0, 14, 0.5, 0.95, 1.5);
+    torchSpill = new SpotLight(15397631, 0, 14, 0.5, 0.95, 2);
     torchSpill.castShadow = false;
     torchSpill.target = torchTarget;
     scene.add(torchSpill);
