@@ -465,8 +465,8 @@ npm run build:dwapp</pre></article>
     <div id="comms"><h3>FIRETEAM</h3><div id="commsRows"></div><div id="commsWarn"></div></div>
   </div>
   <!-- static markup paints on the FIRST frame, before any module loads.
-       The already-loaded launcher starts the briefing before it imports the
-       large game module, so renderer boot happens behind readable text. -->
+       The menu warms the shared renderer; the launcher releases seed-dependent
+       world/simulation boot only after the briefing is readable. -->
   <div id="intro" role="button" tabindex="0" aria-label="Mission briefing. Press Enter to advance.">
     <div id="introScroll">
       <div id="introText">Loading…</div>

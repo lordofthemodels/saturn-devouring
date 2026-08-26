@@ -15,7 +15,9 @@
 // WHAT THIS MUST NOT BREAK — the game is already hand-split into three load
 // stages, and they are load-bearing:
 //   1. launcher.js          — the menu, wanted immediately
-//   2. import('./main.js')  — the whole engine, only once you press play
+//   2. import('./main.js')  — the whole engine, warmed after the menu paints;
+//                            common renderer setup runs, then seed-dependent
+//                            world/sim evaluation pauses until play
 //   3. import('./peerd-browser.js') (83 KB) — only if you join a mesh game
 // A plain `esbuild --bundle` flattens all three into one file, so the menu
 // would block on the entire engine plus a multiplayer client most sessions

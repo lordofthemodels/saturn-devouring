@@ -52,7 +52,6 @@ window.addEventListener('pointerdown', () => setInputMode('keyboard'), true);
 // fragment bill drops ~2.6x. `?hd=1` opts back into full resolution;
 // `?q=low` / `?q=full` pin the quality ladder (see RUNGS below).
 const QP = new URLSearchParams(location.search);
-const LAUNCH = globalThis.__charonLaunch ?? { mode: 'solo', session: null };
 const BASE_POD_COUNT = PARAMS.flood.initialInfectionForms;
 const HD = QP.has('hd');
 const QTIER = QP.get('q');
@@ -289,6 +288,13 @@ torch.shadow.radius = 4; // soft edges on everything the beam throws
 // a long razor umbra with zero fill). Part-lit shadows keep the depth cue
 // without the cardboard-cutout artifact.
 torch.shadow.intensity = 0.62;
+
+// Launcher warm-up imports this whole graph from the menu. Code fetch/parse
+// and the launch-independent renderer/environment setup above happen early;
+// then evaluation parks here before seed-dependent sim, world or asset work.
+const LAUNCH = globalThis.__charonLaunch ?? await new Promise((resolve) => {
+  window.addEventListener('charon:launch', (event) => resolve(event.detail), { once: true });
+});
 
 // --- boot: random ship every run unless a seed is pinned in the URL
 // (?seed=... for a reproducible one), starting flood kept light (20

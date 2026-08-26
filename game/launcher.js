@@ -82,6 +82,15 @@ let lobbyMaintenanceTimer = 0;
 let singletonSettleTimer = 0;
 let lobbyMaintenanceBusy = false;
 let lobbyTransportError = '';
+let gameModulePromise = null;
+
+// Fetch, parse and evaluate the shared game graph while the player is still
+// choosing solo or multiplayer. main.js warms the common renderer, then parks
+// at its launch-data boundary before it can start a hidden simulation.
+function warmGame() {
+  gameModulePromise ??= import('./main.js?v=1');
+  return gameModulePromise;
+}
 
 function setInputMode(mode) {
   document.body.dataset.input = mode;
@@ -1247,8 +1256,12 @@ async function launchGame(config) {
   byId('intro').style.display = '';
   byId('overlay').style.display = '';
   beginIntroCrawl();
+  // If the module is already parked, release it now. If the player launched
+  // before warm-up reached that boundary, __charonLaunch above is the same
+  // race-free handoff when its body begins evaluating.
+  window.dispatchEvent(new CustomEvent('charon:launch', { detail: config }));
   try {
-    await import('./main.js?v=1');
+    await warmGame();
   } catch (error) {
     launcher.hidden = false;
     document.body.classList.add('launcher-active');
@@ -1361,6 +1374,13 @@ else if (initialRoute.startsWith('docs')) {
   document.querySelector(`[data-doc-tab="${requested}"]`)?.click();
 } else showPage('menu');
 requestAnimationFrame(launcherGamepadFrame);
+
+// Let the launcher paint first, then begin the one download both play modes
+// require. An immediate click calls warmGame synchronously and wins the race.
+const scheduleGameWarmup = window.requestIdleCallback
+  ? (callback) => window.requestIdleCallback(callback, { timeout: 250 })
+  : (callback) => window.setTimeout(callback, 0);
+scheduleGameWarmup(() => { void warmGame().catch(() => {}); });
 
 function launcherObservation() {
   const activePage = pages.find((page) => !page.hidden)?.dataset.launchPage || 'menu';
