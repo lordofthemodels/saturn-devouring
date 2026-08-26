@@ -311,7 +311,8 @@ installDeviceLostReload(renderer, {
 // list is already consensus-validated, so every client consumes the same RNG
 // stream while constructing the ship.
 const coopPlayers = LAUNCH.session ? Math.max(1, new Set(LAUNCH.members || []).size) : 1;
-const sim = new Sim(seed, null, { playerCount: coopPlayers });
+const PLAYER_SPAWN_ID = 'cic';
+const sim = new Sim(seed, null, { playerCount: coopPlayers, playerSpawnId: PLAYER_SPAWN_ID });
 const briefing = activeIntroCrawl() ?? beginIntroCrawl();
 briefing.setBody(introBody(sim.graph.node(sim.graph.breachNode).name));
 const world = new World(scene, sim.graph, seed);
@@ -324,7 +325,7 @@ world.shadowCull = agents.shadowCull = !QP.has('nosc');
 // spawn: CIC on the command deck (user tuning) — an ODST detail with a fireteam.
 // Created synchronously WITHOUT physics so the intro/UI never blocks on the
 // wasm load.
-const cic = sim.graph.byId.get('cic');
+const cic = sim.graph.byId.get(PLAYER_SPAWN_ID);
 const networkPlayers = new Map();
 const networkSquads = new Map();
 const bodyFor = (did) => (LAUNCH.bodies?.[did] ?? LAUNCH.body) === 'female' ? 'female' : 'male';
