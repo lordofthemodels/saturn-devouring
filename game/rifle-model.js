@@ -12,7 +12,7 @@ import { RIFLE_MESHES } from './rifle-model-data.js';
 
 // Halo's MA5 reads as near-black gunmetal until a highlight catches an edge.
 // One shared tint keeps the first-person and carried versions identical.
-export const MA5_GUNMETAL = 0x080a0d;
+export const MA5_GUNMETAL = 0x0a0e14;
 
 // muzzle tip in the rifle's authored local space (first-strike js/models.js)
 export const RIFLE_MUZZLE = new THREE.Vector3(0, 0.015, 0.515);
@@ -59,12 +59,13 @@ function tex(name) {
 // viewmodel — one instance on screen, so the extra draw calls are free.
 export function buildRifleViewmodel() {
   const group = new THREE.Group();
-  // TONE-STABLE RECEIVER. A near-black lit material can still be multiplied
-  // into grey by the player-centered room fill at point-blank range (and PBR
-  // adds a 4% white specular floor before albedo). The first-person receiver
-  // therefore owns its near-black value outright; its silhouette and separate
-  // illuminated display meshes preserve the readable shape.
-  const bodyMat = new THREE.MeshBasicMaterial({ color: MA5_GUNMETAL });
+  // DARK GUNMETAL, now that the pale block was traced to the display decal
+  // below rather than the receiver. High metalness tints the reflection with
+  // the near-black albedo instead of giving it a broad white dielectric wash;
+  // moderate roughness leaves a restrained edge sheen instead of flat black.
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: MA5_GUNMETAL, roughness: 0.58, metalness: 0.76,
+  });
   // These are luminous decals, not chunks of white plastic. Their PNGs carry
   // transparent backgrounds; the old opaque Standard materials ignored that
   // alpha and the hidden pale RGB filled the whole rear housing under light.
