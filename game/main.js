@@ -260,7 +260,12 @@ torch.castShadow = true;
 // inverse-square a wide cone from the eye puts 100+ lux on a rifle held 0.6 m
 // away and the gun renders as a white cutout. The world cannot tell the
 // difference between an apex at the eye and one at arm's length.
-const torchSpill = new THREE.SpotLight(0xeaf2ff, 0, 14, 0.50, 0.95, 2);
+// The broad spill is a fill, not the reflector's hot core. A full inverse-
+// square curve from an origin ahead of the rifle makes a nearby pale uniform
+// sit almost on the singularity and clip white while well outside the reticle.
+// A softer decay plus half the candela preserves the 4 m deck/wall level while
+// removing that point-blank blowout; the narrow shadowed core stays physical.
+const torchSpill = new THREE.SpotLight(0xeaf2ff, 0, 14, 0.50, 0.95, 1.5);
 torchSpill.castShadow = false;
 torchSpill.target = torchTarget;
 scene.add(torchSpill);
@@ -3861,7 +3866,7 @@ function frame(now) {
   // the viewmodel rig a four-hundredth — both ride the same dial so the whole
   // lamp brightens and dims as one.
   torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
-  torchSpill.intensity = torch.intensity * 0.09;
+  torchSpill.intensity = torch.intensity * 0.045;
   // 0.0038 put ~40 lux on the receiver — past the ~30-lux white point, so
   // the gun clipped white no matter its albedo (user: white/striped rifle).
   // Keep only a narrow edge read on the near-black receiver. A brighter fill
