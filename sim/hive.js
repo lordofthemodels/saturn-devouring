@@ -704,8 +704,8 @@ export class Hive {
   // One carrier plus a thin pool is the hive's future, not just another unit.
   // Both opening and steady state call this planner so the successfully seated
   // carrier—not a now-empty original den—owns the defense. Scarcity controls
-  // how much of the available military body is recalled; committed conversions,
-  // live musters, forced fights and the opening decoy retain their jobs.
+  // the size of a small guard detail, never a percentage of the whole army:
+  // surplus bodies are the hive's second bet, free to seed or make noise.
   protectCarriers(combat, carriers, S) {
     const liveCarrierIds = new Set(carriers.map((carrier) => carrier.id));
     for (const form of combat) {
@@ -717,10 +717,12 @@ export class Hive {
       .sort((a, b) => (a.distance - b.distance)
         || ((b.carrier.held ?? 0) - (a.carrier.held ?? 0)) || (a.carrier.id - b.carrier.id));
     const scarce = S >= 1.5;
-    const routine = Math.min(combat.length, carriers.length * (scarce ? 2 : 1));
-    const wanted = scarce
-      ? Math.min(combat.length, Math.max(routine, Math.ceil(combat.length * 0.75)))
-      : routine;
+    const detailCap = carriers.length * (scarce ? 2 : 1);
+    // Preserve at least one mobile appendage whenever the pocket has a choice.
+    // Transforming/raiding forms are excluded below as well, so those bets can
+    // never be pulled off their jobs merely because a carrier is vulnerable.
+    const mobileReserve = combat.length > 1 ? 1 : 0;
+    const wanted = Math.min(detailCap, Math.max(1, combat.length - mobileReserve));
     const eligible = combat.filter((form) => {
       const task = form.task;
       if (form.downed || form.fromPlayer || form.taskProgress > 0) return false;
@@ -1274,23 +1276,50 @@ export class Hive {
       }
       return { seed, node: bestPath?.[0]?.to ?? (seed.pnode ?? seed.node) };
     });
-    for (const guard of combat) {
-      if (guard.task?.kind === TASK.TRANSFORM || guard.task?.retreat
-        || guard.taskProgress > 0 || guard.fromPlayer) continue;
-      let best = screens[0], bestHops = Infinity;
-      for (const screen of screens) {
-        const hops = g.hops(guard.pnode ?? guard.node, screen.node, ['std'], this.bigPass);
-        if (hops !== -1 && (hops < bestHops
-          || (hops === bestHops && screen.seed.id < best.seed.id))) {
-          best = screen;
-          bestHops = hops;
+    const availableGuards = combat.filter((guard) => {
+      const task = guard.task;
+      if (guard.fromPlayer || guard.taskProgress > 0 || task?.kind === TASK.TRANSFORM) return false;
+      if (!task) return true;
+      if (task.retreat || task.seed || task.raid || task.muster !== undefined) return false;
+      if (task.kind === TASK.DECOY || task.kind === TASK.DART) return false;
+      if (task.kind === TASK.ATTACK && (task.force || task.surge || guard.state === STATE.FIGHT)) return false;
+      return true;
+    });
+    // Two bodies per seed can delay an approach without turning every combat
+    // form into a sentry. Keep roughly a third of the pocket mobile so it can
+    // raid, provoke pursuit, or become the next carrier if this seed fails.
+    const mobileReserve = Math.max(1, Math.floor(C / 3));
+    const guardBudget = Math.min(rooting.length * 2,
+      Math.max(0, C - rooting.length - mobileReserve));
+    const chosenGuards = new Set();
+    for (let slot = 0; slot < guardBudget && availableGuards.length; slot++) {
+      let chosenIndex = -1, chosenScreen = screens[0], bestHops = Infinity;
+      for (let index = 0; index < availableGuards.length; index++) {
+        const guard = availableGuards[index];
+        for (const screen of screens) {
+          const hops = g.hops(guard.pnode ?? guard.node, screen.node, ['std'], this.bigPass);
+          if (hops !== -1 && (hops < bestHops
+            || (hops === bestHops && (guard.id < (availableGuards[chosenIndex]?.id ?? Infinity)
+              || (guard.id === availableGuards[chosenIndex]?.id && screen.seed.id < chosenScreen.seed.id))))) {
+            chosenIndex = index;
+            chosenScreen = screen;
+            bestHops = hops;
+          }
         }
       }
-      this.assign(guard, { kind: TASK.GUARD, node: best.node, screen: best.seed.id });
+      if (chosenIndex === -1) break;
+      const guard = availableGuards.splice(chosenIndex, 1)[0];
+      this.assign(guard, { kind: TASK.GUARD, node: chosenScreen.node, screen: chosenScreen.seed.id });
+      chosenGuards.add(guard.id);
+    }
+    for (const guard of combat) {
+      if (guard.task?.screen === undefined || chosenGuards.has(guard.id)) continue;
+      if (guard.move) sim._interruptMove(guard);
+      guard.task = null;
     }
     if (!this._pressureSeedLogged) {
       this._pressureSeedLogged = true;
-      sim.log('hive', `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? '' : 's'} — the rest form a screen`);
+      sim.log('hive', `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? '' : 's'} behind a ${chosenGuards.size}-form screen`);
     }
   }
 
