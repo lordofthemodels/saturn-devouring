@@ -708,7 +708,7 @@ export class Hive {
     if (!best) return false;
     this.assign(form, { kind: TASK.MOVE, node: best.node, retreat: true, threatNode });
     sim.setPath(form, best.path);
-    form.charging = false;
+    sim._setCharging(form, false);
     form.state = STATE.MOVE;
     return true;
   }
