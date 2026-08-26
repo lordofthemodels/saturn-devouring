@@ -443,6 +443,9 @@ export const PARAMS = {
     bridgeOfficers: 3,         // captain + officers who never leave the bridge
     sweepDwellSec: 15,         // min pause at each cleared room (+ jitter)
     sweepDwellJitterSec: 10,
+    radarMemorySec: 3.5,       // one shared room-level paint, long enough to survive the strategic cadence
+    radarCooldownSec: 6,       // finish checking one paint before chasing another
+    ladderBlastSettleSec: 0.75,// pause after a frag clears the far ladder mouth
   },
   civilian: {
     fleeHearingHops: 1,        // only bolt from trouble this close (was ship-wide)
