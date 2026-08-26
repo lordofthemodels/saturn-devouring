@@ -304,6 +304,7 @@ export const PARAMS = {
     // swing: 18 dmg / 0.9 s = the same 20 dps sustained, delivered in chunks.
     combatForm: { hp: 90, dps: 20, hpJitter: 0.18,   // spawn hp varies ±18%
                   crowdRadiusScale: 1.15, // slightly looser combat-form rushes; pair separation only
+                  leapCooldownSec: 5, // begins on landing; ordinary charge movement continues
                   swing: {
                     dmg: 18, cooldownSec: 0.9, animSec: 0.74,
                     // A grounded whip drops a body nearby. A running strike

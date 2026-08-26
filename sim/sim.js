@@ -1420,7 +1420,7 @@ export class Sim {
       // and left a stale committed arc to resume from if it was ever raised.
       if (a.leaping && (a.dead || a.faction === FACTION.CORPSE || a.downed || a.hp <= 0
         || a.isPlayer || a.closeFollow || a.held === this.tickCount)) {
-        a.leaping = false; a.leapDist0 = 0; a.leapTicks = 0;
+        this._endLeap(a);
       }
       if (a.dead || a.faction === FACTION.CORPSE || a.downed || a.hp <= 0) continue;
       // the player's body is moved by the game, not the pathfinder
@@ -1461,7 +1461,7 @@ export class Sim {
       // block whenever the prey dies, the hive retasks the form, or it starts
       // a move — and a.leaping left set freezes that body out of the crowd
       // separation pass and fire avoidance permanently.
-      if (a.leaping) { a.leaping = false; a.leapDist0 = 0; a.leapTicks = 0; }
+      if (a.leaping) this._endLeap(a);
       if (a.state === STATE.FIGHT || a.state === STATE.GRABBING || a.state === STATE.COWER || a.state === STATE.AMBUSHING) {
         if (!a.move) {
           // fighters/grabbers/ambushers HOLD where they stand — sliding to a
@@ -2178,7 +2178,8 @@ export class Sim {
     const LEAP_MIN = 5, PEAK_FRAC = 0.20;
     const C = P.combat;
     const clearH = clearHeightOf(room);
-    const canLeap = a.faction === FACTION.COMBAT && a.charging && clearH > CLEAR_H + 0.5;
+    const canLeap = a.faction === FACTION.COMBAT && a.charging && clearH > CLEAR_H + 0.5
+      && this.t >= a.nextCombatLeapAt;
     // LIVE, which is the user's own word and the thing that matters here: a
     // form heading for a BODY is on TASK.CONVERT/REANIMATE and never reaches
     // this branch, but a GRAB target can die under it mid-approach — pouncing
@@ -2196,7 +2197,7 @@ export class Sim {
       // apex CLAMPED under the ceiling instead of the hop being gated on it
       this._commitLeap(a, target, room, mps, Math.min(C.pounce.peakM, clearH - C.pounce.clearM), C.pounce.landM);
     } else if (a.leaping && !canLeap && !canPounce) {
-      a.leaping = false; a.leapDist0 = 0; a.leapTicks = 0;
+      this._endLeap(a);
     }
 
     // aim at the committed landing spot while airborne, else the live target
@@ -2235,12 +2236,26 @@ export class Sim {
       //   budget spent    : belt and braces, so no reachable state anywhere
       //                     leaves a body in the air indefinitely.
       if (rem <= a.leapLand || rem >= a.leapRem - 1e-4 || a.leapTicks <= 0) {
-        a.leaping = false; a.leapDist0 = 0; a.leapTicks = 0;
-        a.hoverY = 0; // touch down ON the deck, not part-way up the arc
+        this._endLeap(a);
       } else a.leapRem = rem;
     }
     a.animTime += dt;
     return true;
+  }
+
+  // A combat form gets one long leap, then must keep charging on foot for a
+  // full cooldown measured FROM touchdown. Centralizing every exit matters:
+  // landing, losing a target, being interrupted and getting shot down all end
+  // an arc through different branches. Infection-form pounces stay unchanged.
+  _endLeap(a) {
+    if (!a.leaping) return;
+    a.leaping = false;
+    a.leapDist0 = 0;
+    a.leapTicks = 0;
+    a.hoverY = 0;
+    if (a.faction === FACTION.COMBAT) {
+      a.nextCombatLeapAt = this.t + this.P.combat.combatForm.leapCooldownSec;
+    }
   }
 
   // COMMIT AN ARC. The user has asked twice for this shape ("their body
