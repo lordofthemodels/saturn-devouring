@@ -29,6 +29,7 @@ import { createRenderer, installDeviceLostReload, QualityGovernor, TickScheduler
 import { createGameSync } from '../multiplayer/game-sync.js';
 import { StandardGamepad, halo3Actions, singleActionPress } from './gamepad.js';
 import { SporeFX } from './spore-fx.js';
+import { activeIntroCrawl, beginIntroCrawl, introBody } from './intro-crawl.js';
 
 const canvas = document.getElementById('c');
 const gamepad = new StandardGamepad();
@@ -311,6 +312,8 @@ const coopPlayers = LAUNCH.session ? Math.max(1, new Set(LAUNCH.members || []).s
 const sim = new Sim(seed, coopPlayers > 1
   ? { flood: { initialInfectionForms: BASE_POD_COUNT + 5 * (coopPlayers - 1) } }
   : null);
+const briefing = activeIntroCrawl() ?? beginIntroCrawl();
+briefing.setBody(introBody(sim.graph.node(sim.graph.breachNode).name));
 const world = new World(scene, sim.graph, seed);
 const sporeFX = new SporeFX(scene, camera, world, sim);
 const agents = new Agents3D(scene, sim, world);
@@ -1424,79 +1427,9 @@ const overlay = el('overlay');
 // done, a click deploys you (that click doubles as the pointer-lock and
 // audio gesture). The sim runs cold underneath — by the time you hit the
 // deck, the ship's log already has a history.
-// ATMOSPHERE FIRST (user): the briefing opens on the ship's CURRENT state —
-// what you are about to step into — then backfills the lore as a mission log.
-const INTRO_BODY = [
-  'UNSC SATURN DEVOURING — INTERNAL STATUS LOG // AUTO-GENERATED',
-  'SHIP: FFG-201 UNSC SATURN DEVOURING — MARS HIGH ANCHOR',
-  'DATE: OCTOBER 2552 // LOCAL 0347',
-  '',
-  'STATUS:',
-  'Primary power offline. Secondary systems unstable.',
-  'Ship heavily damaged. Radiation and electromagnetic interference',
-  'disrupting radar and communications.',
-  // the contact names the ACTUAL breach room this seed rolled
-  `Contact in ${sim.graph.node(sim.graph.breachNode).name} — an object of`,
-  'unknown type, originating from the Covenant holy city HIGH CHARITY.',
-  'Fireteams mustering.',
-  '',
-  'MISSION LOG:',
-  'Sol has been a war of attrition since the day the Covenant first',
-  'appeared off Earth. Every week they probe the anchorages, every',
-  'week we push them back, at a high and bleeding cost. There are',
-  'little less of us left to do the bleeding. This Charon class',
-  'frigate has held the Mars sector through all of it.',
-  '',
-  'One transmission reached this station in the past week:',
-  'an outbreak on Earth. Not Covenant. Something else,',
-  'loose near Voi — something that eats the dead and wears them.',
-  '',
-  'At 0331 local, HIGH CHARITY — the Covenant holy city itself —',
-  'exited slipspace directly on top of the Mars anchorage.',
-  'At 0339 it tore open a slipspace rupture larger and more violent',
-  'than anything on record, and was gone into it. The collapse wave',
-  'killed the reactor. Every ship and station around Mars is likely',
-  'as dark as we are. You have no way of knowing.',
-  '',
-  'Internal sensors are down. The crew is at stations.',
-  'You are not alone in the dark.',
-].join('\n');
-const INTRO_MISSION = 'MISSION: SURVIVE. CONTAIN.';
-const INTRO_TOTAL = INTRO_BODY.length + INTRO_MISSION.length;
-const intro = el('intro'), introText = el('introText'), introMission = el('introMission'), introHint = el('introHint');
+const intro = el('intro'), introHint = el('introHint');
 const introScroll = el('introScroll');
-let introChars = 0, introDone = false, introGone = false;
-function introRender() {
-  introText.textContent = INTRO_BODY.slice(0, Math.min(introChars, INTRO_BODY.length));
-  introMission.textContent = introChars > INTRO_BODY.length
-    ? INTRO_MISSION.slice(0, introChars - INTRO_BODY.length) : '';
-  if (introChars >= INTRO_TOTAL && !introDone) {
-    introDone = true;
-    introHint.textContent = inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY');
-    introHint.classList.add('ready');
-  }
-}
-// TYPED OFF THE FRAME CLOCK, NOT A TIMER (user: "the opening crawl stutters
-// like crazy"). Two separate causes, both gone with the interval:
-//   - a 22 ms setInterval beats against a ~16.7 ms frame, so some frames drew
-//     two characters and some drew one — visible judder even on an idle
-//     machine, before any load;
-//   - the shader prewarm runs behind this screen and blocks the main thread
-//     in bursts, which starved the timer and then fired it several times back
-//     to back — freeze, machine-gun, freeze.
-// Elapsed wall time decides how many characters SHOULD be showing, so a hitch
-// costs one catch-up step instead of a stall, and the reveal is frame-aligned.
-// Same pace as before (2 chars / 22 ms).
-const INTRO_CPS = 91;
-let _introT0 = 0, _introShown = -1;
-function introFrame(now) {
-  if (introGone || introDone) return;
-  if (!_introT0) _introT0 = now;
-  const want = Math.min(INTRO_TOTAL, Math.floor(((now - _introT0) / 1000) * INTRO_CPS));
-  if (want !== _introShown) { _introShown = want; introChars = want; introRender(); }
-  if (!introDone) requestAnimationFrame(introFrame);
-}
-requestAnimationFrame(introFrame);
+let introGone = false;
 function dismissIntro() {
   introGone = true;
   intro.style.display = 'none';
@@ -1507,12 +1440,12 @@ function dismissIntro() {
   }
 }
 intro.addEventListener('click', () => {
-  if (introDone) dismissIntro();
-  else { introChars = INTRO_TOTAL; introRender(); }
+  if (briefing.done) dismissIntro();
+  else briefing.complete();
 });
 window.addEventListener('keydown', (event) => {
   if (introGone) return;
-  if (!introDone) { introChars = INTRO_TOTAL; introRender(); }
+  if (!briefing.done) briefing.complete();
   else if (event.code === 'Enter' || event.code === 'Space') {
     event.preventDefault();
     dismissIntro();
@@ -1534,7 +1467,7 @@ const KEYBOARD_CONTROLS = 'WASD move · MOUSE look · SPACE jump · CLICK fire �
 const CONTROLLER_CONTROLS = 'HALO 3 · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB pick up / use / climb / reload · B melee · Y swap · L3 sprint · VIEW map · D-PAD orders';
 function refreshOverlayPrompt() {
   if (!introGone) {
-    introHint.textContent = introDone
+    introHint.textContent = briefing.done
       ? inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY')
       : inputPrompt('ANY KEY OR CLICK — SKIP', 'ANY BUTTON — SKIP');
   }
@@ -2603,11 +2536,10 @@ function handleGamepad(state, dt) {
   if (!introGone) {
     gamepadFireHeld = false;
     player.setGamepadInput(null);
-    if (introDone) introHint.textContent = inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY');
-    if (state.used && !introDone) {
-      introChars = INTRO_TOTAL;
-      introRender();
-    } else if (introDone) {
+    if (briefing.done) introHint.textContent = inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY');
+    if (state.used && !briefing.done) {
+      briefing.complete();
+    } else if (briefing.done) {
       const lookScroll = Math.abs(state.lookY) > 0.3 ? state.lookY * 12 : 0;
       introScroll.scrollTop += state.navY * 8 + lookScroll;
       if (state.pressed('a')) dismissIntro();
@@ -4372,8 +4304,7 @@ globalThis.peerd?.agent?.expose({
   observe: gameObservation,
   act: async ({ action, params = {} } = {}) => {
     if (action === 'deploy') {
-      introChars = INTRO_TOTAL;
-      introRender();
+      briefing.complete();
       introGone = true;
       intro.style.display = 'none';
       overlay.classList.add('hidden');

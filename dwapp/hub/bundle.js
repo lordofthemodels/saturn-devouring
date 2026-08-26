@@ -68796,6 +68796,124 @@ var init_gamepad = __esm({
   }
 });
 
+// game/intro-crawl.js
+function introBody(breachName) {
+  return [
+    ...PREFIX_LINES,
+    `Contact in ${breachName} — an object of`,
+    ...SUFFIX_LINES
+  ].join("\n");
+}
+function advanceIntroProgress(progress, elapsedSeconds) {
+  return progress + Math.min(
+    INTRO_MAX_STEP,
+    Math.max(0, Number(elapsedSeconds) || 0) * INTRO_CPS
+  );
+}
+function beginIntroCrawl() {
+  if (active) return active;
+  const text = document.getElementById("introText");
+  const mission = document.getElementById("introMission");
+  const hint = document.getElementById("introHint");
+  let body = INTRO_PREFIX;
+  let finalBody = false;
+  let progress = 1;
+  let shown = -1;
+  let last2 = 0;
+  let done = false;
+  let cancelled = false;
+  const render = () => {
+    const chars = Math.floor(progress);
+    if (chars === shown) return;
+    shown = chars;
+    text.textContent = body.slice(0, Math.min(chars, body.length));
+    mission.textContent = finalBody && chars > body.length ? INTRO_MISSION.slice(0, chars - body.length) : "";
+    if (finalBody && chars >= body.length + INTRO_MISSION.length && !done) {
+      done = true;
+      hint.textContent = document.body.dataset.input === "gamepad" ? "A — DEPLOY" : "CLICK TO DEPLOY";
+      hint.classList.add("ready");
+    }
+  };
+  const frame2 = (now) => {
+    if (cancelled || done) return;
+    const elapsed = last2 ? (now - last2) / 1e3 : 0;
+    last2 = now;
+    const limit = body.length + (finalBody ? INTRO_MISSION.length : 0);
+    progress = Math.min(limit, advanceIntroProgress(progress, elapsed));
+    render();
+    requestAnimationFrame(frame2);
+  };
+  active = {
+    get done() {
+      return done;
+    },
+    setBody(nextBody) {
+      body = String(nextBody);
+      finalBody = true;
+      render();
+    },
+    complete() {
+      if (!finalBody) return;
+      progress = body.length + INTRO_MISSION.length;
+      render();
+    },
+    cancel() {
+      cancelled = true;
+    }
+  };
+  render();
+  requestAnimationFrame(frame2);
+  return active;
+}
+function activeIntroCrawl() {
+  return active;
+}
+var PREFIX_LINES, SUFFIX_LINES, INTRO_PREFIX, INTRO_MISSION, INTRO_CPS, INTRO_MAX_STEP, active;
+var init_intro_crawl = __esm({
+  "game/intro-crawl.js"() {
+    PREFIX_LINES = [
+      "UNSC SATURN DEVOURING — INTERNAL STATUS LOG // AUTO-GENERATED",
+      "SHIP: FFG-201 UNSC SATURN DEVOURING — MARS HIGH ANCHOR",
+      "DATE: OCTOBER 2552 // LOCAL 0347",
+      "",
+      "STATUS:",
+      "Primary power offline. Secondary systems unstable.",
+      "Ship heavily damaged. Radiation and electromagnetic interference",
+      "disrupting radar and communications."
+    ];
+    SUFFIX_LINES = [
+      "unknown type, originating from the Covenant holy city HIGH CHARITY.",
+      "Fireteams mustering.",
+      "",
+      "MISSION LOG:",
+      "Sol has been a war of attrition since the day the Covenant first",
+      "appeared off Earth. Every week they probe the anchorages, every",
+      "week we push them back, at a high and bleeding cost. There are",
+      "little less of us left to do the bleeding. This Charon class",
+      "frigate has held the Mars sector through all of it.",
+      "",
+      "One transmission reached this station in the past week:",
+      "an outbreak on Earth. Not Covenant. Something else,",
+      "loose near Voi — something that eats the dead and wears them.",
+      "",
+      "At 0331 local, HIGH CHARITY — the Covenant holy city itself —",
+      "exited slipspace directly on top of the Mars anchorage.",
+      "At 0339 it tore open a slipspace rupture larger and more violent",
+      "than anything on record, and was gone into it. The collapse wave",
+      "killed the reactor. Every ship and station around Mars is likely",
+      "as dark as we are. You have no way of knowing.",
+      "",
+      "Internal sensors are down. The crew is at stations.",
+      "You are not alone in the dark."
+    ];
+    INTRO_PREFIX = PREFIX_LINES.join("\n");
+    INTRO_MISSION = "MISSION: SURVIVE. CONTAIN.";
+    INTRO_CPS = 91;
+    INTRO_MAX_STEP = 2;
+    active = null;
+  }
+});
+
 // multiplayer/protocol.js
 function createInviteCode(random = globalThis.crypto) {
   if (!random?.getRandomValues) throw new Error("secure random values are unavailable");
@@ -91424,10 +91542,10 @@ function agentRow(agent) {
   return row;
 }
 function snapshotState(sim2, cache3, full) {
-  const active = sim2.agents.filter((agent) => !agent.dead || agent.isPlayer);
+  const active2 = sim2.agents.filter((agent) => !agent.dead || agent.isPlayer);
   const rows = [];
   const present = /* @__PURE__ */ new Set();
-  for (const agent of active.slice(0, SNAPSHOT_LIMIT)) {
+  for (const agent of active2.slice(0, SNAPSHOT_LIMIT)) {
     const row = agentRow(agent);
     const signature = row.join(",");
     present.add(agent.id);
@@ -91443,7 +91561,7 @@ function snapshotState(sim2, cache3, full) {
   }
   return {
     full,
-    complete: active.length <= SNAPSHOT_LIMIT,
+    complete: active2.length <= SNAPSHOT_LIMIT,
     rows,
     removed
   };
@@ -92567,26 +92685,6 @@ function setStyle(id, prop, v2) {
     el(id).style[prop] = v2;
   }
 }
-function introRender() {
-  introText.textContent = INTRO_BODY.slice(0, Math.min(introChars, INTRO_BODY.length));
-  introMission.textContent = introChars > INTRO_BODY.length ? INTRO_MISSION.slice(0, introChars - INTRO_BODY.length) : "";
-  if (introChars >= INTRO_TOTAL && !introDone) {
-    introDone = true;
-    introHint.textContent = inputPrompt("CLICK TO DEPLOY", "A — DEPLOY");
-    introHint.classList.add("ready");
-  }
-}
-function introFrame(now) {
-  if (introGone || introDone) return;
-  if (!_introT0) _introT0 = now;
-  const want = Math.min(INTRO_TOTAL, Math.floor((now - _introT0) / 1e3 * INTRO_CPS));
-  if (want !== _introShown) {
-    _introShown = want;
-    introChars = want;
-    introRender();
-  }
-  if (!introDone) requestAnimationFrame(introFrame);
-}
 function dismissIntro() {
   introGone = true;
   intro.style.display = "none";
@@ -92599,7 +92697,7 @@ function dismissIntro() {
 }
 function refreshOverlayPrompt() {
   if (!introGone) {
-    introHint.textContent = introDone ? inputPrompt("CLICK TO DEPLOY", "A — DEPLOY") : inputPrompt("ANY KEY OR CLICK — SKIP", "ANY BUTTON — SKIP");
+    introHint.textContent = briefing.done ? inputPrompt("CLICK TO DEPLOY", "A — DEPLOY") : inputPrompt("ANY KEY OR CLICK — SKIP", "ANY BUTTON — SKIP");
   }
   if (overlay.dataset.screen === "pause") {
     const voice = !LAUNCH.session ? "" : voiceBlocked ? " · TAP SCREEN OR PRESS A KEY FOR TEAM AUDIO" : voiceActive ? ` · Y ${voiceMuted ? "UNMUTE" : "MUTE"} MIC` : " · TAP MIC TO ENABLE VOICE";
@@ -93117,11 +93215,10 @@ function handleGamepad(state, dt) {
   if (!introGone) {
     gamepadFireHeld = false;
     player.setGamepadInput(null);
-    if (introDone) introHint.textContent = inputPrompt("CLICK TO DEPLOY", "A — DEPLOY");
-    if (state.used && !introDone) {
-      introChars = INTRO_TOTAL;
-      introRender();
-    } else if (introDone) {
+    if (briefing.done) introHint.textContent = inputPrompt("CLICK TO DEPLOY", "A — DEPLOY");
+    if (state.used && !briefing.done) {
+      briefing.complete();
+    } else if (briefing.done) {
       const lookScroll = Math.abs(state.lookY) > 0.3 ? state.lookY * 12 : 0;
       introScroll.scrollTop += state.navY * 8 + lookScroll;
       if (state.pressed("a")) dismissIntro();
@@ -94424,7 +94521,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -94450,6 +94547,7 @@ var init_main = __esm({
     init_game_sync();
     init_gamepad();
     init_spore_fx();
+    init_intro_crawl();
     canvas = document.getElementById("c");
     gamepad = new StandardGamepad();
     inputMode = document.body.dataset.input === "gamepad" ? "gamepad" : "keyboard";
@@ -94580,6 +94678,8 @@ var init_main = __esm({
     });
     coopPlayers = LAUNCH.session ? Math.max(1, new Set(LAUNCH.members || []).size) : 1;
     sim = new Sim(seed, coopPlayers > 1 ? { flood: { initialInfectionForms: BASE_POD_COUNT + 5 * (coopPlayers - 1) } } : null);
+    briefing = activeIntroCrawl() ?? beginIntroCrawl();
+    briefing.setBody(introBody(sim.graph.node(sim.graph.breachNode).name));
     world = new World(scene, sim.graph, seed);
     sporeFX = new SporeFX(scene, camera, world, sim);
     agents = new Agents3D(scene, sim, world);
@@ -95108,68 +95208,18 @@ var init_main = __esm({
     el = (id) => document.getElementById(id);
     _hudCache = {};
     overlay = el("overlay");
-    INTRO_BODY = [
-      "UNSC SATURN DEVOURING — INTERNAL STATUS LOG // AUTO-GENERATED",
-      "SHIP: FFG-201 UNSC SATURN DEVOURING — MARS HIGH ANCHOR",
-      "DATE: OCTOBER 2552 // LOCAL 0347",
-      "",
-      "STATUS:",
-      "Primary power offline. Secondary systems unstable.",
-      "Ship heavily damaged. Radiation and electromagnetic interference",
-      "disrupting radar and communications.",
-      // the contact names the ACTUAL breach room this seed rolled
-      `Contact in ${sim.graph.node(sim.graph.breachNode).name} — an object of`,
-      "unknown type, originating from the Covenant holy city HIGH CHARITY.",
-      "Fireteams mustering.",
-      "",
-      "MISSION LOG:",
-      "Sol has been a war of attrition since the day the Covenant first",
-      "appeared off Earth. Every week they probe the anchorages, every",
-      "week we push them back, at a high and bleeding cost. There are",
-      "little less of us left to do the bleeding. This Charon class",
-      "frigate has held the Mars sector through all of it.",
-      "",
-      "One transmission reached this station in the past week:",
-      "an outbreak on Earth. Not Covenant. Something else,",
-      "loose near Voi — something that eats the dead and wears them.",
-      "",
-      "At 0331 local, HIGH CHARITY — the Covenant holy city itself —",
-      "exited slipspace directly on top of the Mars anchorage.",
-      "At 0339 it tore open a slipspace rupture larger and more violent",
-      "than anything on record, and was gone into it. The collapse wave",
-      "killed the reactor. Every ship and station around Mars is likely",
-      "as dark as we are. You have no way of knowing.",
-      "",
-      "Internal sensors are down. The crew is at stations.",
-      "You are not alone in the dark."
-    ].join("\n");
-    INTRO_MISSION = "MISSION: SURVIVE. CONTAIN.";
-    INTRO_TOTAL = INTRO_BODY.length + INTRO_MISSION.length;
     intro = el("intro");
-    introText = el("introText");
-    introMission = el("introMission");
     introHint = el("introHint");
     introScroll = el("introScroll");
-    introChars = 0;
-    introDone = false;
     introGone = false;
-    INTRO_CPS = 91;
-    _introT0 = 0;
-    _introShown = -1;
-    requestAnimationFrame(introFrame);
     intro.addEventListener("click", () => {
-      if (introDone) dismissIntro();
-      else {
-        introChars = INTRO_TOTAL;
-        introRender();
-      }
+      if (briefing.done) dismissIntro();
+      else briefing.complete();
     });
     window.addEventListener("keydown", (event) => {
       if (introGone) return;
-      if (!introDone) {
-        introChars = INTRO_TOTAL;
-        introRender();
-      } else if (event.code === "Enter" || event.code === "Space") {
+      if (!briefing.done) briefing.complete();
+      else if (event.code === "Enter" || event.code === "Space") {
         event.preventDefault();
         dismissIntro();
       }
@@ -95760,8 +95810,7 @@ var init_main = __esm({
       observe: gameObservation,
       act: async ({ action, params = {} } = {}) => {
         if (action === "deploy") {
-          introChars = INTRO_TOTAL;
-          introRender();
+          briefing.complete();
           introGone = true;
           intro.style.display = "none";
           overlay.classList.add("hidden");
@@ -96882,6 +96931,7 @@ async function joinMultiplayerRoom(options) {
 
 // game/launcher.js
 init_gamepad();
+init_intro_crawl();
 init_protocol();
 
 // multiplayer/lobby-state.js
@@ -97707,10 +97757,10 @@ function launcherGamepadFrame(now) {
     launcherNavDirection = direction;
   }
   if (state.pressed("a")) {
-    const active = document.activeElement;
-    if (!visibleLauncherControls().includes(active)) moveLauncherFocus(0, 1);
-    else if (active.matches("button")) active.click();
-    else active.focus();
+    const active2 = document.activeElement;
+    if (!visibleLauncherControls().includes(active2)) moveLauncherFocus(0, 1);
+    else if (active2.matches("button")) active2.click();
+    else active2.focus();
   }
   if (state.pressed("b")) {
     if (document.activeElement?.matches("input:not([readonly]), select")) document.activeElement.blur();
@@ -98745,6 +98795,7 @@ async function launchGame(config) {
   launcher.hidden = true;
   byId("intro").style.display = "";
   byId("overlay").style.display = "";
+  beginIntroCrawl();
   try {
     await init_main().then(() => main_exports);
   } catch (error2) {
