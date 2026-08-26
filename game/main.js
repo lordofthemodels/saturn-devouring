@@ -1465,14 +1465,14 @@ window.addEventListener('keydown', (event) => {
     dismissIntro();
   }
 });
-const ghostAlive = () => {
-  const gh = sim.playerConvertedTo ? sim.byId.get(sim.playerConvertedTo) : null;
-  return gh && !gh.dead && gh.damage < 100 ? gh : null;
+const afterlifeBody = () => {
+  const body = sim.byId.get(player.agent.afterlifeId);
+  return body && !body.dead ? body : null;
 };
+const livingTeammate = () => mates.find((mate) => mate.agent && !mate.agent.dead && mate.agent.hp > 0) ?? null;
 overlay.addEventListener('click', (event) => {
   if (event.target.closest('button') || ended) return;
   if (gamepadPaused) { resumeGamepadControls(); return; }
-  if (player.dead && !ghostAlive()) return;
   overlay.classList.add('hidden');
   if (!player.dead) canvas.requestPointerLock()?.catch?.(() => {});
 });
@@ -1507,7 +1507,12 @@ refreshInputModeCopy = refreshOverlayPrompt;
 refreshOverlayPrompt();
 function endScreen(title, text, final = true) {
   if (ended) return;
-  if (final) ended = true;
+  if (final) {
+    ended = true;
+    marineMap.setOmniscient(true);
+    el('maptitle').textContent = 'AFTER ACTION TACNET — FULL SHIP PICTURE';
+    el('maplegend').innerHTML = '<span data-input-copy="keyboard">M close · 1–5 or ←/→ switch deck</span><span data-input-copy="gamepad">VIEW or B close · D-PAD ←/→ switch deck</span> · all Flood and marine positions are live; fog of war and radio uncertainty are disabled';
+  }
   document.exitPointerLock?.();
   el('ovTitle').textContent = title;
   el('ovText').textContent = text;
@@ -1605,6 +1610,18 @@ function resultCard({ headline, color, label, secs, share }) {
   // phones and Safari get the real share sheet; everything else has the two above
   if (navigator.share) {
     mkBtn('SHARE…', () => navigator.share({ title: 'Halo Charon', text: share, url }).catch(() => {}), true);
+  }
+  if (player.dead) {
+    mkBtn('WATCH BODY', () => {
+      toggleMap(false);
+      overlay.classList.add('hidden');
+      el('postgameHud').style.display = 'block';
+    });
+    mkBtn('FULL TACNET', () => {
+      overlay.classList.add('hidden');
+      el('postgameHud').style.display = 'block';
+      toggleMap(true);
+    });
   }
   const restart = mkBtn('PLAY AGAIN', () => location.reload());
   restart.dataset.primary = 'true';
@@ -2405,6 +2422,13 @@ window.addEventListener('wheel', (e) => {
 }, { passive: true });
 window.addEventListener('keydown', (e) => {
   if (!introGone) return; // still on the briefing — keys only skip the typing
+  if (ended && overlay.classList.contains('hidden') && e.code === 'Enter') {
+    e.preventDefault();
+    toggleMap(false);
+    el('postgameHud').style.display = 'none';
+    overlay.classList.remove('hidden');
+    return;
+  }
   if (ended && !overlay.classList.contains('hidden')) {
     if (e.code === 'Tab') {
       e.preventDefault();
@@ -2417,7 +2441,14 @@ window.addEventListener('keydown', (e) => {
       return;
     }
   }
-  if (e.code === 'KeyM') { toggleMap(); return; }
+  if (e.code === 'KeyM') {
+    if (ended) {
+      overlay.classList.add('hidden');
+      el('postgameHud').style.display = 'block';
+    }
+    toggleMap();
+    return;
+  }
   if (mapOpen) {
     const deck = /^[1-5]$/.test(e.key) ? e.key : /^Digit([1-5])$/.exec(e.code)?.[1];
     if (deck) selectMapDeck(Number(deck));
@@ -2942,7 +2973,10 @@ const fragMat = new THREE.MeshStandardMaterial({ color: 0x39443a, roughness: 0.5
 const boomLight = { position: new THREE.Vector3(), intensity: 0 }; // virtual — global pool
 let shake = 0;
 let hitFlash = 0;
-let dmgFlash = 0, dmgAngle = 0, lastSinceHit = 99;
+let dmgFlash = 0, damageTint = 0, dmgAngle = 0;
+let lastPlayerHurtTick = player.agent.lastHurtTick ?? -1;
+let lastPlayerArmor = player.agent.armor;
+let lastPlayerHp = player.agent.hp;
 
 function throwFrag() {
   if (frags <= 0 || player.dead || !player.locked) return;
@@ -3123,14 +3157,19 @@ function drawTracker(now) {
     trk.beginPath(); trk.moveTo(R, R - 5); trk.lineTo(R - 4, R + 4); trk.lineTo(R + 4, R + 4); trk.fill();
     return;
   }
-  const pov = player.dead ? ghostAlive() : player.agent;
+  const pov = player.dead ? deathFocusAgent : player.agent;
   if (!pov) return;
-  const [px, pz] = [player.x, player.z];
+  const [px, pz] = player.dead
+    ? world.simToWorld(pov.x, pov.y, pov.deck)
+    : [player.x, player.z];
   // tracker basis = the player's ACTUAL forward/right vectors (user report:
   // radar inverted) — rotating the offset by -yaw only agreed with the
   // camera at yaw 0, because forward is (-sin, -cos), not (sin, cos)
-  const fwdX = -Math.sin(player.yaw), fwdZ = -Math.cos(player.yaw);
-  const rightX = Math.cos(player.yaw), rightZ = -Math.sin(player.yaw);
+  const povYaw = player.dead
+    ? Math.atan2(-Math.cos(pov.heading), -Math.sin(pov.heading))
+    : player.yaw;
+  const fwdX = -Math.sin(povYaw), fwdZ = -Math.cos(povYaw);
+  const rightX = Math.cos(povYaw), rightZ = -Math.sin(povYaw);
   const buf = sim.buffer;
   for (let i = 0; i < buf.count; i++) {
     if (buf.id[i] === player.agent.id) continue;
@@ -3498,7 +3537,86 @@ let _fpsEma = 16.7, _fpsWorst = 0, _fpsShownAt = 0; // top-right perf readout
 // the browser executes them in the idle gap between vsyncs
 const ticker = new TickScheduler({ stepSec: sim.dt, run: () => sim.tick() });
 let shownLost = false;
-let spectateShown = false;
+let deathStartedAt = null;
+let deathFocusAgent = null;
+const DEATH_REVIEW_MS = 3200;
+const deathCamRay = new THREE.Raycaster();
+const deathFocus = new THREE.Vector3();
+const deathDesired = new THREE.Vector3();
+const deathDirection = new THREE.Vector3();
+
+function updateAfterlife(now) {
+  const hud = el('spectatorHud');
+  document.body.classList.toggle('player-dead', player.dead);
+  if (!player.dead) {
+    if (deathStartedAt !== null) {
+      deathStartedAt = null; deathFocusAgent = null; playerFellAt = null;
+      if (!ended) overlay.classList.add('hidden');
+    }
+    const fallen = mates.find((mate) => mate.agent?.dead && mate.agent.respawnReadyAt >= 0);
+    if (!fallen) { hud.style.display = 'none'; return; }
+    const remaining = Math.max(0, Math.ceil(fallen.agent.respawnReadyAt - sim.t));
+    hud.style.display = 'block';
+    hud.querySelector('b').textContent = remaining > 0
+      ? `${(gameSync?.peerName(fallen.did) || fallen.label).toUpperCase()} · RESPAWN ${remaining}s`
+      : 'TEAMMATE READY TO RESPAWN';
+    hud.querySelector('span').textContent = sim.playerRespawnRoomSafe(player.agent)
+      ? 'HOLD HERE — THIS ROOM AND ITS ADJACENT ROOMS ARE CLEAR'
+      : 'REACH A ROOM WITH NO FLOOD HERE OR IN AN ADJACENT ROOM';
+    return;
+  }
+
+  if (deathStartedAt === null) {
+    deathStartedAt = now;
+    playerFellAt ??= sim.t;
+    document.exitPointerLock?.();
+  }
+  const teammate = livingTeammate();
+  const reviewing = now - deathStartedAt < DEATH_REVIEW_MS;
+  deathFocusAgent = !reviewing && teammate ? teammate.agent : afterlifeBody() ?? player.agent;
+  hud.style.display = 'block';
+  const name = teammate && deathFocusAgent === teammate.agent
+    ? (gameSync?.peerName(teammate.did) || teammate.label).toUpperCase()
+    : null;
+  hud.querySelector('b').textContent = name ? `SPECTATING ${name}` : 'CASUALTY CAMERA';
+  const remaining = Math.max(0, Math.ceil((player.agent.respawnReadyAt ?? -1) - sim.t));
+  if (teammate) {
+    hud.querySelector('span').textContent = remaining > 0
+      ? `RESPAWN IN ${remaining}s · YOUR TEAMMATE MUST SURVIVE`
+      : sim.playerRespawnRoomSafe(teammate.agent)
+        ? 'CLEAR ROOM CONFIRMED · REDEPLOYING'
+        : 'RESPAWN READY · WAITING FOR A ROOM WITH CLEAR ADJACENCIES';
+  } else {
+    hud.querySelector('span').textContent = reviewing
+      ? 'BODY CAMERA LOCKED · SIGNAL TRANSITIONING'
+      : 'NO SURVIVING FIRETEAM SIGNAL';
+  }
+}
+
+function placeDeathCamera(agent) {
+  const anchor = agents.cameraAnchor(agent);
+  if (!anchor) return null;
+  const lift = anchor.prone ? 0.45 : 1.05;
+  deathFocus.set(anchor.x, anchor.y + lift, anchor.z);
+  deathDesired.set(
+    anchor.x - Math.cos(anchor.heading) * 3.6,
+    anchor.y + (anchor.prone ? 1.65 : 2.15),
+    anchor.z - Math.sin(anchor.heading) * 3.6,
+  );
+  deathDirection.subVectors(deathDesired, deathFocus);
+  const distance = deathDirection.length();
+  deathCamRay.set(deathFocus, deathDirection.normalize());
+  deathCamRay.near = 0.18; deathCamRay.far = distance;
+  const hit = deathCamRay.intersectObjects(solidsForShot(), false)[0];
+  if (hit) deathDesired.copy(deathFocus).addScaledVector(deathDirection, Math.max(0.35, hit.distance - 0.28));
+  const floor = world.groundHeightAt(anchor.deck, deathDesired.x, deathDesired.z, deathDesired.y);
+  const ceiling = elevOf(anchor.deck) + world.ceilHeightAt(anchor.deck, deathDesired.x, deathDesired.z);
+  deathDesired.y = Math.max(floor + 0.3, Math.min(ceiling - 0.3, deathDesired.y));
+  camera.position.copy(deathDesired);
+  camera.lookAt(deathFocus);
+  _fillX = deathDesired.x; _fillY = deathDesired.y; _fillZ = deathDesired.z;
+  return anchor;
+}
 let last = performance.now();
 const doorMovers = [];
 function frame(now) {
@@ -3661,13 +3779,21 @@ function frame(now) {
     for (let i = 0; i < b.count; i++) b.animTime[i] += dtReal;
   }
 
-  agents.viewX = player.x; agents.viewZ = player.z; // fog-exact stamp culling
+  gameSync?.update(dtReal, now);
+  updateAfterlife(now);
+  let renderViewX = player.x, renderViewZ = player.z;
+  let renderViewFX = -Math.sin(player.yaw), renderViewFZ = -Math.cos(player.yaw);
+  if (deathFocusAgent) {
+    [renderViewX, renderViewZ] = world.simToWorld(deathFocusAgent.x, deathFocusAgent.y, deathFocusAgent.deck);
+    renderViewFX = Math.cos(deathFocusAgent.heading);
+    renderViewFZ = Math.sin(deathFocusAgent.heading);
+  }
+  agents.viewX = renderViewX; agents.viewZ = renderViewZ; // fog-exact stamp culling
   // ...and which way you are facing, so bodies behind the camera are neither
   // posed nor stamped (the instanced sets are frustumCulled=false, so every
   // stamped body is submitted regardless of where the camera points)
-  agents._viewFX = -Math.sin(player.yaw); agents._viewFZ = -Math.cos(player.yaw);
+  agents._viewFX = renderViewFX; agents._viewFZ = renderViewFZ;
   agents.update(dtReal);
-  gameSync?.update(dtReal, now);
   // the sweep voices 10-15Hz sim data; every one-shot has a >=220ms throttle
   // window, so scanning at 15Hz instead of every frame is inaudible (swarm)
   if (now - _sweepAt > 66) { _sweepAt = now; soundSweep(now); }
@@ -3684,7 +3810,8 @@ function frame(now) {
     }
     marineMap.draw(player.agent, player.dead);
   }
-  audio.setListener(player.x, player.z, player.yaw);
+  audio.setListener(renderViewX, renderViewZ,
+    deathFocusAgent ? Math.atan2(-Math.cos(deathFocusAgent.heading), -Math.sin(deathFocusAgent.heading)) : player.yaw);
   audio.alarm(sim.lastStand && !ended);
   if (sim.lastStand && !window._paLastStand) { window._paLastStand = true; audio.play('pa', null, 0.6); }
   audio.startAmbience(); // no-op until the AudioContext exists (first click)
@@ -3705,7 +3832,7 @@ function frame(now) {
   // light state tracked the wrong compartment, the active render volume and
   // the room sign followed the corpse, and the fixture pool lit rooms around
   // a body that no longer sees. One POV triple drives all of it.
-  const _povA = player.dead ? ghostAlive() : null;
+  const _povA = player.dead ? deathFocusAgent : null;
   const povNode = _povA ? _povA.node : player.agent.node;
   const povDeck = _povA ? _povA.deck : player.deck;
   let povX = player.x, povZ = player.z;
@@ -3744,7 +3871,7 @@ function frame(now) {
   // which is what a handheld actually does. The spill is a tenth of it, and
   // the viewmodel rig a four-hundredth — both ride the same dial so the whole
   // lamp brightens and dims as one.
-  torch.intensity += ((inDark ? 430 : 260) - torch.intensity) * dimT;
+  torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
   torchSpill.intensity = torch.intensity * 0.09;
   // 0.0038 put ~40 lux on the receiver — past the ~30-lux white point, so
   // the gun clipped white no matter its albedo (user: white/striped rifle).
@@ -3821,23 +3948,32 @@ function frame(now) {
   // hit feedback fades
   if (hitFlash > 0) { hitFlash = Math.max(0, hitFlash - dtReal * 5); el('hitmarker').style.opacity = hitFlash.toFixed(2); }
   // directional damage: the moment armor takes a hit, point at the attacker
-  if (player.sinceHit < lastSinceHit) {
+  const hurtTick = player.agent.lastHurtTick ?? -1;
+  if (hurtTick > lastPlayerHurtTick
+    || player.agent.armor < lastPlayerArmor || player.agent.hp < lastPlayerHp) {
     const src2 = sim.byId.get(player.agent.lastHurtBy);
     if (src2 && !src2.dead) {
       const [ax, az] = world.simToWorld(src2.x, src2.y, src2.deck);
       const bearing = Math.atan2(ax - player.x, -(az - player.z));
       dmgAngle = bearing + player.yaw;
       dmgFlash = 1;
+      damageTint = 1;
       // (the per-hit 'thud' is GONE — user: the constant banging in a brawl
       // made you mute the game. The damage flash carries the hit.)
-    } else dmgFlash = 1;
+    } else { dmgFlash = 1; damageTint = 1; }
   }
-  lastSinceHit = player.sinceHit;
+  lastPlayerHurtTick = hurtTick;
+  lastPlayerArmor = player.agent.armor;
+  lastPlayerHp = player.agent.hp;
   if (dmgFlash > 0) {
     dmgFlash = Math.max(0, dmgFlash - dtReal * 1.6);
     const dd = el('dmgdir');
     dd.style.opacity = dmgFlash.toFixed(2);
     dd.style.transform = `rotate(${(-dmgAngle * 180 / Math.PI).toFixed(1)}deg)`;
+  }
+  if (damageTint > 0) {
+    damageTint = Math.max(0, damageTint - dtReal); // one second, edge-only
+    el('damageVignette').style.opacity = (damageTint * 0.8).toFixed(2);
   }
   if (healFlash > 0) {
     healFlash = Math.max(0, healFlash - dtReal * 1.4);
@@ -3871,14 +4007,9 @@ function frame(now) {
   }
 
   // camera: your eyes — or the eyes of what you became
-  const ghost = player.dead ? ghostAlive() : null;
-  if (ghost) {
-    const [gx, gz] = world.simToWorld(ghost.x, ghost.y, ghost.deck);
-    const gy = elevOf(ghost.deck) + (ghost.downed ? 0.45 : 1.5);
-    camera.position.set(gx, gy, gz);
-    camera.rotation.set(0, 0, 0);
-    camera.rotateY(Math.atan2(-Math.cos(ghost.heading), -Math.sin(ghost.heading)));
-    _fillX = gx; _fillY = gy + 0.2; _fillZ = gz;
+  const spectating = player.dead ? deathFocusAgent : null;
+  if (spectating) {
+    placeDeathCamera(spectating);
     viewmodel.visible = false;
     flamerModel.visible = false;
   } else {
@@ -3897,17 +4028,17 @@ function frame(now) {
   // HUD — dirty-checked: unconditional textContent/style writes every frame
   // force style recalc even when nothing changed (part of the M2 stutter)
   setText('clock', fmtTime(sim.t));
-  const povAgent = ghost ?? player.agent;
+  const povAgent = spectating ?? player.agent;
   const room = sim.graph.node(povAgent.node);
   setText('room', room ? room.name : '—');
   setText('deckLabel', `DECK ${povAgent.deck}`);
   const hp = Math.max(0, Math.ceil(povAgent.hp));
-  setStyle('healthBar', 'width', `${ghost ? hp / 63 * 100 : hp / 45 * 100}%`);
-  setStyle('armorBar', 'width', `${ghost ? 0 : player.armor / 50 * 100}%`);
-  setText('hpText', ghost ? `IT ${hp}` : `${Math.ceil(player.armor)} | ${hp}`);
+  setStyle('healthBar', 'width', `${spectating ? hp / (povAgent.maxHp || 1) * 100 : hp / 45 * 100}%`);
+  setStyle('armorBar', 'width', `${spectating ? 0 : player.armor / 50 * 100}%`);
+  setText('hpText', spectating ? '' : `${Math.ceil(player.armor)} | ${hp}`);
   // the ammo readout follows whichever weapon is up: rounds for the rifle,
   // a fuel percentage for the flamer (there is nothing to count in a tank)
-  setText('ammo', ghost ? ''
+  setText('ammo', spectating ? ''
     : heldIsFlamer ? (flamer.empty ? 'TANK DRY' : `FUEL ${Math.ceil(flamer.frac * 100)}%`)
       : (weapon.reloading ? 'RELOADING' : `${weapon.mag} / ${weapon.reserve}`));
   // ...and the readout above it NAMES the weapon, with BOTH swap inputs as
@@ -3916,11 +4047,11 @@ function frame(now) {
   // sling — and naming only Q here while the hint and the briefing say "Q or
   // MOUSE WHEEL" leaves the input they are most likely to try off the one
   // readout that is always on screen.
-  setText('weaponName', ghost ? ''
+  setText('weaponName', spectating ? ''
     : `${heldIsFlamer ? 'FLAMETHROWER' : MA5.name}${hasFlamer ? inputPrompt(' · Q / WHEEL SWAP', ' · Y SWAP') : ''}`);
   { // flamer up is the HUD's orange, the same tell #roomState uses for a state change
     const wn = el('weaponName');
-    const wc = heldIsFlamer && !ghost ? 'wn-flamer' : '';
+    const wc = heldIsFlamer && !spectating ? 'wn-flamer' : '';
     if (wn.className !== wc) wn.className = wc;
   }
   // ROOM LIGHT STATE (user: note-taking between playthroughs) — the sim's
@@ -4000,19 +4131,15 @@ function frame(now) {
   updateMates();
   updateComms(now);
 
-  if (player.dead && ghost) {
-    if (!spectateShown) {
-      spectateShown = true;
-      playerFellAt ??= sim.t; // your clock stopped when it took you
-      endScreen('YOU WERE TAKEN',
-        'It is wearing you now. You can see — but it is not you moving. A player taken never seeds a carrier; it fights until it is put down.', false);
+  if (player.dead) {
+    const teammate = livingTeammate();
+    if (!teammate && deathStartedAt !== null && now - deathStartedAt >= DEATH_REVIEW_MS) {
+      const body = afterlifeBody();
+      defeatScreen(body?.faction === 4 ? 'YOU WERE TAKEN' : 'KIA',
+        body?.faction === 4
+          ? 'The thing wearing you keeps moving. Your body is still part of the ship now.'
+          : 'The ship fights on without you. The last thing you hear is the hive, singing.');
     }
-  } else if (player.dead) {
-    playerFellAt ??= sim.t;
-    defeatScreen(sim.playerConvertedTo ? 'PUT DOWN' : 'KIA',
-      sim.playerConvertedTo
-        ? 'What was left of you is finally still.'
-        : 'The ship fights on without you. The last thing you hear is the hive, singing.');
   } else if (sim.outcome === 'contained') {
     victoryScreen();
   } else if (!ended && !shownLost && sim.tickCount % 30 === 0) {

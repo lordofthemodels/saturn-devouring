@@ -1,3 +1,5 @@
+// 13: player snapshot rows carry a per-player afterlife body and the
+// authority-owned 30-second co-op respawn clock.
 // 12: snapshots carry hidden vent/shaft transit so peers cannot draw or aim
 // at a form inside the structure; player poses also carry gait speed and the
 // lobby-selected body rig.
@@ -21,7 +23,7 @@
 // positional array validated on its LENGTH, so a v2 peer would reject every
 // v3 row wholesale — the version is what keeps the two builds from meeting in
 // the same room at all instead of staring at frozen NPCs.
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 export const MAX_PLAYERS = 4;
 export const QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
 const ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;

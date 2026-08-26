@@ -44,6 +44,7 @@ export class Player extends FpsController {
     this.agent = existingAgent ?? sim.attachPlayer(startNode, { odst: true, bodyType });
     this.agent.bodyType = bodyType === 'female' ? 'female' : 'male';
     this._lastHp = this.agent.hp;
+    this._wasDead = this.dead;
 
     this._syncAgent();
   }
@@ -59,6 +60,19 @@ export class Player extends FpsController {
   step(dt) {
     if (!this.physics) { this.discardGamepadJump(); return; } // physics not attached yet — hold still
     this._prev = this._cur;
+
+    // The authority can revive this retained player agent in co-op. Re-seat
+    // the local capsule at the snapshot position once, before ordinary input
+    // resumes, so a stale death pose cannot pull the player back across ship.
+    if (this._wasDead && !this.dead) {
+      const [wx, wz] = this.world.simToWorld(this.agent.x, this.agent.y, this.agent.deck);
+      this.deck = this.agent.deck; this.x = wx; this.z = wz; this.h = 0;
+      this.vx = this.vy = this.vz = this.shoveX = this.shoveZ = 0;
+      this.climb = null; this._cancelQueue();
+      this.physics.teleportPlayer(wx, elevOf(this.deck), wz);
+      this._prev = this._cur = this._worldPose();
+    }
+    this._wasDead = this.dead;
 
     if (!this.dead) this.adoptCapsule();
     if (this.dead) { this.discardGamepadJump(); this._cur = this._worldPose(); return; }

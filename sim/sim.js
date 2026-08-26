@@ -938,6 +938,7 @@ export class Sim {
     this._refreshOccupancy();
     this._advanceDarkness(dt);
     resolveCombat(this, dt);
+    this._respawnPlayers();
 
     // scream noise from panic + grabs
     for (const a of this.agents) {
@@ -949,6 +950,48 @@ export class Sim {
     this._reap();
     this._checkOutcome();
     this.writeBuffer();
+  }
+
+  // Co-op recovery is owned by the authority and therefore arrives through
+  // the normal snapshot. A surviving player is the spawn beacon, but only
+  // when both their room and every graph-adjacent room contain no active
+  // Flood. This is topology-driven: future room layouts need no special cases.
+  _respawnPlayers() {
+    const players = this.agents.filter((a) => a.isPlayer);
+    if (players.length < 2) return;
+    for (const fallen of players) {
+      if (!fallen.dead || fallen.respawnReadyAt < 0 || this.t < fallen.respawnReadyAt) continue;
+      const anchor = players.find((a) => a.id !== fallen.id && !a.dead && a.hp > 0
+        && this.playerRespawnRoomSafe(a));
+      if (!anchor) continue;
+      const room = this.graph.node(anchor.pnode ?? anchor.node);
+      const angle = (fallen.id * 2.399963) % (Math.PI * 2);
+      const radius = 0.9;
+      fallen.node = fallen.pnode = room.idx;
+      fallen.deck = room.deck;
+      fallen.x = Math.max(room.x - room.w / 2 + 0.55,
+        Math.min(room.x + room.w / 2 - 0.55, anchor.x + Math.cos(angle) * radius));
+      fallen.y = Math.max(room.y - room.d / 2 + 0.55,
+        Math.min(room.y + room.d / 2 - 0.55, anchor.y + Math.sin(angle) * radius));
+      fallen.hp = fallen.maxHp;
+      fallen.armor = this.P.player.armor;
+      fallen.dead = false;
+      fallen.state = STATE.IDLE;
+      fallen.move = null; fallen.path = []; fallen.task = null;
+      fallen.held = 0; fallen.shoveX = 0; fallen.shoveY = 0;
+      fallen.afterlifeId = -1; fallen.respawnReadyAt = -1;
+      this.log('radio', `an ODST is back on their feet in ${room.name}`, room.idx, fallen.x, fallen.y);
+    }
+  }
+
+  playerRespawnRoomSafe(anchor) {
+    if (!anchor || anchor.dead || anchor.hp <= 0) return false;
+    const here = anchor.pnode ?? anchor.node;
+    const near = new Set([here]);
+    for (const { to } of this.graph.neighbors(here, ['std'], () => true)) near.add(to);
+    return !this.agents.some((a) => !a.dead && !a.move?.hidden && near.has(a.pnode ?? a.node)
+      && (a.faction === FACTION.INFECTION || a.faction === FACTION.CARRIER
+        || (a.faction === FACTION.COMBAT && (!a.downed ? a.hp > 0 : a.damage < 100))));
   }
 
   // LAST STAND (user note): once most of the squad marines are dead, the word

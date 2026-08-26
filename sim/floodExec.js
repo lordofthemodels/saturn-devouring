@@ -322,6 +322,13 @@ export function updateFloodTick(sim, dt) {
             const cf = spawnCombatForm(sim, body.node, body);
             cf.hostArmed = body.wasArmed === true; // the host's weapon comes up with it
             cf.transformingUntil = sim.t + sim.P.combat.thrashSec;
+            if (body.playerSourceId >= 0) {
+              cf.fromPlayer = true;
+              cf.playerSourceId = body.playerSourceId;
+              cf.bodyType = body.bodyType;
+              const player = sim.byId.get(body.playerSourceId);
+              if (player) player.afterlifeId = cf.id;
+            }
             sim.stats.conversions++; sim.stats.conversionsRound++;
             sim.removeAgent(a);
             sim.log('convert', `an infection form burrows into a corpse in ${sim.graph.node(body.node).name} — the body begins to convulse`, body.node, body.x, body.y);
@@ -386,7 +393,8 @@ export function updateFloodTick(sim, dt) {
         if (!body || body.dead || body.damage >= 100) { a.task = null; a.dragging = -1; break; }
         if (a.dragging !== body.id && a.node === body.node && !a.move) a.dragging = body.id;
         if (a.dragging === body.id) {
-          body.node = a.node; body.x = a.x; body.y = a.y - 4;
+          body.node = body.pnode = a.pnode ?? a.node;
+          body.deck = a.deck; body.x = a.x; body.y = a.y - 4;
           if (a.node === t.node && !a.move) { a.dragging = -1; a.task = null; body.claimed = false; }
           else moveToward(sim, a, t.node);
         } else moveToward(sim, a, body.node);
@@ -555,10 +563,14 @@ function convertHuman(sim, form, target) {
   // sound cue pick it up with zero extra plumbing.
   cf.transformingUntil = sim.t + sim.P.combat.thrashSec;
   if (target.isPlayer) {
-    // the player lives on inside the thing that took them: spectate-only POV
-    // (game rule), and a player form NEVER roots into a carrier
+    // The afterlife camera follows the physical thing wearing this player.
+    // Per-player linkage matters in co-op; a single global converted id made
+    // the last conversion steal every dead player's camera.
     cf.fromPlayer = true;
-    sim.playerConvertedTo = cf.id;
+    cf.playerSourceId = target.id;
+    cf.bodyType = target.bodyType;
+    target.afterlifeId = cf.id;
+    target.respawnReadyAt = sim.t + sim.P.player.respawnSec;
   }
   sim.removeAgent(form); // 1 infection form spent on a living host (§6.6)
   sim.stats.conversions++; sim.stats.conversionsRound++;

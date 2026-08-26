@@ -543,6 +543,32 @@ export class Agents3D {
     }
   }
 
+  // Stable third-person focus for death/spectator cameras. A fresh corpse
+  // follows its cosmetic ragdoll (including a grenade toss); a living target
+  // follows the same eased position used by its rendered mesh.
+  cameraAnchor(agent) {
+    if (!agent) return null;
+    const rag = this.ragdolls?.get(agent.id);
+    if (rag) return {
+      x: rag.rootPos[0], y: rag.rootPos[1], z: rag.rootPos[2],
+      deck: rag.deck, node: agent.pnode ?? agent.node, heading: agent.heading,
+      prone: true,
+    };
+    const rest = this._ragRest.get(agent.id);
+    if (rest) return {
+      x: rest[0], y: rest[1], z: rest[2],
+      deck: agent.deck, node: agent.pnode ?? agent.node, heading: agent.heading,
+      prone: agent.faction === 6 || agent.downed,
+    };
+    const rp = this.rpos.get(agent.id) ?? agent;
+    const [x, z] = this.world.simToWorld(rp.x, rp.y, rp.deck);
+    return {
+      x, y: this.world.groundHeightAt(rp.deck, x, z) + (rp.hoverY ?? 0), z,
+      deck: rp.deck, node: agent.pnode ?? agent.node, heading: agent.heading,
+      prone: agent.faction === 6 || agent.downed,
+    };
+  }
+
   // the blast the point sits inside (strongest = nearest to a centre), or null
   _blastAt(wx, wz, deck) {
     const R = this.sim.P.ragdoll;
@@ -618,20 +644,21 @@ export class Agents3D {
         return 0;
       }
       case CLIP.ATTACK:
-        // One authored-looking 580 ms whip: the right tentacle leads in a
-        // huge overhand/cross-body lash and the left follows a beat later.
+        // A fast, feral two-beat mauling motion. The old single-axis swipe
+        // disappeared head-on — exactly where the player sees a form hitting
+        // them. Both arms now cross, recoil, and lash again before settling.
         // `animTime` resets on the actual damage event, so the visual contact
         // and the physical impulse share the same beat.
         {
-          const u = Math.max(0, Math.min(1, t / 0.58));
-          const lead = Math.sin(Math.min(1, u / 0.62) * Math.PI);
-          const followU = Math.max(0, Math.min(1, (u - 0.16) / 0.72));
-          const follow = Math.sin(followU * Math.PI);
-          if (part === 'armR') return 0.18 + lead * 2.35;
-          if (part === 'armL') return 0.12 + follow * 1.95;
-          if (part === 'legL') return -lead * 0.22;
-          if (part === 'legR') return lead * 0.32;
-          if (part === 'head') return -lead * 0.18;
+          const u = Math.max(0, Math.min(1, t / 0.74));
+          const envelope = Math.sin(u * Math.PI);
+          const right = Math.sin(u * Math.PI * 3.2) * envelope;
+          const left = Math.sin((u * Math.PI * 3.2) - 1.25) * envelope;
+          if (part === 'armR') return 0.25 + right * 2.65;
+          if (part === 'armL') return -0.18 - left * 2.45;
+          if (part === 'legL') return -right * 0.28;
+          if (part === 'legR') return left * 0.34;
+          if (part === 'head') return (right - left) * 0.22;
         }
         return 0;
       case CLIP.WRITHE:
@@ -850,7 +877,22 @@ export class Agents3D {
         const add = set.adduct && (part === 'armL' || part === 'armR')
           ? (part === 'armR' ? set.adduct : -set.adduct) : 0;
         if (!ang && !add) { mesh.setMatrixAt(i, this._m); continue; }
-        if (add) {
+        const feral = clip === CLIP.ATTACK
+          && (set === this.combatCivSet || set === this.combatOdstSet)
+          && (part === 'armL' || part === 'armR');
+        if (feral) {
+          const u = Math.max(0, Math.min(1, animT / 0.74));
+          const envelope = Math.sin(u * Math.PI);
+          const side = part === 'armR' ? 1 : -1;
+          // Twist at both shoulder axes as well as the old fore/aft hinge:
+          // head-on this becomes a violent cross-body flail, not a static T.
+          (this._eHold ??= new THREE.Euler()).set(
+            add + side * envelope * 0.95,
+            side * Math.sin(u * Math.PI * 4.4 + id) * envelope * 0.75,
+            ang,
+          );
+          this._mRot.makeRotationFromEuler(this._eHold);
+        } else if (add) {
           (this._eHold ??= new THREE.Euler()).set(add, 0, ang);
           this._mRot.makeRotationFromEuler(this._eHold);
         } else this._mRot.makeRotationZ(ang);
@@ -1499,7 +1541,16 @@ export class Agents3D {
           // before the heading, so a form running along world +X did not lean
           // at all — it ROLLED, and one running along world +Z pitched. Every
           // charging form was toppling sideways in the render grid.
-          this._e.set(0, heading, -(leaping ? 0.55 : charging ? 0.42 : 0.14) + flinch);
+          let attackPitch = 0, attackYaw = 0, attackRoll = 0;
+          if (clip === CLIP.ATTACK) {
+            const u = Math.max(0, Math.min(1, animT / 0.74));
+            const envelope = Math.sin(u * Math.PI);
+            attackPitch = -0.28 * envelope;
+            attackYaw = Math.sin(u * Math.PI * 3.2) * 0.34 * envelope;
+            attackRoll = Math.sin(u * Math.PI * 4.4 + id) * 0.22 * envelope;
+          }
+          this._e.set(attackRoll, heading + attackYaw,
+            -(leaping ? 0.55 : charging ? 0.42 : 0.14) + flinch + attackPitch);
           this._q.setFromEuler(this._e);
           // a reviving form slerps out of its settled ragdoll orientation into
           // the rising pose, so there is no orientation snap to pair with the

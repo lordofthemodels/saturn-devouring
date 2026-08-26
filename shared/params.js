@@ -176,7 +176,10 @@ export const PARAMS = {
   // old ODST numbers exactly.
   // NO AUTO-REGEN (user: shields replaced by armor) — armor soaks damage
   // before health and comes back ONLY from armor packs found in the world.
-  player: { armor: 50 },
+  player: {
+    armor: 50,
+    respawnSec: 30,
+  },
   // racked in the armory + scattered through the ship, per boarder — same
   // machinery as med packs: seed-stable pools, issued as players attach,
   // used on the spot with E, restores armor to full.
@@ -299,7 +302,7 @@ export const PARAMS = {
     // swing: 18 dmg / 0.9 s = the same 20 dps sustained, delivered in chunks.
     combatForm: { hp: 90, dps: 20, hpJitter: 0.18,   // spawn hp varies ±18%
                   swing: {
-                    dmg: 18, cooldownSec: 0.9, animSec: 0.58,
+                    dmg: 18, cooldownSec: 0.9, animSec: 0.74,
                     // A grounded whip drops a body nearby. A running strike
                     // carries farther; an airborne pounce can clear a room.
                     standSpeed: 5.5, chargeBonus: 3.5, jumpBonus: 7.0,
@@ -314,7 +317,7 @@ export const PARAMS = {
                     // enough to break your stride and your aim, not enough to
                     // fling you across the compartment.
                     shoveMps: 3.6,        // an NPC on its feet
-                    shovePlayerMps: 4.4,  // you, who can feel it — a hard stagger
+                    shovePlayerMps: 7.0,  // ~1 m of visible displacement before the controller damps it
                   } },
     hostWeaponDps: 5,          // nominal (shaft pools / hive estimates)
     // the armed MINORITY of forms spray the host's weapon one-handed and
