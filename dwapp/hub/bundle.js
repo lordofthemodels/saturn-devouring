@@ -96414,7 +96414,7 @@ var PEER_FAILURE_EVENTS = /* @__PURE__ */ new Set(["room_dial_failed", "room_acc
 var TURN_CREDENTIALS_PATH = "/api/turn-credentials";
 var isBrowserRelayUrl = (url) => typeof url === "string" && url.startsWith("turn") && !/^turns?:[^/?#]+:53(?:[/?#]|$)/i.test(url);
 function cancelledJoinError() {
-  const error2 = new Error("multiplayer join cancelled");
+  const error2 = new Error("co-op join cancelled");
   error2.code = "JOIN_CANCELLED";
   return error2;
 }
@@ -96427,7 +96427,7 @@ var PeerConnectionError = class extends Error {
 };
 var SignalingConnectionError = class extends Error {
   constructor({ cause } = {}) {
-    super("Could not reach the multiplayer matchmaking service. Check the connection and try again.", { cause });
+    super("Could not reach the co-op matchmaking service. Check the connection and try again.", { cause });
     this.name = "SignalingConnectionError";
     this.code = "SIGNALING_UNAVAILABLE";
   }
@@ -96799,7 +96799,7 @@ var BrowserSession = class extends SessionBase {
 };
 async function browserSession({ roomId, name, identity: suppliedIdentity, signal }) {
   if (!globalThis.RTCPeerConnection || !globalThis.WebSocket || !globalThis.crypto?.subtle) {
-    const error2 = new Error("This browser does not provide the WebRTC and WebCrypto features multiplayer requires.");
+    const error2 = new Error("This browser does not provide the WebRTC and WebCrypto features co-op requires.");
     error2.code = "BROWSER_UNSUPPORTED";
     throw error2;
   }
@@ -98811,7 +98811,7 @@ async function joinLobby(mode) {
       await failedSession?.close().catch(() => {
       });
       if (error2?.code !== "JOIN_CANCELLED") {
-        displayError(error2.message || "Could not open the multiplayer room.");
+        displayError(error2.message || "Could not open the co-op room.");
       }
     }
   } finally {
