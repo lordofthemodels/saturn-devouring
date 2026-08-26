@@ -80800,14 +80800,16 @@ function tex(name) {
 }
 function buildRifleViewmodel() {
   const group = new Group();
-  const bodyMat = new MeshStandardMaterial({
-    color: MA5_GUNMETAL,
-    roughness: 0.9,
-    metalness: 0.08
+  const bodyMat = new MeshBasicMaterial({ color: MA5_GUNMETAL });
+  const decalMat = (name) => new MeshBasicMaterial({
+    map: tex(name),
+    transparent: true,
+    alphaTest: 0.02,
+    depthWrite: false
   });
-  const dispMat = new MeshStandardMaterial({ map: tex("display"), emissive: 16777215, emissiveMap: tex("display"), emissiveIntensity: 0.8, roughness: 0.6 });
-  const compassMat = new MeshStandardMaterial({ map: tex("compass"), emissive: 16777215, emissiveMap: tex("compass"), emissiveIntensity: 0.8 });
-  const numberMat = (d2) => new MeshStandardMaterial({ map: tex(`number-${d2}`), emissive: 16777215, emissiveMap: tex(`number-${d2}`), emissiveIntensity: 1.1, transparent: true });
+  const dispMat = decalMat("display");
+  const compassMat = decalMat("compass");
+  const numberMat = (d2) => decalMat(`number-${d2}`);
   group.add(new Mesh(geometryFor("grip"), bodyMat));
   group.add(new Mesh(geometryFor("gun"), bodyMat));
   group.add(new Mesh(geometryFor("Screen1"), dispMat));
@@ -80962,7 +80964,7 @@ var init_rifle_model = __esm({
   "game/rifle-model.js"() {
     init_three_webgpu_module();
     init_rifle_model_data();
-    MA5_GUNMETAL = 197637;
+    MA5_GUNMETAL = 526861;
     RIFLE_MUZZLE = new Vector3(0, 0.015, 0.515);
     GUN_TUNE = { x: 0.1485, y: -0.235, z: 0.2115, ry: -0.08, rx: -0.045, rz: 0.02, s: 1.15 };
     texLoader = new TextureLoader();
