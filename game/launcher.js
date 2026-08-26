@@ -1,4 +1,5 @@
 import { joinMultiplayerRoom } from '../multiplayer/session.js';
+import { StandardGamepad } from './gamepad.js';
 import {
   MAX_PLAYERS,
   PROTOCOL_VERSION,
@@ -44,6 +45,7 @@ import {
 const byId = (id) => document.getElementById(id);
 const launcher = byId('launcher');
 const pages = [...document.querySelectorAll('[data-launch-page]')];
+const launcherGamepad = new StandardGamepad();
 const lobbyNames = new Map();
 let session = null;
 let lobbyMode = null;
@@ -77,6 +79,89 @@ let lobbyMaintenanceTimer = 0;
 let singletonSettleTimer = 0;
 let lobbyMaintenanceBusy = false;
 let lobbyTransportError = '';
+
+function setInputMode(mode) {
+  document.body.dataset.input = mode;
+}
+
+window.addEventListener('keydown', () => setInputMode('keyboard'), true);
+window.addEventListener('pointerdown', () => setInputMode('keyboard'), true);
+
+function visibleLauncherControls() {
+  return [...launcher.querySelectorAll('button, input, [tabindex]')].filter((control) => (
+    !control.disabled && control.tabIndex >= 0 && !control.closest('[hidden]')
+    && control.getClientRects().length > 0
+  ));
+}
+
+function moveLauncherFocus(dx, dy) {
+  const controls = visibleLauncherControls();
+  if (!controls.length) return;
+  const current = document.activeElement;
+  if (!controls.includes(current)) {
+    (controls.find((control) => control.matches('.hub-button.primary')) ?? controls[0]).focus();
+    return;
+  }
+  if (current.matches('[data-doc-tab]')) {
+    const tabs = [...document.querySelectorAll('[data-doc-tab]')];
+    const direction = dx > 0 || dy > 0 ? 1 : -1;
+    const next = tabs[(tabs.indexOf(current) + direction + tabs.length) % tabs.length];
+    next.click();
+    next.focus();
+    return;
+  }
+  const from = current.getBoundingClientRect();
+  const fx = from.left + from.width / 2;
+  const fy = from.top + from.height / 2;
+  let best = null;
+  let bestScore = Infinity;
+  for (const candidate of controls) {
+    if (candidate === current) continue;
+    const rect = candidate.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const along = (cx - fx) * dx + (cy - fy) * dy;
+    if (along <= 1) continue;
+    const across = Math.abs((cx - fx) * dy - (cy - fy) * dx);
+    const score = along + across * 2.5;
+    if (score < bestScore) { best = candidate; bestScore = score; }
+  }
+  best?.focus({ preventScroll: true });
+  best?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+let launcherNavDirection = '';
+let launcherNavRepeatAt = 0;
+function launcherGamepadFrame(now) {
+  requestAnimationFrame(launcherGamepadFrame);
+  if (launcher.hidden) return;
+  const state = launcherGamepad.poll();
+  if (!state.connected) return;
+  if (state.used) setInputMode('gamepad');
+  if (document.body.dataset.input !== 'gamepad') return;
+
+  const direction = state.navY < 0 ? 'up' : state.navY > 0 ? 'down'
+    : state.navX < 0 ? 'left' : state.navX > 0 ? 'right' : '';
+  if (!direction) {
+    launcherNavDirection = '';
+  } else if (direction !== launcherNavDirection || now >= launcherNavRepeatAt) {
+    const vectors = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+    moveLauncherFocus(...vectors[direction]);
+    launcherNavRepeatAt = now + (direction === launcherNavDirection ? 110 : 360);
+    launcherNavDirection = direction;
+  }
+
+  if (state.pressed('a')) {
+    const active = document.activeElement;
+    if (!visibleLauncherControls().includes(active)) moveLauncherFocus(0, 1);
+    else if (active.matches('button')) active.click();
+    else active.focus();
+  }
+  if (state.pressed('b')) {
+    if (document.activeElement?.matches('input:not([readonly])')) document.activeElement.blur();
+    else document.querySelector('[data-launch-page]:not([hidden]) .hub-back')?.click();
+  }
+}
 
 const lobbyRevisionKey = (id, host) => `${String(id)}\u0000${String(host)}`;
 
@@ -1222,17 +1307,23 @@ byId('join-private').addEventListener('click', () => joinLobby('join'));
 byId('lobby-start').addEventListener('click', startMatch);
 byId('lobby-leave').addEventListener('click', leaveLobby);
 byId('voice-toggle').addEventListener('click', toggleVoice);
-byId('copy-invite').addEventListener('click', async () => {
+byId('copy-invite').addEventListener('click', async (event) => {
   const input = byId('invite-value');
+  const button = byId('copy-invite');
   input.select();
+  if (!event.isTrusted) {
+    button.textContent = 'TAP OR ENTER TO COPY';
+    setTimeout(() => { button.textContent = 'COPY CODE'; }, 1800);
+    return;
+  }
   try {
     await navigator.clipboard.writeText(input.value);
-    byId('copy-invite').textContent = 'COPIED';
+    button.textContent = 'COPIED';
   } catch {
     document.execCommand?.('copy');
-    byId('copy-invite').textContent = 'SELECTED';
+    button.textContent = 'SELECTED';
   }
-  setTimeout(() => { byId('copy-invite').textContent = 'COPY CODE'; }, 1800);
+  setTimeout(() => { button.textContent = 'COPY CODE'; }, 1800);
 });
 
 byId('player-name').value = savedName();
@@ -1243,6 +1334,7 @@ else if (initialRoute.startsWith('docs')) {
   const requested = initialRoute.split('/')[1];
   document.querySelector(`[data-doc-tab="${requested}"]`)?.click();
 } else showPage('menu');
+requestAnimationFrame(launcherGamepadFrame);
 
 function launcherObservation() {
   const activePage = pages.find((page) => !page.hidden)?.dataset.launchPage || 'menu';

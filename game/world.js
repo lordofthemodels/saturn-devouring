@@ -21,6 +21,13 @@ export const DOOR_W = 1.7;      // doorway opening width
 const WALL_T = 0.16;
 const HATCH = 1.8;              // hatch hole side
 
+export function armoryStations(room) {
+  return {
+    ammo: { x: room.x - 1.0, y: room.y + room.d / 2 - 0.6 },
+    flamer: { x: room.x + room.w / 2 - 1.1, y: room.y + room.d / 2 - 1.1 },
+  };
+}
+
 function segDist2(px, py, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
   const L2 = vx * vx + vy * vy;
@@ -1380,6 +1387,7 @@ export class World {
     if (idx === undefined) return;
     const n = g.node(idx);
     const [cx, cz] = this.simToWorld(n.x, n.y, n.deck);
+    const stations = armoryStations(n);
     const elev = elevOf(n.deck);
     const rackMat = new THREE.MeshStandardMaterial({ color: 0x3a4149, roughness: 0.6, metalness: 0.7 });
     const gunMat = new THREE.MeshStandardMaterial({ color: 0x181c20, roughness: 0.5, metalness: 0.6 });
@@ -1418,20 +1426,20 @@ export class World {
       add(crate, sx, sy, 0.55, 0.45, c < 4);
     }
     // ammo cans: two neat rows on a low shelf along the fore (+Z) wall
-    const shelfZ = cz + n.d / 2 - 0.6;
+    const [shelfX, shelfZ] = this.simToWorld(stations.ammo.x, stations.ammo.y, n.deck);
     const shelf = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.5, 0.7), rackMat);
-    shelf.position.set(cx - 1.0, elev + 0.25, shelfZ);
-    { const [sx, sy] = this.worldToSim(cx - 1.0, shelfZ, n.deck); add(shelf, sx, sy, 2.9, 0.55); }
+    shelf.position.set(shelfX, elev + 0.25, shelfZ);
+    add(shelf, stations.ammo.x, stations.ammo.y, 2.9, 0.55);
     for (let k = 0; k < 8; k++) {
       const can = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.3, 0.3), ammoMat);
-      can.position.set(cx - 3.4 + k * 0.68, elev + 0.65, shelfZ);
+      can.position.set(shelfX - 2.4 + k * 0.68, elev + 0.65, shelfZ);
       this.scene.add(can);
     }
     // the flamethrower: red twin tanks on a stand, alone — you notice it
-    const fx = cx + n.w / 2 - 1.1, fz = cz + n.d / 2 - 1.1;
+    const [fx, fz] = this.simToWorld(stations.flamer.x, stations.flamer.y, n.deck);
     const stand = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.85, 0.55), rackMat);
     stand.position.set(fx, elev + 0.425, fz);
-    { const [sx, sy] = this.worldToSim(fx, fz, n.deck); add(stand, sx, sy, 0.5, 0.42); }
+    add(stand, stations.flamer.x, stations.flamer.y, 0.5, 0.42);
     for (const off of [-0.15, 0.15]) {
       const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.75, 10), tankMat);
       tank.position.set(fx + off, elev + 1.25, fz);

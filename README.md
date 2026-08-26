@@ -136,10 +136,18 @@ behavior inspectable and reproducible.
 ## Controls
 
 - `WASD` move, mouse look, click fire
-- `E` take ammunition or a rifle, `R` reload, `F` melee
+- `E` picks up or uses ammunition, health, armor, and weapons; `R` reloads and `F` melees
 - `L` use ladders or stair transitions
-- `M` tactical map, `G` give a magazine to a fireteam member
+- `M` tactical map, `G` throw a frag, `T` give a magazine to a fireteam member
 - `1` follow, `2` hold, `3` advance
 
-The launcher and developer docs are keyboard navigable. Voice can be muted in
-the lobby or from the in-game network HUD.
+Standard Xbox/XInput controllers use Halo 3's core layout: left stick move,
+right stick look, `A` jump, `RT` fire, `LT` frag, `RB` action/reload, `B`
+melee, and `Y` swap weapons. The contextual `RB` action handles every pickup
+(ammunition, health, armor, and weapons) plus ladders; it reloads only when no
+contextual action is available. `L3` sprints, `View` opens the tactical map,
+and the D-pad issues fireteam orders. The launcher, lobby, briefing, tactical
+map, end screens, and contextual prompts are controller-aware.
+
+The launcher and developer docs are keyboard and controller navigable. Voice
+can be muted in the lobby or from the in-game network HUD.

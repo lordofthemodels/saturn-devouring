@@ -27,8 +27,21 @@ import { PostFX } from '../engine/post.js';
 import { LightPool } from '../engine/lights.js';
 import { createRenderer, installDeviceLostReload, QualityGovernor, TickScheduler } from '../engine/runtime.js';
 import { createGameSync } from '../multiplayer/game-sync.js';
+import { StandardGamepad, halo3Actions } from './gamepad.js';
 
 const canvas = document.getElementById('c');
+const gamepad = new StandardGamepad();
+let inputMode = document.body.dataset.input === 'gamepad' ? 'gamepad' : 'keyboard';
+let refreshInputModeCopy = () => {};
+function setInputMode(mode) {
+  if (inputMode === mode) return;
+  inputMode = mode;
+  document.body.dataset.input = mode;
+  refreshInputModeCopy();
+}
+const inputPrompt = (keyboard, controller) => inputMode === 'gamepad' ? controller : keyboard;
+window.addEventListener('keydown', () => setInputMode('keyboard'), true);
+window.addEventListener('pointerdown', () => setInputMode('keyboard'), true);
 // PERF (user: unusable frame rate on an M4 Air): MSAA off — the post chain
 // makes canvas MSAA pure waste (FXAA in the grade handles edges) — and the
 // pixel ratio caps at 1.25 instead of 2. Retina pr2 was rendering ~4M px
@@ -348,10 +361,10 @@ const gameSync = createGameSync({
 const isSimAuthority = () => !LAUNCH.session || gameSync?.isAuthority();
 // mic state, mirrored from the voice stack for the comms roster
 let voiceMuted = false, voiceActive = false, voiceBlocked = false;
+const gameVoice = document.getElementById('gameVoice');
 if (LAUNCH.session) {
   const networkHud = document.getElementById('networkHud');
   const networkState = document.getElementById('networkState');
-  const gameVoice = document.getElementById('gameVoice');
   networkHud.hidden = false;
   const updateNetwork = () => {
     const online = new Set(LAUNCH.session.roster().map((peer) => peer.did));
@@ -437,6 +450,15 @@ function toggleMap(open = !mapOpen) {
 }
 const audio = new GameAudio();
 canvas.addEventListener('click', () => audio.ensure());
+const audioGate = document.getElementById('audioGate');
+const ensureTrustedAudio = () => audio.ensure();
+window.addEventListener('keydown', ensureTrustedAudio, true);
+window.addEventListener('pointerdown', ensureTrustedAudio, true);
+audioGate.addEventListener('click', ensureTrustedAudio);
+function syncAudioGate() {
+  audioGate.hidden = !(inputMode === 'gamepad' && introGone
+    && (!audio.ctx || audio.ctx.state !== 'running'));
+}
 
 // SOUND BOARD (user: "the sounds are so goofy, create a menu item where i can
 // play each sound one at a time and i can tell you which im talking about").
@@ -1126,7 +1148,10 @@ player.onFlamerTaken = () => {
       // the first time. The user played a whole run without discovering Q.
       // Both channels: the radio log keeps it (it scrolls, but it is there to
       // scroll back to), the hint line puts it under the reticle right now.
-      sim.log('combat', 'flamethrower up — Q, or the mouse wheel UP, brings the MA5 back');
+      sim.log('combat', inputPrompt(
+        'flamethrower up — Q, or the mouse wheel UP, brings the MA5 back',
+        'flamethrower up — Y brings the MA5 back',
+      ));
       swapHintAt = performance.now();
     }
   }
@@ -1384,6 +1409,7 @@ const INTRO_BODY = [
 const INTRO_MISSION = 'MISSION: SURVIVE. CONTAIN.';
 const INTRO_TOTAL = INTRO_BODY.length + INTRO_MISSION.length;
 const intro = el('intro'), introText = el('introText'), introMission = el('introMission'), introHint = el('introHint');
+const introScroll = el('introScroll');
 let introChars = 0, introDone = false, introGone = false;
 function introRender() {
   introText.textContent = INTRO_BODY.slice(0, Math.min(introChars, INTRO_BODY.length));
@@ -1391,7 +1417,7 @@ function introRender() {
     ? INTRO_MISSION.slice(0, introChars - INTRO_BODY.length) : '';
   if (introChars >= INTRO_TOTAL && !introDone) {
     introDone = true;
-    introHint.textContent = 'CLICK TO DEPLOY';
+    introHint.textContent = inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY');
     introHint.classList.add('ready');
   }
 }
@@ -1421,7 +1447,9 @@ function dismissIntro() {
   intro.style.display = 'none';
   overlay.classList.add('hidden');
   audio.ensure();
-  canvas.requestPointerLock()?.catch?.(() => {}); // sandboxed iframes refuse — not fatal
+  if (inputMode !== 'gamepad') {
+    canvas.requestPointerLock()?.catch?.(() => {}); // sandboxed iframes refuse — not fatal
+  }
 }
 intro.addEventListener('click', () => {
   if (introDone) dismissIntro();
@@ -1439,21 +1467,50 @@ const ghostAlive = () => {
   const gh = sim.playerConvertedTo ? sim.byId.get(sim.playerConvertedTo) : null;
   return gh && !gh.dead && gh.damage < 100 ? gh : null;
 };
-overlay.addEventListener('click', () => {
+overlay.addEventListener('click', (event) => {
+  if (event.target.closest('button') || ended) return;
+  if (gamepadPaused) { resumeGamepadControls(); return; }
   if (player.dead && !ghostAlive()) return;
   overlay.classList.add('hidden');
   if (!player.dead) canvas.requestPointerLock()?.catch?.(() => {});
 });
 let ended = false;
+const KEYBOARD_CONTROLS = 'WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use · R reload · F melee · Q / WHEEL swap · L climb · M map · SHIFT sprint';
+const CONTROLLER_CONTROLS = 'HALO 3 · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB pick up / use / climb / reload · B melee · Y swap · L3 sprint · VIEW map · D-PAD orders';
+function refreshOverlayPrompt() {
+  if (!introGone) {
+    introHint.textContent = introDone
+      ? inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY')
+      : inputPrompt('ANY KEY OR CLICK — SKIP', 'ANY BUTTON — SKIP');
+  }
+  if (overlay.dataset.screen === 'pause') {
+    const voice = !LAUNCH.session ? ''
+      : voiceBlocked ? ' · TAP SCREEN OR PRESS A KEY FOR TEAM AUDIO'
+        : voiceActive ? ` · Y ${voiceMuted ? 'UNMUTE' : 'MUTE'} MIC`
+          : ' · TAP MIC TO ENABLE VOICE';
+    overlay.querySelector('.keys').textContent = inputPrompt(
+      `${KEYBOARD_CONTROLS} · CLICK — return to action`,
+      `${CONTROLLER_CONTROLS} · A / MENU resume${voice}`,
+    );
+  } else if (overlay.dataset.screen === 'result') {
+    overlay.querySelector('.keys').textContent = inputPrompt(
+      'TAB / ARROWS choose · ENTER activate',
+      'D-PAD / LEFT STICK choose · A activate · share/copy require tap or Enter',
+    );
+  } else if (overlay.dataset.screen === 'watch') {
+    overlay.querySelector('.keys').textContent = inputPrompt('click to keep watching', 'A — keep watching');
+  }
+}
+refreshInputModeCopy = refreshOverlayPrompt;
+refreshOverlayPrompt();
 function endScreen(title, text, final = true) {
   if (ended) return;
   if (final) ended = true;
   document.exitPointerLock?.();
   el('ovTitle').textContent = title;
   el('ovText').textContent = text;
-  overlay.querySelector('.keys').textContent = final
-    ? 'reload the page for a new run (add ?seed=... for a specific ship)'
-    : 'click to keep watching';
+  overlay.dataset.screen = final ? 'result' : 'watch';
+  refreshOverlayPrompt();
   overlay.classList.remove('hidden');
 }
 
@@ -1512,18 +1569,25 @@ function resultCard({ headline, color, label, secs, share }) {
     + `<div style="margin-top:10px;color:#8fa8c4;letter-spacing:0.18em;font-size:11px">${label}</div>`
     + `<div style="font:700 40px/1.1 ui-monospace,Menlo,monospace;color:#e8eef7">${time}</div>`
     + `<div style="margin-top:14px;color:#6a7686">${sim.stats.combatFormsDowned} forms put down · seed ${escq(sim.seed)}</div>`
+    + '<textarea id="resultShareText" readonly aria-label="Share result text"></textarea>'
     + `<div id="shareRow" style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"></div>`
     + `<div id="shareNote" style="margin-top:8px;height:16px;color:#7fd1a0;font-size:11px"></div>`;
   overlay.querySelector('.keys').before(card);
 
   const row = card.querySelector('#shareRow');
   const note = card.querySelector('#shareNote');
-  const mkBtn = (label, fn) => {
+  const shareText = card.querySelector('#resultShareText');
+  shareText.value = `${share}\n${url}`;
+  const activationFallback = (button) => {
+    shareText.select();
+    button.focus({ preventScroll: true });
+    note.textContent = 'tap this action or press Enter; result text is available above';
+  };
+  const mkBtn = (label, fn, requiresActivation = false) => {
     const b = document.createElement('button');
     b.textContent = label;
-    b.style.cssText = 'background:#16283a;color:#9fd8ff;border:1px solid #2f4a63;'
-      + 'padding:7px 16px;font:11px ui-monospace,monospace;letter-spacing:0.1em;cursor:pointer';
-    b.onclick = fn;
+    if (requiresActivation) b.dataset.requiresActivation = 'true';
+    b.onclick = (event) => requiresActivation && !event.isTrusted ? activationFallback(b) : fn();
     row.appendChild(b);
     return b;
   };
@@ -1532,15 +1596,17 @@ function resultCard({ headline, color, label, secs, share }) {
       await navigator.clipboard.writeText(`${share}\n${url}`);
       note.textContent = 'copied to clipboard';
     } catch { note.textContent = 'clipboard blocked — select the text above'; }
-  });
+  }, true);
   mkBtn('POST TO X', () => {
-    window.open(`https://x.com/intent/tweet?text=${encodeURIComponent(share)}&url=${encodeURIComponent(url)}`,
-      '_blank', 'noopener');
+    location.href = `https://x.com/intent/tweet?text=${encodeURIComponent(share)}&url=${encodeURIComponent(url)}`;
   });
   // phones and Safari get the real share sheet; everything else has the two above
   if (navigator.share) {
-    mkBtn('SHARE…', () => navigator.share({ title: 'Halo Charon', text: share, url }).catch(() => {}));
+    mkBtn('SHARE…', () => navigator.share({ title: 'Halo Charon', text: share, url }).catch(() => {}), true);
   }
+  const restart = mkBtn('PLAY AGAIN', () => location.reload());
+  restart.dataset.primary = 'true';
+  restart.focus({ preventScroll: true });
 }
 
 let lastEvent = 0;
@@ -2296,7 +2362,10 @@ resize();
 // --- firing: MA5 events route into the sim's own damage model. Every shot
 // is LOUD. Through-deck shots work when you and the target share an open
 // vertical shaft's line ---
-let fireHeld = false, reloadPressed = false, meleePressed = false;
+let fireHeld = false, gamepadFireHeld = false, reloadPressed = false, meleePressed = false;
+let gamepadPaused = false;
+let gamepadMapNavX = 0;
+let gamepadOverlayNav = 0;
 canvas.addEventListener('mousedown', (e) => { if (e.button === 0) fireHeld = true; });
 window.addEventListener('mouseup', (e) => { if (e.button === 0) fireHeld = false; });
 let fragPressed = false;
@@ -2334,6 +2403,18 @@ window.addEventListener('wheel', (e) => {
 }, { passive: true });
 window.addEventListener('keydown', (e) => {
   if (!introGone) return; // still on the briefing — keys only skip the typing
+  if (ended && !overlay.classList.contains('hidden')) {
+    if (e.code === 'Tab') {
+      e.preventDefault();
+      moveOverlayTabFocus(e.shiftKey ? -1 : 1);
+      return;
+    }
+    if (['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown'].includes(e.code)) {
+      e.preventDefault();
+      moveOverlayFocus(e.code === 'ArrowLeft' || e.code === 'ArrowUp' ? -1 : 1);
+      return;
+    }
+  }
   if (e.code === 'KeyM') { toggleMap(); return; }
   if (mapOpen) {
     const deck = /^[1-5]$/.test(e.key) ? e.key : /^Digit([1-5])$/.exec(e.code)?.[1];
@@ -2354,10 +2435,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ') swapWeapon();
   // AMMO ECONOMY (user): T hands a mag from your reserve to the neediest
   // fireteam marine in reach — they burn real magazines now (combat.js)
-  if (e.code === 'KeyT' && !player.dead && weapon.reserve >= 32) {
-    const took = sim.giveMag(player.agent);
-    if (took) weapon.reserve -= 32;
-  }
+  if (e.code === 'KeyT') giveMagazine();
   // FIRETEAM ORDERS (review P1): the sim's command layer, on your keys
   if (!player.dead && player.locked) {
     if (e.code === 'Digit1') setOrder('follow');
@@ -2365,6 +2443,164 @@ window.addEventListener('keydown', (e) => {
     else if (e.code === 'Digit3') setOrder('advance');
   }
 });
+
+function giveMagazine() {
+  if (player.dead || weapon.reserve < 32) return;
+  if (sim.giveMag(player.agent)) weapon.reserve -= 32;
+}
+
+function contextualActionAvailable() {
+  if (player.dead) return false;
+  return !!(player.flamerSource(hasFlamer, flamer.frac)
+    || player.medkitSource()
+    || player.armorSource()
+    || player.ammoSource()
+    || world.trunkAt(player.deck, player.x, player.z));
+}
+
+function moveOverlayFocus(direction) {
+  const controls = [...overlay.querySelectorAll('#victoryCard button')];
+  if (!controls.length) return;
+  const current = controls.indexOf(document.activeElement);
+  const fallback = controls.findIndex((button) => button.dataset.primary === 'true');
+  const index = current < 0 ? Math.max(0, fallback)
+    : (current + direction + controls.length) % controls.length;
+  controls[index].focus({ preventScroll: true });
+}
+
+function moveOverlayTabFocus(direction) {
+  const controls = [...overlay.querySelectorAll('#victoryCard textarea, #victoryCard button')];
+  if (!controls.length) return;
+  const current = controls.indexOf(document.activeElement);
+  const fallback = controls.findIndex((control) => control.dataset.primary === 'true');
+  const index = current < 0 ? Math.max(0, fallback)
+    : (current + direction + controls.length) % controls.length;
+  controls[index].focus({ preventScroll: true });
+}
+
+function pauseGamepadControls() {
+  if (ended || gamepadPaused) return;
+  gamepadPaused = true;
+  gamepadFireHeld = false;
+  player.setGamepadInput(null);
+  document.exitPointerLock?.();
+  el('ovTitle').textContent = 'CONTROLS RELEASED';
+  el('ovText').textContent = LAUNCH.session
+    ? 'The fireteam and ship simulation continue while your controls are released.'
+    : 'The ship simulation continues while your controls are released.';
+  overlay.dataset.screen = 'pause';
+  refreshOverlayPrompt();
+  overlay.classList.remove('hidden');
+}
+
+function resumeGamepadControls() {
+  if (!gamepadPaused) return;
+  gamepadPaused = false;
+  delete overlay.dataset.screen;
+  overlay.classList.add('hidden');
+  audio.ensure();
+}
+
+function handleGamepad(state, dt) {
+  if (state.used) setInputMode('gamepad');
+  if (!state.connected || inputMode !== 'gamepad') {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    return;
+  }
+
+  if (!introGone) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    if (introDone) introHint.textContent = inputPrompt('CLICK TO DEPLOY', 'A — DEPLOY');
+    if (state.used && !introDone) {
+      introChars = INTRO_TOTAL;
+      introRender();
+    } else if (introDone) {
+      const lookScroll = Math.abs(state.lookY) > 0.3 ? state.lookY * 12 : 0;
+      introScroll.scrollTop += state.navY * 8 + lookScroll;
+      if (state.pressed('a')) dismissIntro();
+    }
+    return;
+  }
+
+  if (gamepadPaused) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    refreshOverlayPrompt();
+    if (state.pressed('view')) {
+      resumeGamepadControls();
+      toggleMap(true);
+    } else if (state.pressed('y') && LAUNCH.session && voiceActive && !voiceBlocked) {
+      gameVoice.click();
+    } else if (state.pressed('a') || state.pressed('menu')) resumeGamepadControls();
+    return;
+  }
+
+  if (!overlay.classList.contains('hidden')) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    refreshOverlayPrompt();
+    if (ended) {
+      const nav = state.navY || state.navX;
+      if (nav && nav !== gamepadOverlayNav) moveOverlayFocus(nav > 0 ? 1 : -1);
+      gamepadOverlayNav = nav;
+      if (state.pressed('a')) {
+        const focused = document.activeElement;
+        if (focused?.closest?.('#victoryCard')) focused.click();
+        else moveOverlayFocus(1);
+      }
+    } else if (state.pressed('a')) {
+      overlay.classList.add('hidden');
+      delete overlay.dataset.screen;
+    }
+    return;
+  }
+  gamepadOverlayNav = 0;
+
+  if (state.pressed('menu')) {
+    pauseGamepadControls();
+    return;
+  }
+  if (state.pressed('view')) toggleMap();
+  if (mapOpen) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    if (state.pressed('b')) toggleMap(false);
+    else if (state.navX && state.navX !== gamepadMapNavX) {
+      selectMapDeck(Math.max(1, Math.min(5, marineMap.selectedDeck() + state.navX)));
+    }
+    gamepadMapNavX = state.navX;
+    return;
+  }
+  gamepadMapNavX = 0;
+
+  const actions = halo3Actions(state, contextualActionAvailable());
+  player.setGamepadInput({
+    active: true,
+    moveX: state.moveX,
+    moveY: state.moveY,
+    lookX: state.lookX,
+    lookY: state.lookY,
+    sprint: state.held('leftStick'),
+    jump: actions.jumpHeld,
+    jumpPressed: actions.jumpPressed,
+    interact: actions.interactHeld,
+    interactPressed: actions.interactPressed,
+  });
+  player.stepGamepadLook(dt);
+  gamepadFireHeld = actions.fireHeld;
+  if (!player.dead && player.locked) {
+    if (actions.reloadPressed) reloadPressed = true;
+    if (actions.swapPressed) swapWeapon();
+    if (actions.meleePressed) meleePressed = true;
+    if (actions.grenadePressed) fragPressed = true;
+    if (state.pressed('dpadUp')) setOrder('follow');
+    else if (state.pressed('dpadLeft')) setOrder('hold');
+    else if (state.pressed('dpadRight')) setOrder('advance');
+    else if (state.pressed('dpadDown')) giveMagazine();
+  }
+}
 
 // the neediest fireteam marine in hand-off reach, throttled to ~3Hz —
 // drives the "T — hand a mag" hint (ammo economy)
@@ -3275,6 +3511,8 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dtReal = Math.min(0.1, (now - last) / 1000);
   last = now;
+  handleGamepad(gamepad.poll(), dtReal);
+  syncAudioGate();
 
   // fixed-timestep player physics: step the Rapier world in whole PHYS_DT
   // increments (deterministic — replay/lockstep depend on it), letting the
@@ -3306,7 +3544,7 @@ function frame(now) {
   // reach the rifle with the flamer out, so you can top the MA5 up while the
   // torch is in your hands and butt-stroke something that gets inside the
   // stream's minimum useful range.
-  const triggerLive = fireHeld && player.locked && !player.dead;
+  const triggerLive = (fireHeld || gamepadFireHeld) && player.locked && !player.dead;
   // MELEE IS A WEAPON, so it obeys the same liveness the trigger does. It was
   // the only attack that didn't: a KIA player on the death screen — or one
   // converted and spectating as a GHOST, whose camera.position is the ghost's
@@ -3677,7 +3915,7 @@ function frame(now) {
   // MOUSE WHEEL" leaves the input they are most likely to try off the one
   // readout that is always on screen.
   setText('weaponName', ghost ? ''
-    : `${heldIsFlamer ? 'FLAMETHROWER' : MA5.name}${hasFlamer ? ' · Q / WHEEL SWAP' : ''}`);
+    : `${heldIsFlamer ? 'FLAMETHROWER' : MA5.name}${hasFlamer ? inputPrompt(' · Q / WHEEL SWAP', ' · Y SWAP') : ''}`);
   { // flamer up is the HUD's orange, the same tell #roomState uses for a state change
     const wn = el('weaponName');
     const wc = heldIsFlamer && !ghost ? 'wn-flamer' : '';
@@ -3713,28 +3951,33 @@ function frame(now) {
   // moment you actually swap — the lesson is over once it lands.
   if (swapHintAt && (now - swapHintAt > SWAP_HINT_MS || _swapAt > swapHintAt)) swapHintAt = 0;
   if (!player.dead && swapHintAt) {
-    setText('hint', 'Q swaps · MOUSE WHEEL: up = MA5, down = flamethrower');
+    setText('hint', inputPrompt(
+      'Q swaps · MOUSE WHEEL: up = MA5, down = flamethrower',
+      'Y — swap MA5 / flamethrower',
+    ));
     setStyle('hint', 'display', 'block');
   } else if (fsrc) {
-    setText('hint', fsrc === 'armory' ? 'E — take the flamethrower off the rack'
-      : fsrc === 'refuel' ? `E — swap a fuel can (${sim.armoryFuelCans} left)`
-        : 'E — take the flamethrower off the operator');
+    const use = inputPrompt('E', 'RB');
+    setText('hint', fsrc === 'armory' ? `${use} — take the flamethrower off the rack`
+      : fsrc === 'refuel' ? `${use} — swap a fuel can (${sim.armoryFuelCans} left)`
+        : `${use} — take the flamethrower off the operator`);
     setStyle('hint', 'display', 'block');
   } else if (!player.dead && player.medkitSource()) {
-    setText('hint', 'E — use the med pack');
+    setText('hint', `${inputPrompt('E', 'RB')} — use the med pack`);
     setStyle('hint', 'display', 'block');
   } else if (!player.dead && player.armorSource()) {
-    setText('hint', 'E — strap on armor plates');
+    setText('hint', `${inputPrompt('E', 'RB')} — strap on armor plates`);
     setStyle('hint', 'display', 'block');
   } else if (src) {
+    const use = inputPrompt('E', 'RB');
     setText('hint', src === 'armory'
-      ? `E — strip mags from the rack (${sim.armoryStock} rifles)` : 'E — take mags off the dead');
+      ? `${use} — strip mags from the rack (${sim.armoryStock} rifles)` : `${use} — take mags off the dead`);
     setStyle('hint', 'display', 'block');
   } else if (player.climb) {
     setText('hint', player.climb.toDeck < player.climb.fromDeck ? 'climbing up…' : 'climbing down…');
     setStyle('hint', 'display', 'block');
   } else if (!player.dead && weapon.reserve >= 32 && dryEscortName()) {
-    setText('hint', `T — hand a mag to ${dryEscortName()}`);
+    setText('hint', `${inputPrompt('T', 'D-PAD ↓')} — hand a mag to ${dryEscortName()}`);
     setStyle('hint', 'display', 'block');
   } else {
     const trunk = player.dead ? null : world.trunkAt(player.deck, player.x, player.z);
@@ -3744,8 +3987,8 @@ function frame(now) {
       setText('hint', player.queuedTrunk === trunk
         ? 'in line for the ladder — you go next'
         : trunk.edge?.type === 'ladder' && sim.vertBusy(trunk.edge, player.agent.id)
-          ? `${kind} busy — L to take the next slot`
-          : `L — climb ${kind} ${up ? 'up' : 'down'} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+          ? `${kind} busy — ${inputPrompt('L', 'RB')} to take the next slot`
+          : `${inputPrompt('L', 'RB')} — climb ${kind} ${up ? 'up' : 'down'} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
       setStyle('hint', 'display', 'block');
     } else setStyle('hint', 'display', 'none');
   }

@@ -36,6 +36,13 @@ export class FpsController {
     this.onGround = true;
     this.yaw = -Math.PI / 2; this.pitch = 0;
     this.keys = new Set();
+    this.gamepad = null;
+    this.gamepadActive = false;
+    this.gamepadJumpQueued = false;
+    this.gamepadJumpQueuedAt = 0;
+    this.gamepadInteractQueued = false;
+    this.gamepadInteractQueuedAt = 0;
+    this.pointerLocked = false;
     this.locked = false;
 
     if (this.physics) this.physics.spawnPlayer(this.x, this.elevOf(this.deck) + this.h, this.z);
@@ -44,17 +51,63 @@ export class FpsController {
     this._prev = this._worldPose();
     this._cur = this._worldPose();
 
-    canvas.addEventListener('click', () => { if (!this.locked) canvas.requestPointerLock(); });
+    canvas.addEventListener('click', () => { if (!this.pointerLocked) canvas.requestPointerLock(); });
     document.addEventListener('pointerlockchange', () => {
-      this.locked = document.pointerLockElement === canvas;
+      this.pointerLocked = document.pointerLockElement === canvas;
+      this.locked = this.pointerLocked || this.gamepadActive;
     });
     document.addEventListener('mousemove', (e) => {
-      if (!this.locked) return;
+      if (!this.pointerLocked) return;
       this.yaw -= e.movementX * 0.0022;
       this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - e.movementY * 0.0022));
     });
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('blur', () => this.keys.clear());
+  }
+
+  setGamepadInput(input) {
+    const wasGamepadActive = this.gamepadActive;
+    this.gamepad = input;
+    this.gamepadActive = !!input?.active;
+    if (this.gamepadActive && input.jumpPressed) {
+      this.gamepadJumpQueued = true;
+      this.gamepadJumpQueuedAt = performance.now();
+    }
+    if (this.gamepadActive && input.interactPressed) {
+      this.gamepadInteractQueued = true;
+      this.gamepadInteractQueuedAt = performance.now();
+    }
+    if (!this.gamepadActive) {
+      this.gamepadJumpQueued = false;
+      this.gamepadJumpQueuedAt = 0;
+      this.gamepadInteractQueued = false;
+      this.gamepadInteractQueuedAt = 0;
+    }
+    if (this.gamepadActive) this.locked = true;
+    else if (wasGamepadActive) this.locked = this.pointerLocked;
+  }
+
+  stepGamepadLook(dt) {
+    if (!this.gamepadActive || !this.locked) return;
+    this.yaw -= this.gamepad.lookX * (this.tune.gamepadLookYaw ?? 2.8) * dt;
+    this.pitch = Math.max(-1.45, Math.min(1.45,
+      this.pitch - this.gamepad.lookY * (this.tune.gamepadLookPitch ?? 2.15) * dt));
+  }
+
+  gamepadInteractionPending() {
+    return this.gamepadActive && (this.gamepad?.interact
+      || (this.gamepadInteractQueued && performance.now() - this.gamepadInteractQueuedAt <= 250));
+  }
+
+  consumeGamepadInteraction() {
+    this.gamepadInteractQueued = false;
+    this.gamepadInteractQueuedAt = 0;
+  }
+
+  discardGamepadJump() {
+    this.gamepadJumpQueued = false;
+    this.gamepadJumpQueuedAt = 0;
   }
 
   // Wire the physics world once its wasm is ready. why deferred: a slow or
@@ -91,25 +144,34 @@ export class FpsController {
     if (this.keys.has('KeyS')) fz -= 1;
     if (this.keys.has('KeyA')) fx -= 1;
     if (this.keys.has('KeyD')) fx += 1;
-    const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
+    if (this.gamepadActive) {
+      fx += this.gamepad.moveX;
+      fz += this.gamepad.moveY;
+    }
+    const sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')
+      || (this.gamepadActive && this.gamepad.sprint);
     const speed = sprint ? T.sprintSpeed : T.walkSpeed;
     let wx = 0, wz = 0;
     if (fx || fz) {
       const len = Math.hypot(fx, fz);
+      const strength = Math.min(1, len);
       const fwdX = -Math.sin(this.yaw), fwdZ = -Math.cos(this.yaw);
       const rightX = Math.cos(this.yaw), rightZ = -Math.sin(this.yaw);
-      wx = (fwdX * fz + rightX * fx) / len * speed;
-      wz = (fwdZ * fz + rightZ * fx) / len * speed;
+      wx = (fwdX * fz + rightX * fx) / len * speed * strength;
+      wz = (fwdZ * fz + rightZ * fx) / len * speed * strength;
     }
     const k = this.onGround ? T.accel : T.accel * T.airControl;
     const blend = 1 - Math.exp(-k * dt);
     this.vx += (wx - this.vx) * blend;
     this.vz += (wz - this.vz) * blend;
 
-    if (this.keys.has('Space') && this.onGround) {
+    const gamepadJump = this.gamepadActive && this.gamepadJumpQueued
+      && performance.now() - this.gamepadJumpQueuedAt <= 250;
+    if ((this.keys.has('Space') || gamepadJump) && this.onGround) {
       this.vy = T.jumpVel;
       this.onGround = false;
     }
+    this.discardGamepadJump();
     this.vy -= T.gravity * dt;
 
     // horizontal: the character controller sweeps the capsule and slides it
