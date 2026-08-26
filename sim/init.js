@@ -50,6 +50,7 @@ export function makeAgent(kind, node, graph) {
     // flight budget in ticks. A distance test alone can be unsatisfiable.
     leapRem: 0, leapTicks: 0, nextCombatLeapAt: 0,
     chargeTargetId: -1, // sticky spatial-charge target for LOS pursuit (sim.js)
+    chargePoseSequence: 0, chargeArmsHigh: false, chargeEndedAt: -Infinity,
     followNode: -1,     // escort: last node re-pathed toward (humans.js)
     firePost: null,     // [x,y] firing stance a shooter holds in a firefight (sim.js _firingSlot)
 

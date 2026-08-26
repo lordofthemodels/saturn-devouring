@@ -842,7 +842,8 @@ export class Agents3D {
   // animated at all and are simply placed on the weapon, and `bob` swings that
   // whole assembly — arms AND rifle together, about the shoulder line — so
   // nothing can shake the gun out of the hands.
-  _stampAnimated(set, i, clip, animT, id, hold = null, bob = 0, panic = false, aim = 0) {
+  _stampAnimated(set, i, clip, animT, id, hold = null, bob = 0, panic = false, aim = 0,
+    armsHighCharge = false) {
     if (this._curD2 < CAST_NEAR2) this._castNear.add(set);
     const arms = hold && clip !== CLIP.DEATH;
     if (arms && bob) {
@@ -877,10 +878,25 @@ export class Agents3D {
         const add = set.adduct && (part === 'armL' || part === 'armR')
           ? (part === 'armR' ? set.adduct : -set.adduct) : 0;
         if (!ang && !add) { mesh.setMatrixAt(i, this._m); continue; }
+        const armsHigh = armsHighCharge && clip === CLIP.RUN
+          && (set === this.combatCivSet || set === this.combatOdstSet)
+          && (part === 'armL' || part === 'armR');
         const feral = clip === CLIP.ATTACK
           && (set === this.combatCivSet || set === this.combatOdstSet)
           && (part === 'armL' || part === 'armR');
-        if (feral) {
+        if (armsHigh) {
+          const side = part === 'armR' ? 1 : -1;
+          const phase = gaitPhase(clip, animT, id);
+          // Halo CE elite-combat-form silhouette: both rigid arms rotate out
+          // of their A-pose to near vertical, with just enough independent
+          // shoulder thrash that the rush stays feral instead of celebratory.
+          (this._eHold ??= new THREE.Euler()).set(
+            -side * (2.30 + Math.sin(phase * 0.73 + side) * 0.10),
+            side * Math.sin(phase * 1.31 + id) * 0.10,
+            Math.sin(phase * 1.07 + side * 0.8) * 0.16,
+          );
+          this._mRot.makeRotationFromEuler(this._eHold);
+        } else if (feral) {
           const u = Math.max(0, Math.min(1, animT / 0.74));
           const envelope = Math.sin(u * Math.PI);
           const side = part === 'armR' ? 1 : -1;
@@ -1078,7 +1094,9 @@ export class Agents3D {
     const counts = (this._counts ??= { civ: 0, armed: 0, marine: 0, infection: 0, combatCiv: 0, combatOdst: 0, carrier: 0, corpse: 0, rifle: 0, flamer: 0, flash: 0, beam: 0 });
     for (const key in counts) counts[key] = 0;
     let clip = 0, animT = 0, curId = 0, curPanic = false, curBob = 0, curAim = 0;
-    const stamp = (set, i) => this._stampAnimated(set, i, clip, animT, curId, null, 0, curPanic);
+    const stamp = (set, i, armsHighCharge = false) => this._stampAnimated(
+      set, i, clip, animT, curId, null, 0, curPanic, 0, armsHighCharge,
+    );
     // rifle carriers: arms placed on the solved carry, not swung
     const stampHold = (set, i) => this._stampAnimated(set, i, clip, animT, curId,
       this._holdFor(set, curAim), curBob, curPanic, curAim);
@@ -1516,6 +1534,7 @@ export class Agents3D {
         }
         case FACTION.COMBAT: {
           const charging = flags & FLAG.CHARGING;
+          const armsHighCharge = charging && (flags & FLAG.ARMS_HIGH);
           const leaping = flags & FLAG.LEAPING;
           // thresholded for the same reason as the infection case above: the
           // eased hoverY decays toward zero without reaching it, so a truthy
@@ -1570,7 +1589,7 @@ export class Agents3D {
             // collision the sim actually enforces.
             this._s.set(1, leaping ? 1.08 : charging ? 1.05 : 1, leaping ? 1.18 : charging ? 1.12 : 1));
           if (flags & FLAG.ARMED_HOST) {
-            stamp(this.combatOdstSet, counts.combatOdst++);
+            stamp(this.combatOdstSet, counts.combatOdst++, armsHighCharge);
             // The stolen rifle is composed IN THE BODY'S FRAME (bx/bz, and the
             // body quaternion) so it leans, rises and slides with the form —
             // it used to hang plumb at a fixed world height while a charging
@@ -1582,7 +1601,7 @@ export class Agents3D {
               this._q2, this._s.set(1, 1, 1));
             this.rifle.setMatrixAt(counts.rifle++, this._m);
           } else {
-            stamp(this.combatCivSet, counts.combatCiv++);
+            stamp(this.combatCivSet, counts.combatCiv++, armsHighCharge);
           }
           break;
         }

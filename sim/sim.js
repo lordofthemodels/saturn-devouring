@@ -14,6 +14,7 @@ import { resolveCombat, humanDeathToCorpse, hurtFloodForm } from './combat.js';
 import { CommandQueue, CMD } from './commands.js';
 import { applyCommand } from './commandApply.js';
 import { nameFor, rankFromPool, RANK_POOLS } from '../shared/names.js';
+import { combatChargeArmsHigh } from './charge-pose.js';
 
 const TINT = {
   [FACTION.CIVILIAN]: 0xf2f2f2, [FACTION.ARMED]: 0xe8c840, [FACTION.MARINE]: 0x4d8ef0,
@@ -935,6 +936,22 @@ export class Sim {
     a.deck = room.deck;
   }
 
+  _setCharging(a, charging) {
+    if (a.charging === charging) return;
+    if (charging && a.faction === FACTION.COMBAT) {
+      // A doorway is only a seam in one continuous rush. Reuse the selected
+      // posture across its sub-second path legs instead of visibly changing
+      // animation variants every time the form crosses a room boundary.
+      if (this.t - a.chargeEndedAt > 0.75) {
+        a.chargePoseSequence++;
+        a.chargeArmsHigh = combatChargeArmsHigh(a.id, a.chargePoseSequence);
+      }
+    } else if (!charging && a.faction === FACTION.COMBAT) {
+      a.chargeEndedAt = this.t;
+    }
+    a.charging = charging;
+  }
+
   // ======================= main tick =======================
   tick() {
     const dt = this.dt;
@@ -1785,7 +1802,7 @@ export class Sim {
           a.node = a.move.to;
           a.deck = to.deck;
           a.move = null;
-          a.charging = false;
+          this._setCharging(a, false);
           a.firstStruckIn = undefined;
           if (a.state === STATE.MOVE) a.state = a.path.length ? STATE.MOVE : STATE.IDLE;
         }
@@ -1842,7 +1859,7 @@ export class Sim {
             && !this.hive.canPressCombatContact(a, !!a.task?.surge, a.task?.force);
           if (!sensedCrossing || retreatBlocked || attackOutmatched) {
             a.path = [];
-            a.charging = false;
+            this._setCharging(a, false);
             if (sensedCrossing) {
               this.hive.retreatOrFight(a, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step.to);
             }
@@ -1915,20 +1932,20 @@ export class Sim {
         let mult = this._speedMult(a);
         // lore: a combat form closing on prey doesn't walk — it CHARGES,
         // sprinting/leaping the last stretch (renderers get FLAG.CHARGING)
-        a.charging = false;
+        this._setCharging(a, false);
         const surging = a.faction === FACTION.COMBAT && a.task?.kind === TASK.ATTACK
           && a.task.surge && a.dragging === -1 && link.kind === 'std';
         if (a.faction === FACTION.COMBAT && a.dragging === -1 && link.kind === 'std'
           && (surging || this._occ[step.to].some((h) => isLivingHuman(h)))) {
           mult *= this.P.speed.chargeMult;
-          a.charging = true;
+          this._setCharging(a, true);
         }
         // an infection form PURSUING a host keeps its skittering pace through
         // doorways too — at a walk it loses ground on every room the prey
         // flees through and the grab never lands (real-space pursuit)
         if (a.faction === FACTION.INFECTION && a.task?.kind === TASK.GRAB && link.kind === 'std') {
           mult *= this.P.speed.infectionLunge;
-          a.charging = true;
+          this._setCharging(a, true);
         }
         // per-agent pace variation staggers a column longitudinally so
         // simultaneous movers never sit on the exact same interpolation point.
@@ -2198,7 +2215,7 @@ export class Sim {
       }
       if (!best) {
         a.chargeTargetId = -1;
-        if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; a.charging = false; }
+        if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; this._setCharging(a, false); }
         return false;
       }
 
@@ -2219,7 +2236,7 @@ export class Sim {
         // in place under fire.
         const moveGoal = a.move ? (a.path.at(-1)?.to ?? a.move.to) : -1;
         if (a.move && moveGoal === targetNode) {
-          a.charging = true;
+          this._setCharging(a, true);
           a.state = STATE.MOVE;
           return false;
         }
@@ -2228,7 +2245,7 @@ export class Sim {
         // LOS. Locked doors remain breakable; infection-only vents do not.
         if (this.setPathTo(a, targetNode, ['std'], (l) => !l.locked)
           || this.setPathTo(a, targetNode, ['std'], (l) => l.kind === 'std' && !l.armorySeal)) {
-          a.charging = true;
+          this._setCharging(a, true);
           a.state = STATE.MOVE;
         }
         return false;
@@ -2236,7 +2253,7 @@ export class Sim {
       target = best;
       a.chargeTargetId = best.id;
       stopAt = P.combat.meleeRangeM * 0.6;
-      a.charging = bestD > P.combat.meleeRangeM; // the whole approach is a sprint (lore)
+      this._setCharging(a, bestD > P.combat.meleeRangeM); // the whole approach is a sprint (lore)
       // a leap crosses ~56% faster than a flat charge — the arc was +20% and
       // the user asked for another 30% on top: a committed pounce, not a glide
       // persists from the prior tick's arc block
@@ -2276,7 +2293,7 @@ export class Sim {
       stopAt = P.combat.grabRangeM * 0.6;
       mps = P.movement.baseMps * this._speedMult(a) * P.speed.infectionLunge
         * (a.leaping ? P.speed.infectionPounce : 1); // skittering lunge, then the committed hop
-      a.charging = true;
+      this._setCharging(a, true);
     } else return false;
 
     // engaged: the track is abandoned — the fight is HERE, in this room
@@ -3061,6 +3078,7 @@ export class Sim {
       // body down (and drop a rifle beside it)
       if (a.hostArmed || (a.faction === FACTION.CORPSE && a.wasArmed && a.damage < 100)) flags |= FLAG.ARMED_HOST;
       if (a.charging) flags |= FLAG.CHARGING;
+      if (a.faction === FACTION.COMBAT && a.charging && a.chargeArmsHigh) flags |= FLAG.ARMS_HIGH;
       if (a.hoverY > 0.05) flags |= FLAG.LEAPING;
       if (a.lastHurtTick !== undefined && this.tickCount - a.lastHurtTick < 4) flags |= FLAG.FLINCH;
       b.flags[i] = flags;
