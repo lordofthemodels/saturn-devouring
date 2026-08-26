@@ -20,6 +20,52 @@ export { DECK_H, CLEAR_H, elevOf, clearHeightOf };
 export const DOOR_W = 1.7;      // doorway opening width
 const WALL_T = 0.16;
 const HATCH = 1.8;              // hatch hole side
+const OBSERVATION_ROLES = new Set(['command', 'quarters', 'soft', 'medbay', 'lifepods']);
+const NO_OBSERVATION_ROLES = new Set(['armory', 'battery', 'brig', 'cargo', 'engineering', 'hazard', 'magazine', 'power']);
+
+// Observation glazing belongs only on inhabited broadside compartments that
+// actually touch the hull. Role + row make the choice survive future room
+// renames; the outward-point test prevents an interior room from receiving a
+// view through another compartment merely because it also has a broadside wall.
+export function observationSideForRoom(room) {
+  if (!room?.row || room.type === 'corridor') return null;
+  const roles = room.roles ?? [];
+  if (!roles.some((role) => OBSERVATION_ROLES.has(role))) return null;
+  if (roles.some((role) => NO_OBSERVATION_ROLES.has(role))) return null;
+  return room.row > 0 ? 'S' : 'N';
+}
+
+export function exteriorObservationSpan(graph, room, side, from, to) {
+  if ((side !== 'N' && side !== 'S') || to <= from) return false;
+  const outward = side === 'S' ? 1 : -1;
+  const outsideY = room.y + outward * (room.d / 2 + 0.24);
+  // Three probes make a wide pane require a genuinely exposed run instead of
+  // peeking around the edge of a partially overlapping outboard compartment.
+  for (const t of [0.12, 0.5, 0.88]) {
+    const x = from + (to - from) * t;
+    for (const other of graph.nodes) {
+      if (other.idx === room.idx || other.deck !== room.deck) continue;
+      if (x < other.x - other.w / 2 - 0.02 || x > other.x + other.w / 2 + 0.02) continue;
+      if (outsideY > other.y - other.d / 2 - 0.02 && outsideY < other.y + other.d / 2 + 0.02) return false;
+    }
+  }
+  return true;
+}
+
+export function observationWindowForRun(graph, room, run, spans) {
+  const side = observationSideForRoom(room);
+  if (!side || run.key !== side || !run.horiz) return null;
+  for (const [from, to] of [...spans].sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]))) {
+    const available = to - from;
+    if (available < 4.2) continue;
+    const width = Math.min(6.4, available - 1.2);
+    const at = (from + to) / 2;
+    if (exteriorObservationSpan(graph, room, side, at - width / 2, at + width / 2)) {
+      return { at, width, side };
+    }
+  }
+  return null;
+}
 
 export function armoryStations(room) {
   return {
@@ -94,6 +140,7 @@ export class World {
     this.doorEvents = []; // door open starts, drained by the game for audio
     this.props = [];  // cover geometry rects (sim coords) — block walking
     this.wallMeshes = []; // solid vertical geometry — raycast target for "real physics" shots (user note)
+    this.observationWindows = [];
     // duct/shaft/ladder openings per room, sim coords — the agent renderer
     // snaps deck-transit arrivals onto these so bodies surface AT a marked
     // opening instead of teleporting into the middle of a hallway (user)
@@ -190,6 +237,12 @@ export class World {
       hx: DOOR_W / 2 + 0.06, hy: this._doorPH / 2, hz: 0.08,
       ry: -d.phi, closed: !!d.edge.locked,
     }));
+  }
+
+  setExteriorView(x, y, z, visible = true) {
+    if (!this.spaceExterior) return;
+    this.spaceExterior.position.set(x, y, z);
+    this.spaceExterior.visible = visible;
   }
 
   // STATIC MERGE (perf): group every plain static Mesh in the scene by
@@ -568,6 +621,13 @@ export class World {
       bumpMap: wallTexBase, bumpScale: 0.5,
     });
     const matWall = this._matWall;
+    const matWindowFrame = new THREE.MeshStandardMaterial({
+      color: 0x303a48, roughness: 0.32, metalness: 0.82,
+    });
+    const matWindowGlass = new THREE.MeshStandardMaterial({
+      color: 0x7898b8, roughness: 0.12, metalness: 0.18,
+      transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide,
+    });
     // NO self-glow (user: a bright visible ceiling ruins the darkness) — the
     // overhead plating is pitch dark unless an actual light source hits it
     const matCeil = new THREE.MeshStandardMaterial({ color: 0x10141c, roughness: 1 }); // closed boxes — FrontSide is pixel-identical
@@ -751,6 +811,7 @@ export class World {
           cursor = Math.max(cursor, c.at + DOOR_W / 2);
         }
         if (run.to > cursor + 0.05) spans.push([cursor, run.to]);
+        const observationWindow = observationWindowForRun(g, n, run, spans);
         // HEADER over every doorway (user: doors in tall hangar rooms were
         // just open at the top): the wall used to be cut floor-to-ceiling
         // around a door, leaving a full-height slot above the CLEAR_H panel.
@@ -767,15 +828,55 @@ export class World {
             this.wallMeshes.push(header);
           }
         }
-        for (const [a, b] of spans) {
+        const addWallBox = (a, b, y, height) => {
           const len = b - a;
           const wall = new THREE.Mesh(
-            run.horiz ? new THREE.BoxGeometry(len, roomH, WALL_T) : new THREE.BoxGeometry(WALL_T, roomH, len),
+            run.horiz ? new THREE.BoxGeometry(len, height, WALL_T) : new THREE.BoxGeometry(WALL_T, height, len),
             matWall);
-          if (run.horiz) wall.position.set((a + b) / 2, elev + roomH / 2, run.fixed);
-          else wall.position.set(run.fixed, elev + roomH / 2, (a + b) / 2);
+          if (run.horiz) wall.position.set((a + b) / 2, y, run.fixed);
+          else wall.position.set(run.fixed, y, (a + b) / 2);
           this.scene.add(wall);
           this.wallMeshes.push(wall);
+        };
+        for (const [a, b] of spans) {
+          const hasWindow = observationWindow
+            && observationWindow.at > a && observationWindow.at < b;
+          if (hasWindow) {
+            const x0 = observationWindow.at - observationWindow.width / 2;
+            const x1 = observationWindow.at + observationWindow.width / 2;
+            const sill = 0.82, paneH = 1.28, head = sill + paneH;
+            if (x0 > a + 0.05) addWallBox(a, x0, elev + roomH / 2, roomH);
+            if (b > x1 + 0.05) addWallBox(x1, b, elev + roomH / 2, roomH);
+            addWallBox(x0, x1, elev + sill / 2, sill);
+            addWallBox(x0, x1, elev + head + (roomH - head) / 2, roomH - head);
+
+            const glass = new THREE.Mesh(
+              new THREE.BoxGeometry(observationWindow.width, paneH, 0.055), matWindowGlass);
+            glass.position.set(observationWindow.at, elev + sill + paneH / 2, run.fixed);
+            glass.renderOrder = 2;
+            this.scene.add(glass);
+            // Glazing is a real sealed hull surface: players and rounds cannot
+            // walk or fire into vacuum even though the steel wall is opened.
+            this.wallMeshes.push(glass);
+            this.observationWindows.push({ room: n.idx, side: run.key, mesh: glass });
+
+            const frameT = 0.13, frameD = 0.24;
+            const frame = (at, y, width, height) => {
+              const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, frameD), matWindowFrame);
+              mesh.position.set(at, y, run.fixed);
+              this.scene.add(mesh);
+            };
+            frame(observationWindow.at, elev + sill, observationWindow.width + frameT * 2, frameT);
+            frame(observationWindow.at, elev + head, observationWindow.width + frameT * 2, frameT);
+            frame(x0, elev + sill + paneH / 2, frameT, paneH);
+            frame(x1, elev + sill + paneH / 2, frameT, paneH);
+            for (let x = x0 + 2.05; x < x1 - 0.7; x += 2.05) {
+              frame(x, elev + sill + paneH / 2, 0.085, paneH);
+            }
+          } else {
+            addWallBox(a, b, elev + roomH / 2, roomH);
+          }
+          const len = b - a;
           // CONTACT SHADOW SKIRT (fidelity pass): a soft dark gradient along
           // the wall base grounds the geometry — the poor man's ambient
           // occlusion, and it reads shockingly close to the baked thing.
@@ -855,6 +956,26 @@ export class World {
     this._strips.finalize(this.scene);
     this._lamps.finalize(this.scene);
     this._mergeStaticPass();
+    this._buildSpaceExterior();
+  }
+
+  _buildSpaceExterior() {
+    if (!this.observationWindows.length) return;
+    const texture = new THREE.TextureLoader().load('./assets/space/deep-star-map.jpg');
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.MeshBasicMaterial({
+      map: texture, color: 0xc4c8d0, side: THREE.BackSide,
+      fog: false, depthWrite: false, toneMapped: false,
+    });
+    // The shell follows the camera, so one low-poly sphere stays within the
+    // existing far plane everywhere on the 350 m ship. It is added after the
+    // static merge and never enters deck/third culling.
+    const sky = new THREE.Mesh(new THREE.SphereGeometry(190, 32, 16), material);
+    sky.name = 'Deep space exterior';
+    sky.renderOrder = -1000;
+    sky.frustumCulled = false;
+    this.scene.add(sky);
+    this.spaceExterior = sky;
   }
 
   // ---- REAL SHAFTS (user note: the portal mechanisms end here) ----

@@ -78370,6 +78370,41 @@ var init_fps_data = __esm({
 });
 
 // game/world.js
+function observationSideForRoom(room) {
+  if (!room?.row || room.type === "corridor") return null;
+  const roles = room.roles ?? [];
+  if (!roles.some((role) => OBSERVATION_ROLES.has(role))) return null;
+  if (roles.some((role) => NO_OBSERVATION_ROLES.has(role))) return null;
+  return room.row > 0 ? "S" : "N";
+}
+function exteriorObservationSpan(graph, room, side, from, to) {
+  if (side !== "N" && side !== "S" || to <= from) return false;
+  const outward = side === "S" ? 1 : -1;
+  const outsideY = room.y + outward * (room.d / 2 + 0.24);
+  for (const t2 of [0.12, 0.5, 0.88]) {
+    const x2 = from + (to - from) * t2;
+    for (const other of graph.nodes) {
+      if (other.idx === room.idx || other.deck !== room.deck) continue;
+      if (x2 < other.x - other.w / 2 - 0.02 || x2 > other.x + other.w / 2 + 0.02) continue;
+      if (outsideY > other.y - other.d / 2 - 0.02 && outsideY < other.y + other.d / 2 + 0.02) return false;
+    }
+  }
+  return true;
+}
+function observationWindowForRun(graph, room, run, spans) {
+  const side = observationSideForRoom(room);
+  if (!side || run.key !== side || !run.horiz) return null;
+  for (const [from, to] of [...spans].sort((a2, b2) => b2[1] - b2[0] - (a2[1] - a2[0]))) {
+    const available = to - from;
+    if (available < 4.2) continue;
+    const width = Math.min(6.4, available - 1.2);
+    const at = (from + to) / 2;
+    if (exteriorObservationSpan(graph, room, side, at - width / 2, at + width / 2)) {
+      return { at, width, side };
+    }
+  }
+  return null;
+}
 function armoryStations(room) {
   return {
     ammo: { x: room.x - 1, y: room.y + room.d / 2 - 0.6 },
@@ -78416,7 +78451,7 @@ function rectMinusHoles(x0, z0, x1, z1, holes) {
   }
   return rects;
 }
-var DOOR_W, WALL_T, HATCH, World;
+var DOOR_W, WALL_T, HATCH, OBSERVATION_ROLES, NO_OBSERVATION_ROLES, World;
 var init_world = __esm({
   "game/world.js"() {
     init_three_webgpu_module();
@@ -78427,6 +78462,8 @@ var init_world = __esm({
     DOOR_W = 1.7;
     WALL_T = 0.16;
     HATCH = 1.8;
+    OBSERVATION_ROLES = /* @__PURE__ */ new Set(["command", "quarters", "soft", "medbay", "lifepods"]);
+    NO_OBSERVATION_ROLES = /* @__PURE__ */ new Set(["armory", "battery", "brig", "cargo", "engineering", "hazard", "magazine", "power"]);
     World = class {
       constructor(scene2, graph, seed2 = "fx") {
         this.graph = graph;
@@ -78439,6 +78476,7 @@ var init_world = __esm({
         this.doorEvents = [];
         this.props = [];
         this.wallMeshes = [];
+        this.observationWindows = [];
         this.mouths = /* @__PURE__ */ new Map();
         this._bandC = graph.deckBands.map((b2) => (b2.y0 + b2.y1) / 2);
         this._build();
@@ -78539,6 +78577,11 @@ var init_world = __esm({
           ry: -d2.phi,
           closed: !!d2.edge.locked
         }));
+      }
+      setExteriorView(x2, y2, z2, visible = true) {
+        if (!this.spaceExterior) return;
+        this.spaceExterior.position.set(x2, y2, z2);
+        this.spaceExterior.visible = visible;
       }
       // STATIC MERGE (perf): group every plain static Mesh in the scene by
       // material; any material carried by >= 8 meshes gets its meshes baked
@@ -78917,6 +78960,20 @@ var init_world = __esm({
           bumpScale: 0.5
         });
         const matWall = this._matWall;
+        const matWindowFrame = new MeshStandardMaterial({
+          color: 3160648,
+          roughness: 0.32,
+          metalness: 0.82
+        });
+        const matWindowGlass = new MeshStandardMaterial({
+          color: 7903416,
+          roughness: 0.12,
+          metalness: 0.18,
+          transparent: true,
+          opacity: 0.2,
+          depthWrite: false,
+          side: DoubleSide
+        });
         const matCeil = new MeshStandardMaterial({ color: 1053724, roughness: 1 });
         this._matCeil = matCeil;
         this._mkFloorMat = mkFloorMat;
@@ -79070,6 +79127,7 @@ var init_world = __esm({
               cursor = Math.max(cursor, c2.at + DOOR_W / 2);
             }
             if (run.to > cursor + 0.05) spans.push([cursor, run.to]);
+            const observationWindow = observationWindowForRun(g2, n2, run, spans);
             if (roomH > CLEAR_H + 0.1) {
               for (const c2 of cuts) {
                 const hh = roomH - CLEAR_H;
@@ -79083,16 +79141,53 @@ var init_world = __esm({
                 this.wallMeshes.push(header);
               }
             }
-            for (const [a2, b2] of spans) {
+            const addWallBox = (a2, b2, y2, height) => {
               const len = b2 - a2;
               const wall = new Mesh(
-                run.horiz ? new BoxGeometry(len, roomH, WALL_T) : new BoxGeometry(WALL_T, roomH, len),
+                run.horiz ? new BoxGeometry(len, height, WALL_T) : new BoxGeometry(WALL_T, height, len),
                 matWall
               );
-              if (run.horiz) wall.position.set((a2 + b2) / 2, elev + roomH / 2, run.fixed);
-              else wall.position.set(run.fixed, elev + roomH / 2, (a2 + b2) / 2);
+              if (run.horiz) wall.position.set((a2 + b2) / 2, y2, run.fixed);
+              else wall.position.set(run.fixed, y2, (a2 + b2) / 2);
               this.scene.add(wall);
               this.wallMeshes.push(wall);
+            };
+            for (const [a2, b2] of spans) {
+              const hasWindow = observationWindow && observationWindow.at > a2 && observationWindow.at < b2;
+              if (hasWindow) {
+                const x0 = observationWindow.at - observationWindow.width / 2;
+                const x1 = observationWindow.at + observationWindow.width / 2;
+                const sill = 0.82, paneH = 1.28, head = sill + paneH;
+                if (x0 > a2 + 0.05) addWallBox(a2, x0, elev + roomH / 2, roomH);
+                if (b2 > x1 + 0.05) addWallBox(x1, b2, elev + roomH / 2, roomH);
+                addWallBox(x0, x1, elev + sill / 2, sill);
+                addWallBox(x0, x1, elev + head + (roomH - head) / 2, roomH - head);
+                const glass = new Mesh(
+                  new BoxGeometry(observationWindow.width, paneH, 0.055),
+                  matWindowGlass
+                );
+                glass.position.set(observationWindow.at, elev + sill + paneH / 2, run.fixed);
+                glass.renderOrder = 2;
+                this.scene.add(glass);
+                this.wallMeshes.push(glass);
+                this.observationWindows.push({ room: n2.idx, side: run.key, mesh: glass });
+                const frameT = 0.13, frameD = 0.24;
+                const frame2 = (at, y2, width, height) => {
+                  const mesh = new Mesh(new BoxGeometry(width, height, frameD), matWindowFrame);
+                  mesh.position.set(at, y2, run.fixed);
+                  this.scene.add(mesh);
+                };
+                frame2(observationWindow.at, elev + sill, observationWindow.width + frameT * 2, frameT);
+                frame2(observationWindow.at, elev + head, observationWindow.width + frameT * 2, frameT);
+                frame2(x0, elev + sill + paneH / 2, frameT, paneH);
+                frame2(x1, elev + sill + paneH / 2, frameT, paneH);
+                for (let x2 = x0 + 2.05; x2 < x1 - 0.7; x2 += 2.05) {
+                  frame2(x2, elev + sill + paneH / 2, 0.085, paneH);
+                }
+              } else {
+                addWallBox(a2, b2, elev + roomH / 2, roomH);
+              }
+              const len = b2 - a2;
               const skirt = new Mesh(
                 run.horiz ? new PlaneGeometry(len, 0.55) : new PlaneGeometry(0.55, len),
                 this._skirtMat ?? (this._skirtMat = (() => {
@@ -79167,6 +79262,26 @@ var init_world = __esm({
         this._strips.finalize(this.scene);
         this._lamps.finalize(this.scene);
         this._mergeStaticPass();
+        this._buildSpaceExterior();
+      }
+      _buildSpaceExterior() {
+        if (!this.observationWindows.length) return;
+        const texture3 = new TextureLoader().load("./assets/space/deep-star-map.jpg");
+        texture3.colorSpace = SRGBColorSpace;
+        const material = new MeshBasicMaterial({
+          map: texture3,
+          color: 12896464,
+          side: BackSide,
+          fog: false,
+          depthWrite: false,
+          toneMapped: false
+        });
+        const sky = new Mesh(new SphereGeometry(190, 32, 16), material);
+        sky.name = "Deep space exterior";
+        sky.renderOrder = -1e3;
+        sky.frustumCulled = false;
+        this.scene.add(sky);
+        this.spaceExterior = sky;
       }
       // ---- REAL SHAFTS (user note: the portal mechanisms end here) ----
       // A cross-deck link whose two rooms overlap in plan gets ONE true vertical
@@ -94233,6 +94348,7 @@ function frame(now) {
   scene.fog.near = inFog ? 1.5 : 18;
   scene.fog.color.setHex(inFog ? 1844240 : 329482);
   scene.background.setHex(inFog ? 1383178 : 329482);
+  world.setExteriorView(camera.position.x, camera.position.y, camera.position.z, !inFog);
   world.setActiveVolume(povDeck, povX);
   world.showRoomSign(povDeck, povX, povZ);
   updateBarks(now);
