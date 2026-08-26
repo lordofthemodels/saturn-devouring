@@ -21,6 +21,7 @@ await build({
     contents: [
       "export { generateIdentity } from './peerd-distributed/identity/keypair.js';",
       "export { joinRoom } from './peerd-distributed/transport/rooms.js';",
+      "export { createWebrtcTransport } from './peerd-distributed/transport/transports/webrtc.js';",
       "export { createGossip } from './peerd-distributed/gossip/topic.js';",
       "export { createTopicSync, createMemoryTopicStore } from './peerd-distributed/gossip/sync.js';",
       "export { createPresence } from './peerd-distributed/gossip/presence.js';",
@@ -50,7 +51,7 @@ await build({
 // empty codec namespace when the retained-topic transport is imported.
 const smoke = await import(`${pathToFileURL(OUT).href}?smoke=${Date.now()}`);
 for (const name of [
-  'generateIdentity', 'joinRoom', 'createGossip', 'createTopicSync',
+  'generateIdentity', 'joinRoom', 'createWebrtcTransport', 'createGossip', 'createTopicSync',
   'createMemoryTopicStore', 'createPresence', 'createDirect',
 ]) {
   if (typeof smoke[name] !== 'function') throw new Error(`vendored browser primitive missing: ${name}`);

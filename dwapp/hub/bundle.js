@@ -65048,6 +65048,7 @@ __export(peerd_browser_exports, {
   createMemoryTopicStore: () => createMemoryTopicStore,
   createPresence: () => createPresence,
   createTopicSync: () => createTopicSync,
+  createWebrtcTransport: () => createWebrtcTransport,
   generateIdentity: () => generateIdentity,
   joinRoom: () => joinRoom
 });
@@ -94754,10 +94755,12 @@ function cancelledJoinError() {
   return error2;
 }
 var PeerConnectionError = class extends Error {
-  constructor({ relayAvailable = false } = {}) {
-    super(relayAvailable ? "Another player reached matchmaking, but WebRTC timed out even with relay fallback. Check whether the VPN or firewall allows WebRTC, then try again." : "Another player reached matchmaking, but the WebRTC data channel timed out. Direct connectivity was blocked by a VPN, NAT, or firewall, and relay credentials were unavailable.");
+  constructor({ relayAvailable = false, diagnostic } = {}) {
+    const relayBlocked = relayAvailable && diagnostic?.relayCandidates === 0;
+    super(relayBlocked ? "Another player reached matchmaking, but this browser could not allocate a TURN relay route. Check whether the VPN or firewall allows WebRTC over TCP 443, then try again." : relayAvailable ? "Another player reached matchmaking and a relay route was available, but the peer handshake still timed out. Try Quick Match again." : "Another player reached matchmaking, but the WebRTC data channel timed out. Direct connectivity was blocked by a VPN, NAT, or firewall, and relay credentials were unavailable.");
     this.name = "PeerConnectionError";
-    this.code = "PEER_CONNECTION_FAILED";
+    this.code = relayBlocked ? "TURN_PATH_UNAVAILABLE" : "PEER_CONNECTION_FAILED";
+    this.diagnostic = diagnostic;
   }
 };
 var SignalingConnectionError = class extends Error {
@@ -94776,6 +94779,33 @@ var RelayCredentialsError = class extends Error {
 };
 function peerConnectionFailure(event, options) {
   return PEER_FAILURE_EVENTS.has(event) ? new PeerConnectionError(options) : null;
+}
+function summarizeIceDiagnostics(traces) {
+  const candidateTypes = new Set(traces.flatMap((trace) => trace.candidateTypes));
+  const errorCodes = new Set(traces.flatMap((trace) => trace.errorCodes));
+  return {
+    connections: traces.length,
+    relayCandidates: candidateTypes.has("relay") ? 1 : 0,
+    candidateTypes: [...candidateTypes].sort(),
+    errorCodes: [...errorCodes].sort((a2, b2) => a2 - b2)
+  };
+}
+function diagnosticTransport(createWebrtcTransport2, iceServers, traces) {
+  const NativePeerConnection = globalThis.RTCPeerConnection;
+  class DiagnosticPeerConnection extends NativePeerConnection {
+    constructor(config) {
+      super({ ...config, iceTransportPolicy: "all" });
+      const trace = { candidateTypes: [], errorCodes: [] };
+      traces.push(trace);
+      this.addEventListener("icecandidate", ({ candidate }) => {
+        if (candidate?.type) trace.candidateTypes.push(candidate.type);
+      });
+      this.addEventListener("icecandidateerror", ({ errorCode }) => {
+        if (Number.isInteger(errorCode)) trace.errorCodes.push(errorCode);
+      });
+    }
+  }
+  return createWebrtcTransport2({ RTCPeerConnection: DiagnosticPeerConnection, iceServers });
 }
 async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
   let response;
@@ -95139,6 +95169,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
   const {
     generateIdentity: generateIdentity2,
     joinRoom: joinRoom2,
+    createWebrtcTransport: createWebrtcTransport2,
     createGossip: createGossip2,
     createPresence: createPresence2,
     createDirect: createDirect2,
@@ -95154,6 +95185,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
   let session2;
   let transportFailure = null;
   let iceServers;
+  const iceTraces = [];
   const unsubscribers = [];
   try {
     try {
@@ -95167,8 +95199,12 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
         identity,
         kind: "website",
         iceServers,
+        transport: diagnosticTransport(createWebrtcTransport2, iceServers, iceTraces),
         audit(event) {
-          const failure = peerConnectionFailure(event, { relayAvailable: !!iceServers });
+          const failure = peerConnectionFailure(event, {
+            relayAvailable: !!iceServers,
+            diagnostic: summarizeIceDiagnostics(iceTraces)
+          });
           if (!failure) return;
           transportFailure = failure;
           session2?.emit("transport-status", { state: "failed", error: failure });
