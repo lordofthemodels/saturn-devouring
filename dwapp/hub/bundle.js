@@ -68529,7 +68529,7 @@ function validGamePacket(packet) {
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 11;
+    PROTOCOL_VERSION = 12;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
@@ -69404,8 +69404,10 @@ var init_agentBuffer = __esm({
       // HALO-3 CONVERSION (user): the renderer plays the turn off these two.
       BURROWING: 1 << 17,
       // infection form seated on a corpse, digging in
-      THRASHING: 1 << 18
+      THRASHING: 1 << 18,
       // corpse convulsing — the pod is inside; it rises soon
+      MALE_PLAYER: 1 << 19
+      // player-selected male ODST uses the helmeted marine rig
     };
     CLIP = { IDLE: 0, WALK: 1, RUN: 2, ATTACK: 3, DEATH: 4, WRITHE: 5 };
     AgentBuffer = class {
@@ -74811,6 +74813,7 @@ var init_sim = __esm({
         a2.hp = a2.maxHp = opts.odst ? 45 : this.P.combat.civilian.hp;
         a2.armor = this.P.player.armor;
         a2.isPlayer = true;
+        a2.bodyType = opts.bodyType === "female" ? "female" : "male";
         a2.hasRadio = true;
         this.spawn(a2);
         this._issueMedkits();
@@ -75621,7 +75624,7 @@ var init_sim = __esm({
           }
           if (a2.dead || a2.faction === FACTION.CORPSE || a2.downed || a2.hp <= 0) continue;
           if (a2.isPlayer) {
-            a2.animTime += dt;
+            a2.animTime += this._gaitDt(a2, dt, a2.followSpeed ?? 0);
             continue;
           }
           if (a2.closeFollow) {
@@ -75778,9 +75781,9 @@ var init_sim = __esm({
             } else if (a2.move.layer === "std" && from.deck !== to.deck) {
               const padFrom = (link.a === from.idx ? link.padA : link.padB) ?? { x: Math.max(from.x - from.w / 2 + 1.2, Math.min(from.x + from.w / 2 - 1.2, to.x)), y: from.y };
               const padTo = (link.a === to.idx ? link.padA : link.padB) ?? { x: Math.max(to.x - to.w / 2 + 1.2, Math.min(to.x + to.w / 2 - 1.2, from.x)), y: to.y };
-              const flipT = link.flipT ?? 0.5;
               const appT = a2.move.appT ?? 0.15;
-              const handT = appT + (1 - appT) * flipT;
+              const exitT = a2.move.exitT ?? 0.15;
+              const handT = Math.max(appT + 1e-3, 1 - exitT);
               if (k2 < appT) {
                 const sx = a2.move.sx ?? padFrom.x, sy = a2.move.sy ?? padFrom.y;
                 const kk = k2 / appT;
@@ -75793,13 +75796,16 @@ var init_sim = __esm({
                 a2.y = padFrom.y;
                 a2.move.hidden = !a2.isPlayer;
               } else {
-                a2.x = padTo.x;
-                a2.y = padTo.y;
+                const kk = handT < 1 ? Math.min(1, (k2 - handT) / (1 - handT)) : 1;
+                const tx = a2.move.tx ?? to.x, ty = a2.move.ty ?? to.y;
+                a2.x = padTo.x + (tx - padTo.x) * kk;
+                a2.y = padTo.y + (ty - padTo.y) * kk;
                 a2.move.hidden = false;
                 if (a2.node !== a2.move.to) {
                   a2.node = a2.move.to;
                   a2.deck = to.deck;
                 }
+                if (link.type === "ladder" && link.occupiedBy === a2.id) link.occupiedBy = void 0;
               }
               a2.heading = Math.atan2(to.y - from.y, to.x - from.x);
             } else {
@@ -75982,11 +75988,19 @@ var init_sim = __esm({
                   a2.move.exitT = exitSec / a2.move.travelSec;
                 } else {
                   const pad = link.a === a2.node ? link.padA : link.padB;
+                  const farPad = link.a === step3.to ? link.padA : link.padB;
                   px2 = pad ? pad.x : Math.max(fromN.x - fromN.w / 2 + 1.2, Math.min(fromN.x + fromN.w / 2 - 1.2, toN.x));
                   py2 = pad ? pad.y : fromN.y;
                   const appSec = Math.hypot(px2 - a2.x, py2 - a2.y) / mps;
-                  a2.move.appT = appSec / (appSec + a2.move.travelSec);
-                  a2.move.travelSec += appSec;
+                  const [tx, ty] = this._parkSlot(a2, toN);
+                  const farX = farPad?.x ?? Math.max(toN.x - toN.w / 2 + 1.2, Math.min(toN.x + toN.w / 2 - 1.2, fromN.x));
+                  const farY = farPad?.y ?? toN.y;
+                  const exitSec = Math.hypot(tx - farX, ty - farY) / mps;
+                  a2.move.tx = tx;
+                  a2.move.ty = ty;
+                  a2.move.travelSec += appSec + exitSec;
+                  a2.move.appT = appSec / a2.move.travelSec;
+                  a2.move.exitT = exitSec / a2.move.travelSec;
                 }
               } else if (link.door) {
                 const [tx, ty] = this._parkSlot(a2, toN);
@@ -76723,6 +76737,7 @@ var init_sim = __esm({
           if (a2.flamer) flags |= FLAG.FLAMER;
           if (this.t - (a2.flamingT ?? -99) < 0.5) flags |= FLAG.FLAMING;
           if (a2.odst) flags |= FLAG.ODST;
+          if (a2.isPlayer && a2.bodyType !== "female") flags |= FLAG.MALE_PLAYER;
           if (a2.move && a2.move.hidden && (a2.move.layer === "shaft" || a2.move.layer === "std")) flags |= FLAG.IN_SHAFT;
           if (a2.hostArmed || a2.faction === FACTION.CORPSE && a2.wasArmed && a2.damage < 100) flags |= FLAG.ARMED_HOST;
           if (a2.charging) flags |= FLAG.CHARGING;
@@ -79276,13 +79291,13 @@ var init_world = __esm({
           }
         }
       }
-      // THE VENT GRATES (user redesign): ONE louvered wall grille per room,
+      // THE VENT MOUTHS (user redesign): ONE open maintenance duct per room,
       // placed by the sim graph as far from the room's doors as the walls allow
       // (graph._placeGrates — the sim's grate IS where crawlers vanish/emerge,
-      // so the mesh and the behavior can never disagree). Built to READ as
-      // grating: a raised frame, a near-black duct void behind, and a stack of
-      // angled slats with real gaps — not a flat plate. Two shared materials
-      // across every grille so the static-merge pass collapses them.
+      // so the mesh and the behavior can never disagree). The old five-louver
+      // face read as a solid targetable panel. This is an open, deep throat: a
+      // raised frame, dark side walls, and an unlit black back that stays black
+      // under the flashlight. Shared materials keep the static merge cheap.
       _buildVentGrates() {
         const g2 = this.graph;
         const frameMat = new MeshStandardMaterial({
@@ -79290,20 +79305,19 @@ var init_world = __esm({
           roughness: 0.6,
           metalness: 0.75
         });
-        const slatMat = new MeshStandardMaterial({
-          color: 2304820,
-          roughness: 0.55,
-          metalness: 0.8
+        const throatMat = new MeshStandardMaterial({
+          color: 1382944,
+          roughness: 0.82,
+          metalness: 0.35
         });
-        const voidMat = new MeshStandardMaterial({ color: 263947, roughness: 1, metalness: 0 });
-        const W2 = 1.35, H2 = 0.78;
-        const railT = 0.09, railD = 0.07;
-        const voidGeo = new BoxGeometry(W2 - 0.16, H2 - 0.14, 0.06);
+        const voidMat = new MeshBasicMaterial({ color: 259 });
+        const W2 = 1.48, H2 = 0.86;
+        const DEPTH = 0.34, railT = 0.1, railD = 0.09;
+        const voidGeo = new BoxGeometry(W2 - 0.2, H2 - 0.18, 0.025);
         const railHGeo = new BoxGeometry(W2, railT, railD);
         const railVGeo = new BoxGeometry(railT, H2, railD);
-        const slatGeo = new BoxGeometry(W2 - 0.24, 0.075, 0.05);
-        slatGeo.rotateX(0.62);
-        const SLATS = 5, span = H2 - 0.14 - railT;
+        const throatHGeo = new BoxGeometry(W2 - 0.2, railT, DEPTH);
+        const throatVGeo = new BoxGeometry(railT, H2 - 0.18, DEPTH);
         for (const n2 of g2.nodes) {
           const gr = n2.grate;
           if (!gr) continue;
@@ -79318,14 +79332,16 @@ var init_world = __esm({
             m2.rotation.y = yaw;
             this.scene.add(m2);
           };
-          put(voidGeo, voidMat, 0, H2 / 2 + 0.06, -0.02);
-          put(railHGeo, frameMat, 0, H2 + 0.06 - railT / 2, 0.03);
-          put(railHGeo, frameMat, 0, 0.06 + railT / 2, 0.03);
-          put(railVGeo, frameMat, -W2 / 2 + railT / 2, H2 / 2 + 0.06, 0.03);
-          put(railVGeo, frameMat, W2 / 2 - railT / 2, H2 / 2 + 0.06, 0.03);
-          for (let k2 = 0; k2 < SLATS; k2++) {
-            put(slatGeo, slatMat, 0, 0.06 + railT + span * (k2 + 0.5) / SLATS, 0.035);
-          }
+          const cy = H2 / 2 + 0.06;
+          put(voidGeo, voidMat, 0, cy, -0.015);
+          put(throatHGeo, throatMat, 0, H2 + 0.06 - railT / 2, DEPTH / 2);
+          put(throatHGeo, throatMat, 0, 0.06 + railT / 2, DEPTH / 2);
+          put(throatVGeo, throatMat, -W2 / 2 + railT, cy, DEPTH / 2);
+          put(throatVGeo, throatMat, W2 / 2 - railT, cy, DEPTH / 2);
+          put(railHGeo, frameMat, 0, H2 + 0.06 - railT / 2, DEPTH + 0.02);
+          put(railHGeo, frameMat, 0, 0.06 + railT / 2, DEPTH + 0.02);
+          put(railVGeo, frameMat, -W2 / 2 + railT / 2, cy, DEPTH + 0.02);
+          put(railVGeo, frameMat, W2 / 2 - railT / 2, cy, DEPTH + 0.02);
         }
       }
       // called by main each frame with positions of things that move
@@ -81576,7 +81592,8 @@ var init_agents3d = __esm({
               break;
             }
             case FACTION.ARMED: {
-              const set = this.armedSet;
+              const malePlayer = (flags & FLAG.MALE_PLAYER) !== 0;
+              const set = malePlayer ? this.marineSet : this.armedSet;
               curAim = this._aimBlend(id, clip === CLIP.ATTACK, dt);
               const aimLean = this._aimLean(curAim);
               const lean = flinch + aimLean;
@@ -81585,7 +81602,9 @@ var init_agents3d = __esm({
               const sh = lg2 ? this._aimShift(set.rig.legLen, curAim, lg2.rock) : 0;
               const bx = wx + Math.cos(heading) * sh, bz = wz - Math.sin(heading) * sh;
               this._pose(bx, gy, bz, heading, 1, 1, 1, lean);
-              stampHold(set, counts.armed++);
+              const slot = malePlayer ? counts.marine++ : counts.armed++;
+              stampHold(set, slot);
+              if (malePlayer) this._tintSlot(set, slot, 1);
               const carry = this._holdFor(set, curAim);
               this._carryAt(bx, gy, bz, heading, carry.rifle, curBob, lean);
               if (flags & FLAG.FLAMER) this.flamer.setMatrixAt(counts.flamer++, this._m);
@@ -82513,7 +82532,7 @@ var init_player = __esm({
     init_world();
     init_fps_data();
     Player = class extends FpsController {
-      constructor(canvas2, world2, sim2, startNode, physics2, existingAgent = null) {
+      constructor(canvas2, world2, sim2, startNode, physics2, existingAgent = null, bodyType = "male") {
         const n2 = sim2.graph.node(startNode);
         const [wx, wz] = world2.simToWorld(n2.x, n2.y, n2.deck);
         super({
@@ -82538,7 +82557,8 @@ var init_player = __esm({
         this._gamepadActionConsumed = false;
         this._armoryIdx = sim2.graph.byId.get("armory");
         this.sinceHit = 99;
-        this.agent = existingAgent ?? sim2.attachPlayer(startNode, { odst: true });
+        this.agent = existingAgent ?? sim2.attachPlayer(startNode, { odst: true, bodyType });
+        this.agent.bodyType = bodyType === "female" ? "female" : "male";
         this._lastHp = this.agent.hp;
         this._syncAgent();
       }
@@ -82790,6 +82810,7 @@ var init_player = __esm({
         a2.deck = this.deck;
         a2.node = this.world.roomAt(this.deck, sx, sy, a2.node);
         a2.heading = Math.atan2(-Math.cos(this.yaw), -Math.sin(this.yaw));
+        a2.followSpeed = this.climbing ? 0 : Math.hypot(this.vx, this.vz);
       }
       // ammo scavenging: the rack, or rifles on the armed dead
       ammoSource() {
@@ -90720,6 +90741,7 @@ function pointNearSegment(point, start, end, radius) {
   return (point.x - qx) ** 2 + (point.y - qy) ** 2 + (point.z - qz) ** 2 <= radius * radius;
 }
 function agentRow(agent) {
+  const hiddenTransit = !agent.move?.hidden ? 0 : agent.move.layer === "vent" ? 1 : 2;
   const row = [
     agent.id,
     agent.faction,
@@ -90748,7 +90770,8 @@ function agentRow(agent) {
     agent.leaping ? 1 : 0,
     // player ballistic armor: sim-owned since the co-op death desync, so it
     // has to reach the peer or its HUD would show a buffer it does not have
-    pack(agent.armor ?? 0)
+    pack(agent.armor ?? 0),
+    hiddenTransit
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === "melee") row.push(
@@ -90787,7 +90810,7 @@ function snapshotState(sim2, cache3, full) {
   };
 }
 function validSnapshotRow(row, graph) {
-  return Array.isArray(row) && (row.length === 20 || row.length === 26) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && row.slice(20).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+  return Array.isArray(row) && (row.length === 21 || row.length === 27) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && row.slice(21).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 function createGameSync({
   session: session2,
@@ -90871,11 +90894,11 @@ function createGameSync({
     }));
   };
   const applyRemotePose = (from, packet) => {
-    if (!packedIntegers([packet.x, packet.z, packet.deck, packet.yaw, packet.hp])) return;
+    if (!packedIntegers([packet.x, packet.z, packet.deck, packet.yaw, packet.hp, packet.speed, packet.body])) return;
     const x2 = unpack(packet.x);
     const z2 = unpack(packet.z);
     const yaw = unpack(packet.yaw);
-    if (Math.abs(x2) > SIM_BOUND || Math.abs(z2) > SIM_BOUND || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5 || Math.abs(yaw) > Math.PI * 8) return;
+    if (Math.abs(x2) > SIM_BOUND || Math.abs(z2) > SIM_BOUND || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5 || Math.abs(yaw) > Math.PI * 8 || packet.speed < 0 || packet.speed > 50 * WIRE_SCALE || packet.body !== 0 && packet.body !== 1) return;
     if (packet.talk === 1) talkingUntil.set(from, performance.now() + 900);
     else if (packet.talk === 0) talkingUntil.delete(from);
     const agent = playerAgents.get(from);
@@ -90886,6 +90909,8 @@ function createGameSync({
     agent.deck = packet.deck;
     agent.node = world2.roomAt(packet.deck, simX, simY, agent.node);
     agent.heading = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
+    agent.followSpeed = unpack(packet.speed);
+    agent.bodyType = packet.body === 1 ? "female" : "male";
     agent.move = null;
     agent.path.length = 0;
   };
@@ -90915,7 +90940,8 @@ function createGameSync({
         meleeUntil,
         hoverY,
         leaping,
-        armor
+        armor,
+        hiddenTransit
       ] = row;
       live.add(id);
       let agent = sim2.byId.get(id);
@@ -90935,7 +90961,10 @@ function createGameSync({
         agent.heading = unpack(heading);
         agent.hoverY = unpack(hoverY);
         agent.leaping = leaping === 1;
-        agent.move = null;
+        agent.move = hiddenTransit === 0 ? null : {
+          layer: hiddenTransit === 1 ? "vent" : "shaft",
+          hidden: true
+        };
         agent.path.length = 0;
       }
       agent.hp = unpack(hp);
@@ -90944,14 +90973,14 @@ function createGameSync({
       agent.animTime = unpack(animTime);
       agent.meleeUntil = unpack(meleeUntil);
       agent.armor = unpack(armor);
-      agent.deathImpulse = row.length === 26 ? {
+      agent.deathImpulse = row.length === 27 ? {
         kind: "melee",
-        dirX: unpack(row[20]),
-        dirY: unpack(row[21]),
-        speed: unpack(row[22]),
-        up: unpack(row[23]),
-        spin: unpack(row[24]),
-        kick: unpack(row[25])
+        dirX: unpack(row[21]),
+        dirY: unpack(row[22]),
+        speed: unpack(row[23]),
+        up: unpack(row[24]),
+        spin: unpack(row[25]),
+        kick: unpack(row[26])
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -91156,6 +91185,8 @@ function createGameSync({
           deck: player2.deck,
           yaw: pack(player2.yaw),
           hp: pack(player2.agent.hp),
+          speed: pack(Math.hypot(player2.vx ?? 0, player2.vz ?? 0)),
+          body: player2.agent.bodyType === "female" ? 1 : 0,
           // VOICE ACTIVITY (user: an indicator on when they are speaking).
           // One bit on a packet that is already flying at 10 Hz — no new
           // channel, and it costs nothing when nobody has a mic open.
@@ -91164,7 +91195,7 @@ function createGameSync({
         const turn = Math.round(Math.PI * 2 * WIRE_SCALE);
         const halfTurn = Math.round(Math.PI * WIRE_SCALE);
         const yawDelta = lastState ? Math.abs(((state.yaw - lastState.yaw + halfTurn) % turn + turn) % turn - halfTurn) : Infinity;
-        const changed = !lastState || state.deck !== lastState.deck || state.hp !== lastState.hp || state.talk !== lastState.talk || Math.abs(state.x - lastState.x) > 15 || Math.abs(state.z - lastState.z) > 15 || yawDelta > 15;
+        const changed = !lastState || state.deck !== lastState.deck || state.hp !== lastState.hp || state.talk !== lastState.talk || state.speed !== lastState.speed || state.body !== lastState.body || Math.abs(state.x - lastState.x) > 15 || Math.abs(state.z - lastState.z) > 15 || yawDelta > 15;
         if (changed || now - lastStateAt >= 1e3) {
           send("state", state);
           lastState = state;
@@ -93376,7 +93407,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -93537,14 +93568,23 @@ var init_main = __esm({
     cic = sim.graph.byId.get("cic");
     networkPlayers = /* @__PURE__ */ new Map();
     networkSquads = /* @__PURE__ */ new Map();
+    bodyFor = (did) => (LAUNCH.bodies?.[did] ?? LAUNCH.body) === "female" ? "female" : "male";
     if (LAUNCH.session) {
       for (const did of [...new Set(LAUNCH.members || [LAUNCH.session.did])].sort()) {
-        const agent = sim.attachPlayer(cic, { odst: true });
+        const agent = sim.attachPlayer(cic, { odst: true, bodyType: bodyFor(did) });
         networkPlayers.set(did, agent);
         networkSquads.set(did, sim.attachPlayerSquad(agent, 3));
       }
     }
-    player = new Player(canvas, world, sim, cic, null, networkPlayers.get(LAUNCH.session?.did));
+    player = new Player(
+      canvas,
+      world,
+      sim,
+      cic,
+      null,
+      networkPlayers.get(LAUNCH.session?.did),
+      bodyFor(LAUNCH.session?.did)
+    );
     physics = null;
     initRapier().then(() => {
       physics = new PhysicsWorld({ staticBoxes: world.collisionBoxes() });
@@ -96505,9 +96545,11 @@ function reduceLaunchBarrier(current, event, now = Date.now()) {
 // game/launcher.js
 var byId = (id) => document.getElementById(id);
 var launcher = byId("launcher");
+byId("protocolVersion").textContent = `CHARON NETWORK PROTOCOL v${PROTOCOL_VERSION}`;
 var pages = [...document.querySelectorAll("[data-launch-page]")];
 var launcherGamepad = new StandardGamepad();
 var lobbyNames = /* @__PURE__ */ new Map();
+var lobbyBodies = /* @__PURE__ */ new Map();
 var session = null;
 var lobbyMode = null;
 var lobbyVisibility = "public";
@@ -96546,7 +96588,7 @@ function setInputMode2(mode) {
 window.addEventListener("keydown", () => setInputMode2("keyboard"), true);
 window.addEventListener("pointerdown", () => setInputMode2("keyboard"), true);
 function visibleLauncherControls() {
-  return [...launcher.querySelectorAll("button, input, [tabindex]")].filter((control) => !control.disabled && control.tabIndex >= 0 && !control.closest("[hidden]") && control.getClientRects().length > 0);
+  return [...launcher.querySelectorAll("button, input, select, [tabindex]")].filter((control) => !control.disabled && control.tabIndex >= 0 && !control.closest("[hidden]") && control.getClientRects().length > 0);
 }
 function moveLauncherFocus(dx, dy) {
   const controls = visibleLauncherControls();
@@ -96611,7 +96653,7 @@ function launcherGamepadFrame(now) {
     else active.focus();
   }
   if (state.pressed("b")) {
-    if (document.activeElement?.matches("input:not([readonly])")) document.activeElement.blur();
+    if (document.activeElement?.matches("input:not([readonly]), select")) document.activeElement.blur();
     else document.querySelector("[data-launch-page]:not([hidden]) .hub-back")?.click();
   }
 }
@@ -96628,6 +96670,21 @@ function rememberName(name) {
     localStorage.setItem("charon-player-name", name);
   } catch {
   }
+}
+function savedBody() {
+  try {
+    return localStorage.getItem("charon-player-body") === "female" ? "female" : "male";
+  } catch {
+    return "male";
+  }
+}
+function playerBody() {
+  const body = byId("player-body").value === "female" ? "female" : "male";
+  try {
+    localStorage.setItem("charon-player-body", body);
+  } catch {
+  }
+  return body;
 }
 function setHash(route) {
   try {
@@ -96728,7 +96785,8 @@ function renderRoster() {
     const roles = [];
     if (did === lobbyHostDid) roles.push("owner");
     if (did === hostOrder(groupIds)[0]) roles.push("authority");
-    role.textContent = roles.join(" · ") || "ready";
+    roles.push(lobbyBodies.get(did) || "male");
+    role.textContent = roles.join(" · ");
     row.append(dot4, identity, role);
     roster.appendChild(row);
   }
@@ -96782,6 +96840,7 @@ async function broadcastLobby(kind, extra = {}) {
     kind,
     from: session.did,
     name: session.name,
+    body: playerBody(),
     ...proof ? { inviteProof: proof } : {},
     ...lobbyId ? { lobbyId } : {},
     ...extra
@@ -97192,7 +97251,11 @@ async function deploy({ members, hosts, scope, seed: seed2, host }) {
     scope,
     seed: seed2,
     host: host || members[0],
-    hostOrder: Array.isArray(hosts) ? hosts : [host || members[0], ...members.filter((did) => did !== host)]
+    hostOrder: Array.isArray(hosts) ? hosts : [host || members[0], ...members.filter((did) => did !== host)],
+    bodies: Object.fromEntries(members.map((did) => [
+      did,
+      did === session.did ? playerBody() : lobbyBodies.get(did) || "male"
+    ]))
   });
 }
 function validMatchPayload(packet) {
@@ -97219,6 +97282,7 @@ async function handleLobbyPacket(message) {
   if (!session || !packet || packet.v !== PROTOCOL_VERSION || message?.from !== packet.from || packet.from === session.did) return;
   if (lobbyVisibility === "private" && !await verifyInviteProof(inviteCode, packet.from, packet.inviteProof)) return;
   if (packet.name) lobbyNames.set(packet.from, String(packet.name).slice(0, 24));
+  if (packet.body === "male" || packet.body === "female") lobbyBodies.set(packet.from, packet.body);
   if (packet.kind === "discover") {
     if (packet.visibility === lobbyVisibility) await announceOpenLobby();
     return;
@@ -97484,6 +97548,7 @@ async function joinLobby(mode) {
   closedLobbyRevisions.clear();
   hostScores.clear();
   lobbyNames.clear();
+  lobbyBodies.clear();
   lobbyTransportError = "";
   const name = playerName();
   byId("multiplayer-error").hidden = true;
@@ -97525,6 +97590,7 @@ async function joinLobby(mode) {
       return;
     }
     session = joined;
+    lobbyBodies.set(session.did, playerBody());
     session.setScope(roomId);
     configureSessionCapabilities();
     installLobbyConsensus(createLobbyConsensus({ selfDid: session.did, visibility: lobbyVisibility }));
@@ -97642,6 +97708,7 @@ async function leaveLobby() {
   session = null;
   updateVoice({ active: false, muted: false });
   lobbyNames.clear();
+  lobbyBodies.clear();
   lobbyMembers.clear();
   openLobbies.clear();
   closedLobbyRevisions.clear();
@@ -97690,6 +97757,7 @@ byId("solo-play").addEventListener("click", () => launchGame({
   mode: "solo",
   session: null,
   name: playerName(),
+  body: playerBody(),
   seed: new URLSearchParams(location.search).get("seed") || void 0
 }));
 byId("quick-play").addEventListener("click", () => joinLobby("quick"));
@@ -97721,6 +97789,7 @@ byId("copy-invite").addEventListener("click", async (event) => {
   }, 1800);
 });
 byId("player-name").value = savedName();
+byId("player-body").value = savedBody();
 var initialRoute = location.hash.replace(/^#/, "");
 if (initialRoute === "about") showPage("about");
 else if (initialRoute.startsWith("docs")) {
@@ -97734,6 +97803,7 @@ function launcherObservation() {
   return {
     screen: activePage,
     playerName: byId("player-name").value,
+    playerBody: playerBody(),
     lobby: session ? {
       mode: lobbyMode,
       visibility: lobbyVisibility,
@@ -97745,6 +97815,7 @@ function launcherObservation() {
       members: currentGroup().map((did) => ({
         did,
         name: did === session.did ? session.name : lobbyNames.get(did) || shortPeer(did),
+        body: lobbyBodies.get(did) || "male",
         authority: hostOrder()[0] === did
       })),
       canStart: isLobbyOwner() && currentGroup().length >= 2 && !pendingMatch && !lobbyConsensus.pending && !lobbyConsensus.admission,
@@ -97811,8 +97882,11 @@ globalThis.peerd?.agent?.expose({
       if (!name) throw new Error("name is required");
       byId("player-name").value = name;
       rememberName(name);
+    } else if (action === "set-body") {
+      byId("player-body").value = params.body === "female" ? "female" : "male";
+      playerBody();
     } else if (action === "solo") {
-      void launchGame({ mode: "solo", session: null, name: playerName(), seed: params.seed || void 0 });
+      void launchGame({ mode: "solo", session: null, name: playerName(), body: playerBody(), seed: params.seed || void 0 });
     } else if (action === "quick-match") {
       beginAgentJoin("quick");
     } else if (action === "host-private") {

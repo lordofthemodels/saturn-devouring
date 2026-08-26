@@ -193,6 +193,7 @@ body[data-input="gamepad"] .hub-button:focus em { color: var(--hub-amber); }
 .hub-label { display: block; color: var(--hub-muted); font-size: 10px; letter-spacing: .14em; margin: 0 0 7px; text-transform: uppercase; }
 .hub-input { width: 100%; min-height: 49px; background: #060a0f; border: 1px solid #304152; color: #edf5f7; padding: 11px 13px; font: 14px monospace; outline: none; }
 .hub-input:focus { border-color: var(--hub-cyan); box-shadow: 0 0 0 2px rgba(121,216,223,.1); }
+.hub-field-gap { margin-top: 16px; }
 .hub-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
 .hub-form .hub-button { margin-top: 10px; }
 .hub-note { color: #94a8b4; font-size: 11px; margin-top: 10px; }

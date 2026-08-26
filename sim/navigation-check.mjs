@@ -92,4 +92,38 @@ routeSim._advanceMovement(routeSim.dt);
 assert.equal(routeForm.move, null, 'a disconnected connector must never begin a movement leg');
 assert.equal(routeForm.path.length, 0, 'a disconnected route must be discarded for clean re-planning');
 
+// Enclosed vertical links used to expose a climber on the destination hatch
+// halfway through the timer, then leave it standing there for the other half.
+// Pin the topology-derived behavior so every ladder in a future ship layout
+// gets the same enter → hidden climb → immediate walk-clear sequence.
+const ladderSim = new Sim('ladder-exit-check');
+for (const agent of ladderSim.agents) agent.dead = true;
+const ladder = ladderSim.graph.edges.find((edge) => edge.kind === 'std' && edge.type === 'ladder'
+  && ladderSim.graph.node(edge.a).deck !== ladderSim.graph.node(edge.b).deck && !edge.locked);
+assert.ok(ladder, 'ladder exit fixture needs an open cross-deck ladder');
+const ladderForm = makeAgent(FACTION.COMBAT, ladder.a, ladderSim.graph);
+ladderSim.spawn(ladderForm);
+ladderSim.tickCount = 1;
+ladderSim.t = ladderSim.dt;
+ladderForm.task = { kind: TASK.DART, node: ladder.b };
+ladderSim.setPath(ladderForm, [{ to: ladder.b, link: ladder, layer: 'std' }]);
+ladderSim._refreshOccupancy();
+ladderSim._advanceMovement(ladderSim.dt);
+assert.ok(ladderForm.move, 'the flood form must begin its ladder leg');
+assert.equal(ladder.occupiedBy, ladderForm.id, 'the climber must reserve the ladder while on its rungs');
+let emerged = false;
+for (let tick = 0; tick < 1_000 && ladderForm.move; tick++) {
+  ladderSim._advanceMovement(ladderSim.dt);
+  if (ladderForm.node !== ladder.b || ladderForm.move.hidden) continue;
+  emerged = true;
+  const x = ladderForm.x, y = ladderForm.y;
+  ladderSim._advanceMovement(ladderSim.dt);
+  assert.ok(Math.hypot(ladderForm.x - x, ladderForm.y - y) > 0.001,
+    'a form must walk clear immediately after it appears at the far hatch');
+  assert.equal(ladder.occupiedBy, undefined,
+    'the ladder must be free as soon as the previous body clears the rungs');
+  break;
+}
+assert.ok(emerged, 'the flood form must emerge from the destination ladder hatch');
+
 console.log('infection navigation ✓');

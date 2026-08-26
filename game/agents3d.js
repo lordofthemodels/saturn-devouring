@@ -1357,7 +1357,11 @@ export class Agents3D {
           break;
         }
         case FACTION.ARMED: {
-          const set = this.armedSet;
+          // Players are ARMED in the sim because their health/loadout follows
+          // crew rules. Their selected body is render-only: male uses the
+          // helmeted marine rig, female keeps the armed-crew rig.
+          const malePlayer = (flags & FLAG.MALE_PLAYER) !== 0;
+          const set = malePlayer ? this.marineSet : this.armedSet;
           // ENGAGED OR NOT (user: "obviously need marines leaning in and
           // sighting their guns"). _clipFor turns STATE.FIGHT/GRABBING into
           // CLIP.ATTACK, so for a rifle carrier the clip IS the engagement
@@ -1373,7 +1377,9 @@ export class Agents3D {
           const sh = lg ? this._aimShift(set.rig.legLen, curAim, lg.rock) : 0;
           const bx = wx + Math.cos(heading) * sh, bz = wz - Math.sin(heading) * sh;
           this._pose(bx, gy, bz, heading, 1, 1, 1, lean);
-          stampHold(set, counts.armed++);
+          const slot = malePlayer ? counts.marine++ : counts.armed++;
+          stampHold(set, slot);
+          if (malePlayer) this._tintSlot(set, slot, 1);
           const carry = this._holdFor(set, curAim);
           this._carryAt(bx, gy, bz, heading, carry.rifle, curBob, lean);
           // the flamethrower rides the SAME solve — only the mesh differs

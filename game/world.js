@@ -1697,33 +1697,31 @@ export class World {
     }
   }
 
-  // THE VENT GRATES (user redesign): ONE louvered wall grille per room,
+  // THE VENT MOUTHS (user redesign): ONE open maintenance duct per room,
   // placed by the sim graph as far from the room's doors as the walls allow
   // (graph._placeGrates — the sim's grate IS where crawlers vanish/emerge,
-  // so the mesh and the behavior can never disagree). Built to READ as
-  // grating: a raised frame, a near-black duct void behind, and a stack of
-  // angled slats with real gaps — not a flat plate. Two shared materials
-  // across every grille so the static-merge pass collapses them.
+  // so the mesh and the behavior can never disagree). The old five-louver
+  // face read as a solid targetable panel. This is an open, deep throat: a
+  // raised frame, dark side walls, and an unlit black back that stays black
+  // under the flashlight. Shared materials keep the static merge cheap.
   _buildVentGrates() {
     const g = this.graph;
     const frameMat = new THREE.MeshStandardMaterial({
       color: 0x39434f, roughness: 0.6, metalness: 0.75,
     });
-    const slatMat = new THREE.MeshStandardMaterial({
-      color: 0x232b34, roughness: 0.55, metalness: 0.8,
+    const throatMat = new THREE.MeshStandardMaterial({
+      color: 0x151a20, roughness: 0.82, metalness: 0.35,
     });
-    const voidMat = new THREE.MeshStandardMaterial({ color: 0x04070b, roughness: 1.0, metalness: 0 });
-    const W = 1.35, H = 0.78; // grille face, floor-level (a crawl opening)
-    const railT = 0.09, railD = 0.07;
-    // shared geometries (slat tilt baked into the geometry so every mesh
-    // carries only a yaw — the static-merge pass reads flat scene children
-    // with world transforms, so NO groups here)
-    const voidGeo = new THREE.BoxGeometry(W - 0.16, H - 0.14, 0.06);
+    // Basic black does not brighten under the player's lamp, preserving the
+    // depth cue all the way across the ship's lighting states.
+    const voidMat = new THREE.MeshBasicMaterial({ color: 0x000103 });
+    const W = 1.48, H = 0.86; // wide enough to read as a crawl opening
+    const DEPTH = 0.34, railT = 0.10, railD = 0.09;
+    const voidGeo = new THREE.BoxGeometry(W - 0.20, H - 0.18, 0.025);
     const railHGeo = new THREE.BoxGeometry(W, railT, railD);
     const railVGeo = new THREE.BoxGeometry(railT, H, railD);
-    const slatGeo = new THREE.BoxGeometry(W - 0.24, 0.075, 0.05);
-    slatGeo.rotateX(0.62); // louver tilt — slat faces + black gaps between
-    const SLATS = 5, span = H - 0.14 - railT;
+    const throatHGeo = new THREE.BoxGeometry(W - 0.20, railT, DEPTH);
+    const throatVGeo = new THREE.BoxGeometry(railT, H - 0.18, DEPTH);
     for (const n of g.nodes) {
       const gr = n.grate;
       if (!gr) continue;
@@ -1741,14 +1739,16 @@ export class World {
         m.rotation.y = yaw;
         this.scene.add(m);
       };
-      put(voidGeo, voidMat, 0, H / 2 + 0.06, -0.02);                    // duct void
-      put(railHGeo, frameMat, 0, H + 0.06 - railT / 2, 0.03);           // top rail
-      put(railHGeo, frameMat, 0, 0.06 + railT / 2, 0.03);               // bottom rail
-      put(railVGeo, frameMat, -W / 2 + railT / 2, H / 2 + 0.06, 0.03);  // left rail
-      put(railVGeo, frameMat, W / 2 - railT / 2, H / 2 + 0.06, 0.03);   // right rail
-      for (let k = 0; k < SLATS; k++) {
-        put(slatGeo, slatMat, 0, 0.06 + railT + span * (k + 0.5) / SLATS, 0.035);
-      }
+      const cy = H / 2 + 0.06;
+      put(voidGeo, voidMat, 0, cy, -0.015);                              // lightless back
+      put(throatHGeo, throatMat, 0, H + 0.06 - railT / 2, DEPTH / 2);    // ceiling
+      put(throatHGeo, throatMat, 0, 0.06 + railT / 2, DEPTH / 2);        // floor
+      put(throatVGeo, throatMat, -W / 2 + railT, cy, DEPTH / 2);         // left wall
+      put(throatVGeo, throatMat, W / 2 - railT, cy, DEPTH / 2);          // right wall
+      put(railHGeo, frameMat, 0, H + 0.06 - railT / 2, DEPTH + 0.02);    // top lip
+      put(railHGeo, frameMat, 0, 0.06 + railT / 2, DEPTH + 0.02);        // bottom lip
+      put(railVGeo, frameMat, -W / 2 + railT / 2, cy, DEPTH + 0.02);     // left lip
+      put(railVGeo, frameMat, W / 2 - railT / 2, cy, DEPTH + 0.02);      // right lip
     }
   }
 

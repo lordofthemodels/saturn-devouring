@@ -322,14 +322,16 @@ world.shadowCull = agents.shadowCull = !QP.has('nosc');
 const cic = sim.graph.byId.get('cic');
 const networkPlayers = new Map();
 const networkSquads = new Map();
+const bodyFor = (did) => (LAUNCH.bodies?.[did] ?? LAUNCH.body) === 'female' ? 'female' : 'male';
 if (LAUNCH.session) {
   for (const did of [...new Set(LAUNCH.members || [LAUNCH.session.did])].sort()) {
-    const agent = sim.attachPlayer(cic, { odst: true });
+    const agent = sim.attachPlayer(cic, { odst: true, bodyType: bodyFor(did) });
     networkPlayers.set(did, agent);
     networkSquads.set(did, sim.attachPlayerSquad(agent, 3));
   }
 }
-const player = new Player(canvas, world, sim, cic, null, networkPlayers.get(LAUNCH.session?.did));
+const player = new Player(canvas, world, sim, cic, null,
+  networkPlayers.get(LAUNCH.session?.did), bodyFor(LAUNCH.session?.did));
 
 // Rapier physics: the player's authoritative horizontal collision, built from
 // the same wall meshes the world just extruded (world.collisionBoxes()). Loaded

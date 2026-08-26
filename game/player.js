@@ -16,7 +16,7 @@ import { armoryStations, elevOf } from './world.js';
 import { ODST } from './fps-data.js';
 
 export class Player extends FpsController {
-  constructor(canvas, world, sim, startNode, physics, existingAgent = null) {
+  constructor(canvas, world, sim, startNode, physics, existingAgent = null, bodyType = 'male') {
     const n = sim.graph.node(startNode);
     const [wx, wz] = world.simToWorld(n.x, n.y, n.deck);
     super({
@@ -41,7 +41,8 @@ export class Player extends FpsController {
     // VALUE lives on the sim agent; this is just the read-through for the HUD
     this.sinceHit = 99;
 
-    this.agent = existingAgent ?? sim.attachPlayer(startNode, { odst: true });
+    this.agent = existingAgent ?? sim.attachPlayer(startNode, { odst: true, bodyType });
+    this.agent.bodyType = bodyType === 'female' ? 'female' : 'male';
     this._lastHp = this.agent.hp;
 
     this._syncAgent();
@@ -315,6 +316,9 @@ export class Player extends FpsController {
     a.deck = this.deck;
     a.node = this.world.roomAt(this.deck, sx, sy, a.node);
     a.heading = Math.atan2(-Math.cos(this.yaw), -Math.sin(this.yaw));
+    // The player capsule, unlike NPCs, has no path leg. Publish its real
+    // ground speed so remote bodies select walk/run instead of gliding in idle.
+    a.followSpeed = this.climbing ? 0 : Math.hypot(this.vx, this.vz);
   }
 
   // ammo scavenging: the rack, or rifles on the armed dead

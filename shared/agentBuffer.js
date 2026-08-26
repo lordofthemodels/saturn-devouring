@@ -38,6 +38,7 @@ export const FLAG = {
   // HALO-3 CONVERSION (user): the renderer plays the turn off these two.
   BURROWING: 1 << 17, // infection form seated on a corpse, digging in
   THRASHING: 1 << 18, // corpse convulsing — the pod is inside; it rises soon
+  MALE_PLAYER: 1 << 19, // player-selected male ODST uses the helmeted marine rig
 };
 
 // Anim clip table (§9). Index = animClip in the buffer.

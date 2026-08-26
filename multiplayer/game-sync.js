@@ -51,6 +51,11 @@ function pointNearSegment(point, start, end, radius) {
 }
 
 function agentRow(agent) {
+  // Hidden transit is authority-owned gameplay state, not presentation. A
+  // peer that only receives the form's last grate position would draw and
+  // aim at a body the authority already has inside the duct. Preserve the
+  // kind as well as the bit so peer rendering uses the matching mouth effect.
+  const hiddenTransit = !agent.move?.hidden ? 0 : agent.move.layer === 'vent' ? 1 : 2;
   const row = [
     agent.id, agent.faction, agent.state, agent.node,
     pack(agent.x), pack(agent.y), agent.deck,
@@ -68,6 +73,7 @@ function agentRow(agent) {
     // player ballistic armor: sim-owned since the co-op death desync, so it
     // has to reach the peer or its HUD would show a buffer it does not have
     pack(agent.armor ?? 0),
+    hiddenTransit,
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === 'melee') row.push(
@@ -103,11 +109,12 @@ function snapshotState(sim, cache, full) {
 }
 
 function validSnapshotRow(row, graph) {
-  // 19 fields, or 25 with a melee death impulse on the tail. The two added at
-  // 17/18 are the leap arc (see agentRow); the layout change is why
+  // 21 fields, or 27 with a melee death impulse on the tail. The two at
+  // 17/18 are the leap arc and 20 is hidden transit (see agentRow); positional
+  // layout changes are why
   // PROTOCOL_VERSION moved — a peer on the old shape rejects every row rather
   // than misreading one.
-  return Array.isArray(row) && (row.length === 20 || row.length === 26)
+  return Array.isArray(row) && (row.length === 21 || row.length === 27)
     && packedIntegers(row.slice(0, 12))
     && Number.isSafeInteger(row[0]) && row[0] > 0
     && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6
@@ -123,7 +130,8 @@ function validSnapshotRow(row, graph) {
     && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE // hoverY: up, never down
     && (row[18] === 0 || row[18] === 1)                                             // leaping
     && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1_000 * WIRE_SCALE // armor
-    && row.slice(20).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+    && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2                 // hidden transit kind
+    && row.slice(21).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 
 export function createGameSync({
@@ -207,7 +215,7 @@ export function createGameSync({
   };
 
   const applyRemotePose = (from, packet) => {
-    if (!packedIntegers([packet.x, packet.z, packet.deck, packet.yaw, packet.hp])) return;
+    if (!packedIntegers([packet.x, packet.z, packet.deck, packet.yaw, packet.hp, packet.speed, packet.body])) return;
     const x = unpack(packet.x);
     const z = unpack(packet.z);
     const yaw = unpack(packet.yaw);
@@ -220,7 +228,8 @@ export function createGameSync({
     // snapshot rows already validate against.
     if (Math.abs(x) > SIM_BOUND || Math.abs(z) > SIM_BOUND
       || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5
-      || Math.abs(yaw) > Math.PI * 8) return;
+      || Math.abs(yaw) > Math.PI * 8 || packet.speed < 0 || packet.speed > 50 * WIRE_SCALE
+      || (packet.body !== 0 && packet.body !== 1)) return;
     // the speaking bit rides the pose packet; hold it briefly so the
     // indicator does not strobe between syllables
     if (packet.talk === 1) talkingUntil.set(from, performance.now() + 900);
@@ -233,6 +242,8 @@ export function createGameSync({
     agent.deck = packet.deck;
     agent.node = world.roomAt(packet.deck, simX, simY, agent.node);
     agent.heading = Math.atan2(-Math.cos(yaw), -Math.sin(yaw));
+    agent.followSpeed = unpack(packet.speed);
+    agent.bodyType = packet.body === 1 ? 'female' : 'male';
     agent.move = null;
     agent.path.length = 0;
   };
@@ -250,7 +261,8 @@ export function createGameSync({
     const live = new Set();
     for (const row of rows) {
       const [id, faction, state, node, x, y, deck, hp, maxHp, damage,
-        heading, animTime, dead, downed, helpless, panicked, meleeUntil, hoverY, leaping, armor] = row;
+        heading, animTime, dead, downed, helpless, panicked, meleeUntil, hoverY, leaping, armor,
+        hiddenTransit] = row;
       live.add(id);
       let agent = sim.byId.get(id);
       if (!agent) {
@@ -271,7 +283,10 @@ export function createGameSync({
         // planted every flood form on the deck and the arc read as a skate.
         agent.hoverY = unpack(hoverY);
         agent.leaping = leaping === 1;
-        agent.move = null;
+        agent.move = hiddenTransit === 0 ? null : {
+          layer: hiddenTransit === 1 ? 'vent' : 'shaft',
+          hidden: true,
+        };
         agent.path.length = 0;
       }
       agent.hp = unpack(hp);
@@ -280,9 +295,9 @@ export function createGameSync({
       agent.animTime = unpack(animTime);
       agent.meleeUntil = unpack(meleeUntil);
       agent.armor = unpack(armor);
-      agent.deathImpulse = row.length === 26 ? {
-        kind: 'melee', dirX: unpack(row[20]), dirY: unpack(row[21]),
-        speed: unpack(row[22]), up: unpack(row[23]), spin: unpack(row[24]), kick: unpack(row[25]),
+      agent.deathImpulse = row.length === 27 ? {
+        kind: 'melee', dirX: unpack(row[21]), dirY: unpack(row[22]),
+        speed: unpack(row[23]), up: unpack(row[24]), spin: unpack(row[25]), kick: unpack(row[26]),
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -501,6 +516,8 @@ export function createGameSync({
         const state = {
           x: pack(player.x), z: pack(player.z), deck: player.deck,
           yaw: pack(player.yaw), hp: pack(player.agent.hp),
+          speed: pack(Math.hypot(player.vx ?? 0, player.vz ?? 0)),
+          body: player.agent.bodyType === 'female' ? 1 : 0,
           // VOICE ACTIVITY (user: an indicator on when they are speaking).
           // One bit on a packet that is already flying at 10 Hz — no new
           // channel, and it costs nothing when nobody has a mic open.
@@ -512,7 +529,7 @@ export function createGameSync({
           ? Math.abs((((state.yaw - lastState.yaw + halfTurn) % turn + turn) % turn) - halfTurn)
           : Infinity;
         const changed = !lastState || state.deck !== lastState.deck || state.hp !== lastState.hp
-          || state.talk !== lastState.talk
+          || state.talk !== lastState.talk || state.speed !== lastState.speed || state.body !== lastState.body
           || Math.abs(state.x - lastState.x) > 15 || Math.abs(state.z - lastState.z) > 15 || yawDelta > 15;
         if (changed || now - lastStateAt >= 1_000) {
           send('state', state);

@@ -415,6 +415,7 @@ export class Sim {
     a.hp = a.maxHp = opts.odst ? 45 : this.P.combat.civilian.hp;
     a.armor = this.P.player.armor;
     a.isPlayer = true;
+    a.bodyType = opts.bodyType === 'female' ? 'female' : 'male';
     a.hasRadio = true;
     this.spawn(a);
     this._issueMedkits();
@@ -1362,7 +1363,7 @@ export class Sim {
       }
       if (a.dead || a.faction === FACTION.CORPSE || a.downed || a.hp <= 0) continue;
       // the player's body is moved by the game, not the pathfinder
-      if (a.isPlayer) { a.animTime += dt; continue; }
+      if (a.isPlayer) { a.animTime += this._gaitDt(a, dt, a.followSpeed ?? 0); continue; }
       // a fireteam member close-following the player was already positioned by
       // the escort steer this tick — don't park-drift it back off station.
       if (a.closeFollow) { a.animTime += dt; continue; }
@@ -1568,14 +1569,13 @@ export class Sim {
             ?? { x: Math.max(from.x - from.w / 2 + 1.2, Math.min(from.x + from.w / 2 - 1.2, to.x)), y: from.y };
           const padTo = (link.a === to.idx ? link.padA : link.padB)
             ?? { x: Math.max(to.x - to.w / 2 + 1.2, Math.min(to.x + to.w / 2 - 1.2, from.x)), y: to.y };
-          const flipT = link.flipT ?? 0.5;
-          // the leg = WALK to the pad at real speed (0..appT), ride/climb at
-          // the origin pad (appT..handT), then stand on the far pad. appT is
-          // sized from real meters at move start — the walk takes as long as
-          // walking there normally would (user report: NPCs teleporting to
-          // lifts and stairs)
+          // The leg has three distance-timed phases: walk to the pad, disappear
+          // into the trunk, then immediately walk clear of the far hatch. The
+          // old flipT handoff exposed a form halfway through the timer and left
+          // it motionless on the exit pad for seconds.
           const appT = a.move.appT ?? 0.15;
-          const handT = appT + (1 - appT) * flipT;
+          const exitT = a.move.exitT ?? 0.15;
+          const handT = Math.max(appT + 1e-3, 1 - exitT);
           if (k < appT) {
             const sx = a.move.sx ?? padFrom.x, sy = a.move.sy ?? padFrom.y;
             const kk = k / appT;
@@ -1594,9 +1594,16 @@ export class Sim {
             a.x = padFrom.x; a.y = padFrom.y;
             a.move.hidden = !a.isPlayer;
           } else {
-            a.x = padTo.x; a.y = padTo.y;
+            const kk = handT < 1 ? Math.min(1, (k - handT) / (1 - handT)) : 1;
+            const tx = a.move.tx ?? to.x, ty = a.move.ty ?? to.y;
+            a.x = padTo.x + (tx - padTo.x) * kk;
+            a.y = padTo.y + (ty - padTo.y) * kk;
             a.move.hidden = false;
             if (a.node !== a.move.to) { a.node = a.move.to; a.deck = to.deck; }
+            // The next climber can enter once this body has left the rungs;
+            // its short walk across the destination room must not hold the
+            // ladder reservation or create a visible queueing pause.
+            if (link.type === 'ladder' && link.occupiedBy === a.id) link.occupiedBy = undefined;
           }
           a.heading = Math.atan2(to.y - from.y, to.x - from.x);
         } else {
@@ -1881,11 +1888,18 @@ export class Sim {
             } else {
               // walk to the REAL trunk pad (the drawn well), not a clamp guess
               const pad = (link.a === a.node ? link.padA : link.padB);
+              const farPad = (link.a === step.to ? link.padA : link.padB);
               px = pad ? pad.x : Math.max(fromN.x - fromN.w / 2 + 1.2, Math.min(fromN.x + fromN.w / 2 - 1.2, toN.x));
               py = pad ? pad.y : fromN.y;
               const appSec = Math.hypot(px - a.x, py - a.y) / mps;
-              a.move.appT = appSec / (appSec + a.move.travelSec);
-              a.move.travelSec += appSec;
+              const [tx, ty] = this._parkSlot(a, toN);
+              const farX = farPad?.x ?? Math.max(toN.x - toN.w / 2 + 1.2, Math.min(toN.x + toN.w / 2 - 1.2, fromN.x));
+              const farY = farPad?.y ?? toN.y;
+              const exitSec = Math.hypot(tx - farX, ty - farY) / mps;
+              a.move.tx = tx; a.move.ty = ty;
+              a.move.travelSec += appSec + exitSec;
+              a.move.appT = appSec / a.move.travelSec;
+              a.move.exitT = exitSec / a.move.travelSec;
             }
           } else if (link.door) {
             // REAL METERS, REAL SPEED (user report: bodies "flying" faster
@@ -2819,6 +2833,7 @@ export class Sim {
       // turns it into a visible burst rather than a single-frame flicker.
       if (this.t - (a.flamingT ?? -99) < 0.5) flags |= FLAG.FLAMING;
       if (a.odst) flags |= FLAG.ODST;
+      if (a.isPlayer && a.bodyType !== 'female') flags |= FLAG.MALE_PLAYER;
       // hidden = inside the structure: a cross-deck TRUNK climb (ladder/lift)
       // hides the same way a duct crawl does, so the body vanishes into the
       // hatch and climbs out of the far one instead of standing on the collar
