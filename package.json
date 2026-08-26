@@ -17,7 +17,7 @@
     "melee-arc": "node game/melee-check.mjs",
     "controller": "node game/gamepad-check.mjs",
     "commands": "node sim/command-check.js",
-    "multiplayer": "node multiplayer/protocol-check.mjs && node multiplayer/lobby-state-check.mjs && node multiplayer/lobby-consensus-check.mjs && node multiplayer/match-launch-check.mjs && node multiplayer/authority-check.mjs && node multiplayer/dweb-client-check.mjs && node multiplayer/session-cancel-check.mjs && node multiplayer/session-capability-check.mjs && node multiplayer/session-error-check.mjs && node multiplayer/voice-check.mjs && node worker-check.mjs",
+    "multiplayer": "node multiplayer/protocol-check.mjs && node multiplayer/game-sync-check.mjs && node multiplayer/lobby-state-check.mjs && node multiplayer/lobby-consensus-check.mjs && node multiplayer/match-launch-check.mjs && node multiplayer/authority-check.mjs && node multiplayer/dweb-client-check.mjs && node multiplayer/session-cancel-check.mjs && node multiplayer/session-capability-check.mjs && node multiplayer/session-error-check.mjs && node multiplayer/voice-check.mjs && node worker-check.mjs",
     "check": "npm run multiplayer && npm run determinism && npm run physics && npm run ragdoll && npm run melee && npm run tactics && npm run navigation && npm run world && npm run melee-arc && npm run controller && npm run commands && npm run check:dwapp",
     "vendor:peerd": "node scripts/vendor-peerd-browser.mjs",
     "build:dwapp": "node scripts/build-dwapp.mjs",

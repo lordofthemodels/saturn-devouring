@@ -44,9 +44,11 @@ import {
 
 const byId = (id) => document.getElementById(id);
 const launcher = byId('launcher');
+byId('protocolVersion').textContent = `CHARON NETWORK PROTOCOL v${PROTOCOL_VERSION}`;
 const pages = [...document.querySelectorAll('[data-launch-page]')];
 const launcherGamepad = new StandardGamepad();
 const lobbyNames = new Map();
+const lobbyBodies = new Map();
 let session = null;
 let lobbyMode = null;
 let lobbyVisibility = 'public';
@@ -88,7 +90,7 @@ window.addEventListener('keydown', () => setInputMode('keyboard'), true);
 window.addEventListener('pointerdown', () => setInputMode('keyboard'), true);
 
 function visibleLauncherControls() {
-  return [...launcher.querySelectorAll('button, input, [tabindex]')].filter((control) => (
+  return [...launcher.querySelectorAll('button, input, select, [tabindex]')].filter((control) => (
     !control.disabled && control.tabIndex >= 0 && !control.closest('[hidden]')
     && control.getClientRects().length > 0
   ));
@@ -158,7 +160,7 @@ function launcherGamepadFrame(now) {
     else active.focus();
   }
   if (state.pressed('b')) {
-    if (document.activeElement?.matches('input:not([readonly])')) document.activeElement.blur();
+    if (document.activeElement?.matches('input:not([readonly]), select')) document.activeElement.blur();
     else document.querySelector('[data-launch-page]:not([hidden]) .hub-back')?.click();
   }
 }
@@ -173,6 +175,18 @@ function savedName() {
 function rememberName(name) {
   try { localStorage.setItem('charon-player-name', name); }
   catch { /* opaque-origin dwapps intentionally have no durable storage */ }
+}
+
+function savedBody() {
+  try { return localStorage.getItem('charon-player-body') === 'female' ? 'female' : 'male'; }
+  catch { return 'male'; }
+}
+
+function playerBody() {
+  const body = byId('player-body').value === 'female' ? 'female' : 'male';
+  try { localStorage.setItem('charon-player-body', body); }
+  catch { /* opaque-origin dwapps intentionally have no durable storage */ }
+  return body;
 }
 
 function setHash(route) {
@@ -292,7 +306,8 @@ function renderRoster() {
     const roles = [];
     if (did === lobbyHostDid) roles.push('owner');
     if (did === hostOrder(groupIds)[0]) roles.push('authority');
-    role.textContent = roles.join(' · ') || 'ready';
+    roles.push(lobbyBodies.get(did) || 'male');
+    role.textContent = roles.join(' · ');
     row.append(dot, identity, role);
     roster.appendChild(row);
   }
@@ -343,6 +358,7 @@ async function broadcastLobby(kind, extra = {}) {
     kind,
     from: session.did,
     name: session.name,
+    body: playerBody(),
     ...(proof ? { inviteProof: proof } : {}),
     ...(lobbyId ? { lobbyId } : {}),
     ...extra,
@@ -765,6 +781,8 @@ async function deploy({ members, hosts, scope, seed, host }) {
     seed,
     host: host || members[0],
     hostOrder: Array.isArray(hosts) ? hosts : [host || members[0], ...members.filter((did) => did !== host)],
+    bodies: Object.fromEntries(members.map((did) => [did,
+      did === session.did ? playerBody() : lobbyBodies.get(did) || 'male'])),
   });
 }
 
@@ -798,6 +816,7 @@ async function handleLobbyPacket(message) {
   if (lobbyVisibility === 'private'
     && !(await verifyInviteProof(inviteCode, packet.from, packet.inviteProof))) return;
   if (packet.name) lobbyNames.set(packet.from, String(packet.name).slice(0, 24));
+  if (packet.body === 'male' || packet.body === 'female') lobbyBodies.set(packet.from, packet.body);
 
   if (packet.kind === 'discover') {
     if (packet.visibility === lobbyVisibility) await announceOpenLobby();
@@ -1088,6 +1107,7 @@ async function joinLobby(mode) {
   closedLobbyRevisions.clear();
   hostScores.clear();
   lobbyNames.clear();
+  lobbyBodies.clear();
   lobbyTransportError = '';
   const name = playerName();
   byId('multiplayer-error').hidden = true;
@@ -1130,6 +1150,7 @@ async function joinLobby(mode) {
       return;
     }
     session = joined;
+    lobbyBodies.set(session.did, playerBody());
     session.setScope(roomId);
     configureSessionCapabilities();
     installLobbyConsensus(createLobbyConsensus({ selfDid: session.did, visibility: lobbyVisibility }));
@@ -1248,6 +1269,7 @@ async function leaveLobby() {
   session = null;
   updateVoice({ active: false, muted: false });
   lobbyNames.clear();
+  lobbyBodies.clear();
   lobbyMembers.clear();
   openLobbies.clear();
   closedLobbyRevisions.clear();
@@ -1299,6 +1321,7 @@ byId('solo-play').addEventListener('click', () => launchGame({
   mode: 'solo',
   session: null,
   name: playerName(),
+  body: playerBody(),
   seed: new URLSearchParams(location.search).get('seed') || undefined,
 }));
 byId('quick-play').addEventListener('click', () => joinLobby('quick'));
@@ -1327,6 +1350,7 @@ byId('copy-invite').addEventListener('click', async (event) => {
 });
 
 byId('player-name').value = savedName();
+byId('player-body').value = savedBody();
 const initialRoute = location.hash.replace(/^#/, '');
 if (initialRoute === 'about') showPage('about');
 else if (initialRoute.startsWith('docs')) {
@@ -1341,6 +1365,7 @@ function launcherObservation() {
   return {
     screen: activePage,
     playerName: byId('player-name').value,
+    playerBody: playerBody(),
     lobby: session ? {
       mode: lobbyMode,
       visibility: lobbyVisibility,
@@ -1352,6 +1377,7 @@ function launcherObservation() {
       members: currentGroup().map((did) => ({
         did,
         name: did === session.did ? session.name : lobbyNames.get(did) || shortPeer(did),
+        body: lobbyBodies.get(did) || 'male',
         authority: hostOrder()[0] === did,
       })),
       canStart: isLobbyOwner() && currentGroup().length >= 2 && !pendingMatch
@@ -1422,8 +1448,11 @@ globalThis.peerd?.agent?.expose({
       if (!name) throw new Error('name is required');
       byId('player-name').value = name;
       rememberName(name);
+    } else if (action === 'set-body') {
+      byId('player-body').value = params.body === 'female' ? 'female' : 'male';
+      playerBody();
     } else if (action === 'solo') {
-      void launchGame({ mode: 'solo', session: null, name: playerName(), seed: params.seed || undefined });
+      void launchGame({ mode: 'solo', session: null, name: playerName(), body: playerBody(), seed: params.seed || undefined });
     } else if (action === 'quick-match') {
       beginAgentJoin('quick');
     } else if (action === 'host-private') {

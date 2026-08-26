@@ -819,8 +819,8 @@ export class Hive {
       const threat = this.localThreat(f.node);
       const own = sim.influence.floodStr[f.node];
       if (threat > Math.max(own, 0.8)) {
-        // combat forms bolt through the vents too (user rule) — the escape
-        // hatch topology is what makes avoid-and-breed survivable
+        // Infection forms may take the duct network; combat forms still use
+        // the ordinary ship graph through doors, ladders, lifts, and stairs.
         const safe = this.quietNodeNear(f.node, f.faction === FACTION.INFECTION ? 'infection' : 'combat');
         if (safe !== -1 && safe !== f.node) {
           this.assign(f, { kind: TASK.MOVE, node: safe, evade: true });

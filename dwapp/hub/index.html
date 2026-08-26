@@ -348,6 +348,7 @@
         <p class="hub-copy">Every match runs peer-to-peer. In peerd, Charon uses the host’s authenticated base mesh. On the web, the same room, identity, gossip, and WebRTC primitives ship inside the page.</p>
         <div class="hub-form">
           <label class="hub-label" for="player-name">Callsign</label><input class="hub-input" id="player-name" maxlength="24" autocomplete="nickname" placeholder="ODST callsign">
+          <label class="hub-label hub-field-gap" for="player-body">Operator</label><select class="hub-input" id="player-body"><option value="male">Male</option><option value="female">Female</option></select>
           <div class="hub-form-row">
             <div><span class="hub-label">Public lobbies</span><button class="hub-button primary" id="quick-play"><b>QUICK MATCH</b><em>FIND FIRETEAM →</em></button><p class="hub-note">Joins an open lobby, or creates one when every lobby is full.</p></div>
             <div><span class="hub-label">Invite-only</span><button class="hub-button" id="host-private"><b>CREATE PRIVATE ROOM</b><em>GENERATE CODE →</em></button><p class="hub-note">A high-entropy room code is never listed or advertised.</p></div>
@@ -393,7 +394,7 @@ npm run build:dwapp</pre></article>
           </div>
         </div>
       </section>
-      <footer class="hub-footer"><span>CHARON NETWORK PROTOCOL v9</span><span data-input-copy="gamepad">A SELECT · B BACK · D-PAD / LEFT STICK NAVIGATE</span><span>WEBGPU · WEBGL2 · WEBRTC · PEERD DWEB</span></footer>
+      <footer class="hub-footer"><span id="protocolVersion"></span><span data-input-copy="gamepad">A SELECT · B BACK · D-PAD / LEFT STICK NAVIGATE</span><span>WEBGPU · WEBGL2 · WEBRTC · PEERD DWEB</span></footer>
     </main>
   </div>
   <canvas id="c"></canvas>
