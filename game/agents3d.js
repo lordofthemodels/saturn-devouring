@@ -12,6 +12,7 @@ import { characterParts } from './characters.js';
 import { buildCarrier, CarrierAnimator, SACK_BLOAT_M } from './carrier-model.js';
 import { RagdollSystem } from '../engine/physics/ragdoll.js';
 import { TASK } from '../sim/hive.js';
+import { combatChargeArmLift } from '../sim/charge-pose.js';
 
 const CAP = 512;
 // the carry yaw _rifleAt applies; the weapon light rides the same axis
@@ -887,11 +888,11 @@ export class Agents3D {
         if (armsHigh) {
           const side = part === 'armR' ? 1 : -1;
           const phase = gaitPhase(clip, animT, id);
-          // Halo CE elite-combat-form silhouette: both rigid arms rotate out
-          // of their A-pose to near vertical, with just enough independent
-          // shoulder thrash that the rush stays feral instead of celebratory.
+          // Halo CE elite-combat-form silhouette: both rigid arms form a wide
+          // Y, with enough independent shoulder thrash to stay feral. Near-
+          // vertical arms overlapped head-on and read as one raised limb.
           (this._eHold ??= new THREE.Euler()).set(
-            -side * (2.30 + Math.sin(phase * 0.73 + side) * 0.10),
+            combatChargeArmLift(side, phase),
             side * Math.sin(phase * 1.31 + id) * 0.10,
             Math.sin(phase * 1.07 + side * 0.8) * 0.16,
           );
