@@ -79381,14 +79381,14 @@ var init_world = __esm({
           roughness: 0.32,
           metalness: 0.82
         });
-        const matWindowGlass = new MeshStandardMaterial({
-          color: 7903416,
-          roughness: 0.12,
-          metalness: 0.18,
+        const matWindowGlass = new MeshBasicMaterial({
+          color: 528668,
           transparent: true,
-          opacity: 0.2,
+          opacity: 0.025,
           depthWrite: false,
-          side: DoubleSide
+          side: DoubleSide,
+          fog: false,
+          toneMapped: false
         });
         const matCeil = new MeshStandardMaterial({ color: 1053724, roughness: 1 });
         this._matCeil = matCeil;

@@ -623,9 +623,13 @@ export class World {
     const matWindowFrame = new THREE.MeshStandardMaterial({
       color: 0x303a48, roughness: 0.32, metalness: 0.82,
     });
-    const matWindowGlass = new THREE.MeshStandardMaterial({
-      color: 0x7898b8, roughness: 0.12, metalness: 0.18,
-      transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide,
+    // The pane should almost disappear against space. A lit PBR material
+    // reflected the room/environment over the whole opening and veiled the
+    // stars in blue glare; unlit glass keeps only a trace of hull tint while
+    // the physical box and frame still communicate that the opening is sealed.
+    const matWindowGlass = new THREE.MeshBasicMaterial({
+      color: 0x08111c, transparent: true, opacity: 0.025,
+      depthWrite: false, side: THREE.DoubleSide, fog: false, toneMapped: false,
     });
     // NO self-glow (user: a bright visible ceiling ruins the darkness) — the
     // overhead plating is pitch dark unless an actual light source hits it
