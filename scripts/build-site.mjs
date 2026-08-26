@@ -39,7 +39,7 @@ const OUT = join(ROOT, 'dist', 'site');
 const SKIP = new Set([
   '.git', '.claude', '.wrangler', 'node_modules', 'dist', 'docs', 'scripts',
   'dwapp', '.assetsignore', 'wrangler.jsonc', 'package.json', 'package-lock.json',
-  'README.md', '.gitignore',
+  'README.md', '.gitignore', 'worker.js', 'worker-check.mjs',
 ]);
 
 async function mirror(from, to) {

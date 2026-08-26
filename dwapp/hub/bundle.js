@@ -94746,6 +94746,60 @@ function createRoomVoice({
 
 // multiplayer/session.js
 var scopedTopic = (scope, topic) => `charon/${scope || "lobby"}/${topic}`;
+var PEER_FAILURE_EVENTS = /* @__PURE__ */ new Set(["room_dial_failed", "room_accept_failed"]);
+var TURN_CREDENTIALS_PATH = "/api/turn-credentials";
+function cancelledJoinError() {
+  const error2 = new Error("multiplayer join cancelled");
+  error2.code = "JOIN_CANCELLED";
+  return error2;
+}
+var PeerConnectionError = class extends Error {
+  constructor({ relayAvailable = false } = {}) {
+    super(relayAvailable ? "Another player reached matchmaking, but WebRTC timed out even with relay fallback. Check whether the VPN or firewall allows WebRTC, then try again." : "Another player reached matchmaking, but the WebRTC data channel timed out. Direct connectivity was blocked by a VPN, NAT, or firewall, and relay credentials were unavailable.");
+    this.name = "PeerConnectionError";
+    this.code = "PEER_CONNECTION_FAILED";
+  }
+};
+var SignalingConnectionError = class extends Error {
+  constructor({ cause } = {}) {
+    super("Could not reach the multiplayer matchmaking service. Check the connection and try again.", { cause });
+    this.name = "SignalingConnectionError";
+    this.code = "SIGNALING_UNAVAILABLE";
+  }
+};
+var RelayCredentialsError = class extends Error {
+  constructor({ cause } = {}) {
+    super("WebRTC relay credentials are temporarily unavailable.", { cause });
+    this.name = "RelayCredentialsError";
+    this.code = "TURN_UNAVAILABLE";
+  }
+};
+function peerConnectionFailure(event, options) {
+  return PEER_FAILURE_EVENTS.has(event) ? new PeerConnectionError(options) : null;
+}
+async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
+  let response;
+  try {
+    response = await fetcher(TURN_CREDENTIALS_PATH, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      cache: "no-store",
+      signal
+    });
+  } catch (cause) {
+    throw new RelayCredentialsError({ cause });
+  }
+  if (!response.ok) throw new RelayCredentialsError();
+  const payload = await response.json().catch(() => null);
+  const iceServers = payload?.iceServers;
+  const hasRelay = Array.isArray(iceServers) && iceServers.some((server) => {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    return urls.some((url) => typeof url === "string" && url.startsWith("turn")) && typeof server?.username === "string" && typeof server?.credential === "string";
+  });
+  if (!hasRelay) throw new RelayCredentialsError();
+  return iceServers;
+}
 async function browserCapacity(room) {
   const samples = await Promise.all(room.peers().map(async (peer) => {
     try {
@@ -94912,15 +94966,10 @@ var BridgeSession = class extends SessionBase {
 };
 async function bridgeSession({ roomId, name, signal }) {
   const client = createDwebClient();
-  const cancelled = () => {
-    const error2 = new Error("multiplayer join cancelled");
-    error2.code = "JOIN_CANCELLED";
-    return error2;
-  };
   const onAbort = () => client.dispose();
   if (signal?.aborted) {
     client.dispose();
-    throw cancelled();
+    throw cancelledJoinError();
   }
   signal?.addEventListener("abort", onAbort, { once: true });
   let hello;
@@ -94929,7 +94978,7 @@ async function bridgeSession({ roomId, name, signal }) {
   } catch (error2) {
     client.dispose();
     signal?.removeEventListener("abort", onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     error2.code = "BRIDGE_UNAVAILABLE";
     throw error2;
   }
@@ -94946,7 +94995,7 @@ async function bridgeSession({ roomId, name, signal }) {
   } catch (error2) {
     client.dispose();
     signal?.removeEventListener("abort", onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     throw error2;
   }
   const operations = Array.isArray(hello.operations) ? hello.operations.filter((op) => typeof op === "string") : [];
@@ -94975,7 +95024,7 @@ async function bridgeSession({ roomId, name, signal }) {
     await session2.close().catch(() => {
     });
     signal?.removeEventListener("abort", onAbort);
-    if (signal?.aborted) throw cancelled();
+    if (signal?.aborted) throw cancelledJoinError();
     throw error2;
   }
   signal?.removeEventListener("abort", onAbort);
@@ -94997,6 +95046,7 @@ var BrowserSession = class extends SessionBase {
     this.voice = createRoomVoice({
       selfDid: this.did,
       scope: this.roomId,
+      iceServers: args.iceServers,
       sendSignal: (to, signal) => this.direct.send(to, signal),
       onState: (status) => this.emit("voice", status)
     });
@@ -95080,9 +95130,11 @@ var BrowserSession = class extends SessionBase {
     this.room.leave();
   }
 };
-async function browserSession({ roomId, name, identity: suppliedIdentity }) {
+async function browserSession({ roomId, name, identity: suppliedIdentity, signal }) {
   if (!globalThis.RTCPeerConnection || !globalThis.WebSocket || !globalThis.crypto?.subtle) {
-    throw new Error("this browser does not provide WebRTC and WebCrypto");
+    const error2 = new Error("This browser does not provide the WebRTC and WebCrypto features multiplayer requires.");
+    error2.code = "BROWSER_UNSUPPORTED";
+    throw error2;
   }
   const {
     generateIdentity: generateIdentity2,
@@ -95100,9 +95152,35 @@ async function browserSession({ roomId, name, identity: suppliedIdentity }) {
   let presence;
   let direct;
   let session2;
+  let transportFailure = null;
+  let iceServers;
   const unsubscribers = [];
   try {
-    room = await joinRoom2({ roomId, identity, kind: "website" });
+    try {
+      iceServers = await fetchRelayIceServers({ signal });
+    } catch (error2) {
+      if (signal?.aborted) throw cancelledJoinError();
+    }
+    try {
+      room = await joinRoom2({
+        roomId,
+        identity,
+        kind: "website",
+        iceServers,
+        audit(event) {
+          const failure = peerConnectionFailure(event, { relayAvailable: !!iceServers });
+          if (!failure) return;
+          transportFailure = failure;
+          session2?.emit("transport-status", { state: "failed", error: failure });
+        }
+      });
+    } catch (error2) {
+      if (signal?.aborted) throw cancelledJoinError();
+      if (error2 instanceof PeerConnectionError) throw error2;
+      throw new SignalingConnectionError({ cause: error2 });
+    }
+    if (signal?.aborted) throw cancelledJoinError();
+    if (transportFailure && room.peers().length === 0) throw transportFailure;
     gossip = createGossip2({ mesh: room.mesh });
     sync = createTopicSync2({ mesh: room.mesh, gossip, store: createMemoryTopicStore2() });
     presence = createPresence2({ gossip, selfDid: identity.did, meta: () => ({ name, mediaVoice: 1 }) });
@@ -95117,11 +95195,14 @@ async function browserSession({ roomId, name, identity: suppliedIdentity }) {
       sync,
       presence,
       direct,
+      iceServers,
       unsubscribers
     });
     unsubscribers.push(
       room.onPeer(({ did } = {}) => {
         if (!did || did === session2.did) return;
+        transportFailure = null;
+        session2.emit("transport-status", { state: "connected" });
         if (!session2.members.has(did)) {
           session2.members.set(did, { did, name: "" });
           session2.emit("roster", session2.roster());
@@ -95199,9 +95280,8 @@ async function joinMultiplayerRoom(options) {
     try {
       return await browserSession(options);
     } catch (browserError) {
-      const error2 = new Error(browserError.message || "multiplayer connection failed");
-      error2.cause = { bridgeError, browserError };
-      throw error2;
+      browserError.bridgeError = bridgeError;
+      throw browserError;
     }
   }
 }
@@ -95963,6 +96043,7 @@ var lobbyConsensus = createLobbyConsensus();
 var lobbyMaintenanceTimer = 0;
 var singletonSettleTimer = 0;
 var lobbyMaintenanceBusy = false;
+var lobbyTransportError = "";
 var lobbyRevisionKey = (id, host) => `${String(id)}\0${String(host)}`;
 function savedName() {
   try {
@@ -96087,6 +96168,11 @@ function renderRoster() {
   byId("lobby-status").dataset.tone = "ok";
   if (pendingMatch) {
     byId("lobby-status").textContent = committing ? "Fireteam confirmed. Entering the match room…" : `Confirming fireteam · ${pendingMatch.acknowledgements.size} / ${pendingMatch.payload.members.length}`;
+    return;
+  }
+  if (lobbyTransportError) {
+    byId("lobby-status").dataset.tone = "error";
+    byId("lobby-status").textContent = lobbyTransportError;
     return;
   }
   if (!lobbyId) {
@@ -96827,6 +96913,7 @@ async function joinLobby(mode) {
   closedLobbyRevisions.clear();
   hostScores.clear();
   lobbyNames.clear();
+  lobbyTransportError = "";
   const name = playerName();
   byId("multiplayer-error").hidden = true;
   byId("invite-code").removeAttribute("aria-invalid");
@@ -96854,7 +96941,13 @@ async function joinLobby(mode) {
   byId("lobby-roster").textContent = "";
   byId("lobby-status").dataset.tone = "";
   byId("lobby-status").textContent = "Opening a peer-to-peer room…";
+  let slowConnectionTimer = 0;
   try {
+    slowConnectionTimer = setTimeout(() => {
+      if (generation === joinGeneration && !session) {
+        byId("lobby-status").textContent = "Still negotiating direct WebRTC connectivity… VPN, NAT, or firewall traversal may take up to 15 seconds.";
+      }
+    }, 5e3);
     const joined = await joinMultiplayerRoom({ roomId, name, signal: controller.signal });
     if (generation !== joinGeneration) {
       await joined.close();
@@ -96888,6 +96981,10 @@ async function joinLobby(mode) {
           }).catch(() => {
           });
         }
+      }),
+      session.on("transport-status", (status) => {
+        lobbyTransportError = status?.state === "failed" ? status.error?.message || "Another player reached this lobby, but WebRTC could not connect." : "";
+        renderRoster();
       }),
       session.on("voice", updateVoice),
       session.on("peer-leave", (did) => {
@@ -96940,6 +97037,7 @@ async function joinLobby(mode) {
       }
     }
   } finally {
+    clearTimeout(slowConnectionTimer);
     if (joinController === controller) joinController = null;
     if (generation === joinGeneration) setJoinButtons(false);
   }

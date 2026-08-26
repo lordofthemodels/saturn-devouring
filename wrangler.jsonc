@@ -1,7 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "charon",
-  "compatibility_date": "2026-08-11",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-26",
   // Serve the BUILT site, not the repo. Pointing this at "." shipped ~60 raw ES
   // modules with every comment and blank line in them; `npm run build:site`
   // bundles and minifies the game's graph into dist/site and mirrors everything
@@ -10,5 +11,5 @@
   //
   // Run `npm run build:site` before `npm run deploy` — `npm run deploy` does it
   // for you. dist/ is gitignored, so a clean checkout must build first.
-  "assets": { "directory": "./dist/site" }
+  "assets": { "directory": "./dist/site", "binding": "ASSETS" }
 }
