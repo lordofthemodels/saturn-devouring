@@ -18,13 +18,37 @@ const FACTION_COLOR = {
   [FACTION.CORPSE]: '#777777',
 };
 
+// Squad identity is a display concern, but it must stay stable everywhere the
+// harness names a team: map badges, force roster and command picker.
+const TEAM_COLORS = ['#58a6ff', '#39c5bb', '#9b8cff', '#63c174', '#d3a74e', '#dd7693', '#76a9c7', '#c08fe6'];
+const GARRISON_COLOR = '#aab8ca';
+
+export function squadTag(squad) {
+  if (squad.odst) return 'ODST';
+  if (squad.patrol) return `P${squad.patrolNo}`;
+  return `S${squad.id + 1}`;
+}
+
+export function squadColor(squad) {
+  return TEAM_COLORS[squad.id % TEAM_COLORS.length];
+}
+
+function marineTeam(sim, agent) {
+  if (agent?.garrison) return { tag: 'G', color: GARRISON_COLOR };
+  const squad = sim.squads[agent?.squad];
+  return squad ? { tag: squadTag(squad), color: squadColor(squad) }
+    : { tag: '—', color: FACTION_COLOR[FACTION.MARINE] };
+}
+
 export class Viz {
   constructor(canvas, sim) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.sim = sim;
-    this.deckFilter = 0; // 0 = all decks
-    this.overlays = { influence: true, shafts: true, vents: true, calls: true, tracker: false, beliefs: false, labels: true, conns: false, fire: true };
+    // Open on the incident, not five stacked decks. "All" remains available
+    // for topology work, but the useful default is the breach deck.
+    this.deckFilter = sim.graph.node(sim.graph.breachNode).deck;
+    this.overlays = { influence: true, shafts: false, vents: true, calls: true, tracker: false, beliefs: false, labels: true, conns: false, fire: true };
     this.callRings = []; // {node, t0}
     this.lastCallCount = 0;
     // camera in world METERS: center + zoom on top of the fit-to-canvas scale
@@ -43,6 +67,7 @@ export class Viz {
     this.callRings = [];
     this.lastCallCount = 0;
     this.rpos = new Map();
+    this.deckFilter = sim.graph.node(sim.graph.breachNode).deck;
     this.focusBreach();
   }
 
@@ -95,11 +120,13 @@ export class Viz {
     if (this.overlays.shafts) this._shafts(g);
     this._rooms(g);
     this._edgeMarkers(g);
+    if (this.overlays.labels) this._roomLabels(g);
     if (this.overlays.calls) this._callRings(g);
     if (this.overlays.tracker) this._tracker(g);
     if (this.overlays.beliefs) this._beliefs(g);
     this._agents(dt);
     this._combatFx(g);
+    this._teamLabels();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
@@ -309,17 +336,38 @@ export class Viz {
         ctx.fillStyle = 'rgba(20,20,30,0.45)';
         ctx.fillRect(x0, y0, n.w, n.d);
       }
-      // labels: at far zoom only the big spaces are named (the fit view was
-      // a pile of overlapping text); zoom in and every room is labeled
-      if (this.overlays.labels && (this.s >= 2.4 || n.w >= 22)) {
-        ctx.fillStyle = '#7e90aa';
-        ctx.font = this._font(12);
-        ctx.textAlign = 'center';
-        const above = n.type === 'corridor' ? n.y + this._lw(3) : y0 - this._lw(3);
-        ctx.fillText(n.name, n.x, above);
-        ctx.textAlign = 'left';
-      }
     }
+  }
+
+  // Labels are placed as a second pass so they can be culled against one
+  // another. The map data can change freely: large/important rooms win, and
+  // more names naturally appear as zoom gives them enough screen space.
+  _roomLabels(g) {
+    const { ctx } = this;
+    ctx.font = this._font(10.5);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const candidates = g.nodes
+      .filter((n) => this._visible(n.idx) && (this.deckFilter !== 0 || n.w >= 40))
+      .sort((a, b) => Number(b.idx === g.breachNode) - Number(a.idx === g.breachNode)
+        || Number(b.type === 'corridor') - Number(a.type === 'corridor')
+        || b.w * b.d - a.w * a.d);
+    const placed = [];
+    for (const n of candidates) {
+      const width = ctx.measureText(n.name).width + this._lw(7);
+      const height = this._lw(12);
+      const x = n.x;
+      const y = n.type === 'corridor' ? n.y : n.y - n.d / 2 + this._lw(9);
+      const box = { x0: x - width / 2, x1: x + width / 2, y0: y - height / 2, y1: y + height / 2 };
+      if (placed.some((p) => box.x0 < p.x1 && box.x1 > p.x0 && box.y0 < p.y1 && box.y1 > p.y0)) continue;
+      placed.push(box);
+      ctx.fillStyle = 'rgba(9, 13, 18, 0.72)';
+      ctx.fillRect(box.x0, box.y0, width, height);
+      ctx.fillStyle = n.idx === g.breachNode ? '#d79a8d' : '#8293aa';
+      ctx.fillText(n.name, x, y + this._lw(0.5));
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
   }
 
   _callRings(g) {
@@ -464,7 +512,8 @@ export class Viz {
         ctx.strokeStyle = color; ctx.lineWidth = this._lw(1.2);
         ctx.beginPath(); ctx.arc(x, y, rr(0.55, 3), 0, Math.PI * 2); ctx.stroke();
       } else if (f === FACTION.MARINE) {
-        this._marineGlyph(x, y, heading, rr(0.55, 2.8), detailed);
+        const team = marineTeam(sim, sim.byId.get(buf.id[i]));
+        this._marineGlyph(x, y, heading, rr(0.55, 2.8), detailed, team.color);
       } else if (f === FACTION.ARMED) {
         this._armedGlyph(x, y, heading, rr(0.45, 2.3), detailed);
       } else if (f === FACTION.CIVILIAN) {
@@ -511,21 +560,66 @@ export class Viz {
     }
   }
 
+  // One badge per squad cluster makes formations readable without stamping a
+  // label over every marine. If a team splits across rooms, each group keeps
+  // its badge so the split is explicit rather than silently disappearing.
+  _teamLabels() {
+    const { ctx, sim } = this;
+    const groups = new Map();
+    for (const a of sim.agents) {
+      if (a.dead || a.hp <= 0 || a.faction !== FACTION.MARINE || !this._visible(a.node)) continue;
+      const team = marineTeam(sim, a);
+      const key = `${team.tag}:${a.node}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = { ...team, x: 0, y: 0, count: 0 };
+        groups.set(key, group);
+      }
+      const pos = this.rpos.get(a.id) ?? a;
+      group.x += pos.x;
+      group.y += pos.y;
+      group.count++;
+    }
+    ctx.font = this._font(9);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const group of groups.values()) {
+      const x = group.x / group.count;
+      const y = group.y / group.count - this._lw(10);
+      const text = `${group.tag} · ${group.count}`;
+      const width = ctx.measureText(text).width + this._lw(7);
+      const height = this._lw(12);
+      ctx.fillStyle = 'rgba(6, 9, 13, 0.9)';
+      ctx.strokeStyle = group.color;
+      ctx.lineWidth = this._lw(1.2);
+      ctx.beginPath();
+      ctx.roundRect(x - width / 2, y - height / 2, width, height, this._lw(3));
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = group.color;
+      ctx.fillText(text, x, y + this._lw(0.5));
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
   // ---- lore-styled NPC glyphs (user note: icons, not just colored dots) ----
 
   // marine: armored shoulders + helmet with a visor slit + rifle, facing
   // their heading — reads instantly as a soldier
-  _marineGlyph(x, y, h, r, detailed) {
+  _marineGlyph(x, y, h, r, detailed, teamColor) {
     const { ctx } = this;
     if (!detailed) {
-      ctx.fillStyle = FACTION_COLOR[FACTION.MARINE];
+      ctx.fillStyle = '#18304f';
       ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      ctx.strokeStyle = teamColor;
+      ctx.lineWidth = this._lw(1.3);
+      ctx.strokeRect(x - r, y - r, r * 2, r * 2);
       return;
     }
     ctx.save();
     ctx.translate(x, y); ctx.rotate(h);
     // shoulders (armor block, wider than deep)
-    ctx.fillStyle = '#33619f';
+    ctx.fillStyle = teamColor;
     ctx.fillRect(-r * 0.5, -r, r * 1.0, r * 2);
     // rifle along the facing, offset to the right hand
     ctx.strokeStyle = '#c9d4e2';
@@ -758,28 +852,40 @@ export class Viz {
 
 export function renderStats(sim, el) {
   const s = sim.getStats();
-  const rows = [
-    ['time', fmtTime(s.t) + (s.outcome ? ` — ${s.outcome.toUpperCase()}` : '')],
-    ['phase', s.opening ? 'OPENING (racing first sweep)' : 'steady state'],
-    ['scarcity', s.scarcity.toFixed(2) + (s.scarcity > 2 ? ' (hoarding)' : s.scarcity <= 0.75 ? ' (spending freely)' : '')],
-    ['—', '—'],
-    ['civilians', s.civ], ['armed crew', s.armed], ['marines', s.marine],
-    ['—', '—'],
-    ['infection pool', s.infection],
-    ['combat forms', `${s.combat} (+${s.combatDowned} downed)`],
-    ['carriers', s.carrier],
-    ['gestating inside', s.gestating],
-    ['—', '—'],
-    ['bodies left', s.corpses], ['bodies burned', s.corpsesBurned],
-    ['flood-held nodes', s.floodControlled],
-    ['conversions', s.conversions + (s.conversionsRound ? ` (+${s.conversionsRound} this round)` : '')],
-    ['carriers seated', s.carriersSeated],
-    ['forms released', s.formsMinted],
-    ['distress calls', s.distressCalls],
-  ];
-  el.innerHTML = rows.map(([k, v]) => k === '—'
-    ? '<div class="sep"></div>'
-    : `<div class="row"><span>${k}</span><b>${v}</b></div>`).join('');
+  const teamRows = sim.squads.map((squad) => {
+    const living = squad.members.map((id) => sim.byId.get(id)).filter((a) => a && !a.dead && a.hp > 0);
+    const room = living.length ? sim.graph.node(living[0].node).name : 'wiped out';
+    return { squad, living, room };
+  });
+  const guards = sim.agents.filter((a) => a.garrison && !a.dead && a.hp > 0);
+  const stamp = [Math.floor(s.t), s.outcome, s.civ, s.armed, s.marine, s.infection, s.combat,
+    s.combatDowned, s.carrier, s.gestating, s.corpses, s.corpsesBurned, s.floodControlled,
+    s.conversions, s.carriersSeated, s.formsMinted, s.distressCalls,
+    ...teamRows.flatMap(({ squad, living, room }) => [squad.id, living.length, room]), guards.length].join(':');
+  if (el._stamp === stamp) return;
+  el._stamp = stamp;
+  const metric = (name, value) => `<div class="metric"><span>${name}</span><b>${value}</b></div>`;
+  const teams = teamRows.map(({ squad, living, room }) => {
+    const color = squadColor(squad);
+    return `<button class="forceRow" data-squad="${squad.id}" style="--team:${color}">`
+      + `<span class="forceTag">${squadTag(squad)}</span><span class="forceCount">${living.length}/${squad.members.length}</span>`
+      + `<span class="forceRoom">${escapeHtml(room)}</span></button>`;
+  });
+  if (guards.length) {
+    const room = sim.graph.node(guards[0].node).name;
+    teams.push(`<div class="forceRow" style="--team:${GARRISON_COLOR}"><span class="forceTag">G</span>`
+      + `<span class="forceCount">${guards.length}</span><span class="forceRoom">${escapeHtml(room)}</span></div>`);
+  }
+  const phase = s.outcome ? s.outcome.toUpperCase() : s.opening ? 'OPENING · FIRST SWEEP' : 'STEADY STATE';
+  const scarcity = s.scarcity > 2 ? 'hoarding' : s.scarcity <= 0.75 ? 'spending' : 'balanced';
+  el.innerHTML = `<div class="runSummary"><span class="runTime">${fmtTime(s.t)}</span><span class="runPhase">${phase}<br>hive ${scarcity} · ${s.scarcity.toFixed(2)}</span></div>`
+    + '<div class="statGrid">'
+    + `<section class="statGroup"><div class="statTitle">crew</div>${metric('civilian', s.civ)}${metric('armed', s.armed)}${metric('marines', s.marine)}</section>`
+    + `<section class="statGroup"><div class="statTitle">flood</div>${metric('infection', s.infection)}${metric('combat', `${s.combat}${s.combatDowned ? ` +${s.combatDowned}↓` : ''}`)}${metric('carriers', s.carrier)}${metric('gestating', s.gestating)}</section>`
+    + `<section class="statGroup"><div class="statTitle">spread</div>${metric('held rooms', s.floodControlled)}${metric('bodies', s.corpses)}${metric('converted', s.conversions)}${metric('burned', s.corpsesBurned)}</section></div>`
+    + `<div class="statFoot">${s.carriersSeated} carriers seated · ${s.formsMinted} forms released · ${s.distressCalls} calls</div>`
+    + `<div class="forcesHead"><span class="forcesTitle">marine teams</span><span>click to command · badge / alive / location</span></div>`
+    + `<div class="forceGrid">${teams.join('')}</div>`;
 }
 
 export function renderLog(sim, el, maxLines = 300) {

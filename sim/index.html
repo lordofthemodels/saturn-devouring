@@ -13,7 +13,7 @@
     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
   }
   header {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
     padding: 8px 12px; background: #0c1015; border-bottom: 1px solid #1c2430;
   }
   header h1 { font-size: 14px; color: #7fd1a0; letter-spacing: 1px; margin-right: 8px; }
@@ -52,18 +52,45 @@
     width: 420px; border-left: 1px solid #1c2430; background: #0c1015;
     display: flex; flex-direction: column; min-height: 0;
   }
-  #stats { padding: 10px 12px; border-bottom: 1px solid #1c2430; }
-  #stats .row { display: flex; justify-content: space-between; padding: 1px 0; }
-  #stats .row b { color: #e8eef7; font-weight: 600; }
-  #stats .sep { border-top: 1px dashed #1c2430; margin: 5px 0; }
+  #stats { padding: 10px 12px; border-bottom: 1px solid #1c2430; font-size: 11.5px; }
+  .runSummary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+  .runTime { color: #f0f4fa; font-size: 18px; font-weight: 700; }
+  .runPhase { color: #7fd1a0; font-size: 10px; text-align: right; text-transform: uppercase; }
+  .statGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .statGroup { min-width: 0; padding: 6px 7px; background: #090c10; border: 1px solid #19212d; border-radius: 4px; }
+  .statTitle, .forcesTitle { color: #566376; font-size: 9px; letter-spacing: 0.8px; text-transform: uppercase; }
+  .metric { display: flex; justify-content: space-between; gap: 4px; color: #7f8c9e; }
+  .metric b { color: #dfe7f2; font-weight: 600; }
+  .statFoot { color: #687588; font-size: 9.5px; margin-top: 6px; }
+  .forcesHead { display: flex; justify-content: space-between; margin-top: 9px; margin-bottom: 4px; }
+  .forcesHead span:last-child { color: #485465; font-size: 9px; }
+  .forceGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .forceRow { display: grid; grid-template-columns: 34px 34px 1fr; align-items: center; gap: 5px; min-width: 0;
+    padding: 4px 5px; color: #8895a6; background: #0a0e13; border: 1px solid #1b2430; border-left: 3px solid var(--team);
+    border-radius: 3px; text-align: left; font-size: 9.5px; }
+  button.forceRow:hover { border-color: var(--team); background: #111923; }
+  .forceTag { color: var(--team); font-weight: 800; }
+  .forceCount { color: #dfe7f2; }
+  .forceRoom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toolbarDetails { position: relative; }
+  .toolbarDetails > summary, .dialDetails > summary { list-style: none; cursor: pointer; color: #8a97a8;
+    background: #131a24; border: 1px solid #263140; border-radius: 4px; padding: 4px 9px; }
+  .toolbarDetails > summary::-webkit-details-marker, .dialDetails > summary::-webkit-details-marker { display: none; }
+  .toolbarDetails[open] > summary, .dialDetails[open] > summary { color: #dbe5f2; border-color: #3d6a9c; }
+  .toolbarPanel { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: 230px; padding: 9px;
+    display: grid; grid-template-columns: 1fr; gap: 5px; background: #0b0f15; border: 1px solid #2a3545;
+    border-radius: 5px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); }
+  .toolbarPanel .debugTitle { color: #566376; font-size: 9px; letter-spacing: 0.7px; margin-top: 4px; padding-top: 6px; border-top: 1px solid #1c2430; }
+  .setupBars { display: flex; align-items: flex-start; gap: 8px; padding: 6px 12px; background: #0a0d11;
+    border-bottom: 1px solid #1c2430; }
+  .dialDetails { min-width: 0; }
+  .dialDetails[open] { flex: 1; }
   #cmd { padding: 8px 12px; border-bottom: 1px solid #1c2430; background: #0a0d11; }
   #cmd .cmdhdr { color: #6a7686; font-size: 11px; margin-bottom: 6px; }
   #cmd .cmdrow { display: flex; gap: 5px; margin-bottom: 5px; align-items: center; flex-wrap: wrap; }
   #cmd select, #cmd button { font-size: 11px; padding: 3px 6px; }
   #cmd .muted { color: #4a5568; font-size: 10px; }
   #log { flex: 2.5; overflow-y: auto; padding: 8px 12px; font-size: 13px; line-height: 1.45; }
-  #stats { font-size: 11.5px; }
-  #stats .row { padding: 0; }
   #log .ev-command { color: #e0b060; }
   #log .ev { padding: 1px 0; color: #8a97a8; }
   #log .t { color: #4a5568; }
@@ -80,7 +107,7 @@
   }
   button:hover { background: #1a2432; cursor: pointer; }
   button.active { background: #23405c; border-color: #3d6a9c; }
-  input[type=range] { padding: 0; width: 90px; }
+  input[type=range] { padding: 0; width: 78px; }
   input[type=number] {
     width: 64px; padding: 4px 6px; text-align: right;
     -moz-appearance: textfield; appearance: textfield;
@@ -88,10 +115,7 @@
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   label.chk { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: #8a97a8; }
-  .dials {
-    display: flex; gap: 14px; padding: 6px 12px; background: #0a0d11;
-    border-bottom: 1px solid #1c2430; font-size: 11px; flex-wrap: wrap; align-items: center;
-  }
+  .dials { display: flex; gap: 14px; padding: 8px 4px 2px; font-size: 11px; flex-wrap: wrap; align-items: center; }
   .dial { display: flex; align-items: center; gap: 6px; }
   .dial span.val { color: #7fd1a0; min-width: 34px; }
   .dial span.name { color: #6a7686; }
@@ -112,58 +136,61 @@
     <button id="pause">pause ⏸</button>
     <button id="step">step round ⏭</button>
     <label>speed <input id="speed" type="range" min="-2" max="3" step="0.5" value="0"> <span id="speedVal">1×</span></label>
-    <span id="deckBtns">
+    <span id="deckBtns" aria-label="deck view">
       deck
-      <button data-deck="0" class="active">all</button><button data-deck="1">1</button><button data-deck="2">2</button><button data-deck="3">3</button><button data-deck="4">4</button><button data-deck="5">5</button>
+      <button data-deck="0">all</button><button data-deck="1">1</button><button data-deck="2">2</button><button data-deck="3">3</button><button data-deck="4">4</button><button data-deck="5">5</button>
     </span>
-    <span>
-      <label class="chk"><input type="checkbox" id="ovInfluence" checked>influence</label>
-      <label class="chk"><input type="checkbox" id="ovShafts" checked>shafts</label>
-      <label class="chk"><input type="checkbox" id="ovVents" checked>vents</label>
-      <label class="chk"><input type="checkbox" id="ovCalls" checked>calls</label>
-      <label class="chk"><input type="checkbox" id="ovFire" checked>fire fx</label>
-      <label class="chk"><input type="checkbox" id="ovTracker">tracker</label>
-      <label class="chk"><input type="checkbox" id="ovBeliefs">hive beliefs</label>
-      <label class="chk"><input type="checkbox" id="ovLabels" checked>labels</label>
-      <label class="chk"><input type="checkbox" id="ovConns">conn IDs</label>
-    </span>
-    <button id="legendToggle" class="active">legend</button>
+    <button id="legendToggle">key</button>
+    <details class="toolbarDetails">
+      <summary>display ▾</summary>
+      <div class="toolbarPanel">
+        <label class="chk"><input type="checkbox" id="ovInfluence" checked>control shading</label>
+        <label class="chk"><input type="checkbox" id="ovVents" checked>vent grates</label>
+        <label class="chk"><input type="checkbox" id="ovCalls" checked>distress calls</label>
+        <label class="chk"><input type="checkbox" id="ovFire" checked>gunfire</label>
+        <label class="chk"><input type="checkbox" id="ovLabels" checked>room labels</label>
+        <div class="debugTitle">DEBUG OVERLAYS</div>
+        <label class="chk"><input type="checkbox" id="ovShafts">Flood maintenance routes</label>
+        <label class="chk"><input type="checkbox" id="ovTracker">marine detection radius</label>
+        <label class="chk"><input type="checkbox" id="ovBeliefs">hive beliefs</label>
+        <label class="chk"><input type="checkbox" id="ovConns">connection IDs</label>
+      </div>
+    </details>
   </header>
-  <div class="dials" title="game defaults — positions and crash-site bodies re-roll each run (applies on restart / Enter)">
-    <b style="color:#6a7686">SCENARIO</b>
-    <span class="grp">flood:
-      <label>infection <input class="cnt" id="startInf" type="number" min="0" max="60"></label>
-      <label>combat <input class="cnt" id="startCf" type="number" min="0" max="20"></label>
+  <div class="setupBars">
+  <details class="dialDetails" title="game defaults — positions and crash-site bodies re-roll each run (applies on restart / Enter)">
+    <summary>scenario setup ▾</summary><div class="dials">
+    <span class="grp">flood at start:
+      <label>infection forms <input class="cnt" id="startInf" type="number" min="0" max="60"></label>
+      <label>combat forms <input class="cnt" id="startCf" type="number" min="0" max="20"></label>
       <label>carriers <input class="cnt" id="startCar" type="number" min="0" max="6"></label>
     </span>
-    <span class="grp">marines:
-      <label>squads <input class="cnt" id="inSquads" type="number" min="0" max="8"></label>
-      <label>× size <input class="cnt" id="inSquadSize" type="number" min="1" max="8"></label>
-      <label>patrols <input class="cnt" id="inPatrols" type="number" min="0" max="6"></label>
-      <label>garrison <input class="cnt" id="inGarrison" type="number" min="0" max="12"></label>
-    </span>
-    <span class="grp">crew:
-      <label>civilians <input class="cnt" id="inCivilians" type="number" min="0" max="200"></label>
-      <label>armed <input class="cnt" id="inArmed" type="number" min="0" max="60"></label>
-      <label>maint <input class="cnt" id="inMaint" type="number" min="0" max="60"></label>
+    <span class="grp">humans aboard:
+      <label>marines total <input class="cnt" id="inMarines" type="number" min="0" max="80"></label>
+      <label>civilians total <input class="cnt" id="inCivilians" type="number" min="0" max="260"></label>
+      <label>armed crew total <input class="cnt" id="inArmed" type="number" min="0" max="80"></label>
+      <label title="included in the civilian total">maintenance subset <input class="cnt" id="inMaint" type="number" min="0" max="100"></label>
     </span>
     <span class="grp">bodies:
-      <label>ship <input class="cnt" id="inBodies" type="number" min="0" max="400"></label>
-      <label>crash min <input class="cnt" id="inBreachMin" type="number" min="0" max="40"></label>
-      <label>max <input class="cnt" id="inBreachMax" type="number" min="0" max="40"></label>
+      <label>total <input class="cnt" id="inBodies" type="number" min="0" max="400"></label>
+      <label title="included in the body total">at breach <input class="cnt" id="inBreach" type="number" min="0" max="60"></label>
     </span>
-  </div>
-  <div class="dials">
-    <b style="color:#6a7686">MASTER DIALS</b>
-    <span class="dial"><span class="name">belief decay λ</span><input id="dialLambda" type="range" min="0.02" max="0.4" step="0.01"><span class="val" id="dialLambdaV"></span></span>
-    <span class="dial"><span class="name">prediction q</span><input id="dialQ" type="range" min="0" max="1" step="0.05"><span class="val" id="dialQV"></span></span>
-    <span class="dial"><span class="name">marine radio</span><input id="dialRadio" type="range" min="0.2" max="1" step="0.05"><span class="val" id="dialRadioV"></span></span>
-    <span class="muted">(live — no restart needed; seed replay only exact if dials untouched)</span>
+    <span class="muted">marine total is assigned automatically to line squads, patrols, command garrison and ODST reserve</span>
+    </div>
+  </details>
+  <details class="dialDetails">
+    <summary>AI tuning ▾</summary><div class="dials">
+    <span class="dial"><label><span class="name">hive memory</span> <input class="cnt" id="dialLambda" type="number" min="2" max="35" step="1"> seconds</label></span>
+    <span class="dial"><label><span class="name">hive prediction accuracy</span> <input class="cnt" id="dialQ" type="number" min="0" max="100" step="5">%</label></span>
+    <span class="dial"><label><span class="name">marine radio reliability</span> <input class="cnt" id="dialRadio" type="number" min="0" max="100" step="5">%</label></span>
+    <span class="muted">live — no restart needed</span>
+    </div>
+  </details>
   </div>
   <main>
     <div id="left"><div id="canvasWrap"><canvas id="canvas"></canvas>
-      <div id="legend">
-        <div class="lgTitle">CAMERA <span style="color:#39424c">scroll = zoom · drag = pan · dbl-click = whole ship</span></div>
+      <div id="legend" class="hidden">
+        <div class="lgTitle">CAMERA <span style="color:#39424c">scroll = zoom · drag = pan · dbl-click = fit view</span></div>
         <div class="lgTitle">AGENTS <span style="color:#39424c">(zoom in for full icons)</span></div>
         <div class="lgGrid">
           <span><i class="dot" style="background:#f2f2f2"></i>civilian</span>
@@ -197,7 +224,7 @@
           <span><i class="sq" style="background:#c0392b;height:4px"></i>locked door</span>
           <span><i class="dot ring" style="border-color:#2fd7f0"></i>L — lift pad (between decks)</span>
           <span><i class="dot ring" style="border-color:#f0a52f"></i>K — ladder pad</span>
-          <span><i class="ln shaft"></i>maintenance shaft</span>
+          <span><i class="ln shaft"></i>Flood maintenance route (debug)</span>
           <span><i class="ln vent"></i>vent (infection only)</span>
           <span><i class="ln vent grey"></i>blocked vent</span>
           <span><i class="mk amb"></i>ambush corner</span>

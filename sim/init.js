@@ -179,6 +179,9 @@ export function initRun(seed, rng, P) {
       // reserve inside; see the sealed-reserve block below)
     ];
     const marinePosts = marinePostIds.map((id) => graph.byId.get(id));
+    const lineCount = Number.isFinite(M.lineCount) ? M.lineCount : M.squads * M.squadSize;
+    const baseSquadSize = M.squads ? Math.floor(lineCount / M.squads) : 0;
+    const largerSquads = M.squads ? lineCount % M.squads : 0;
     for (let si = 0; si < M.squads; si++) {
       // if a standing post is the breach or a room next to it (e.g. the
       // flight-deck posting when the hangar is the crash), slide to the next
@@ -187,7 +190,8 @@ export function initRun(seed, rng, P) {
       for (let g = 0; g < marinePosts.length && breachDanger.has(marinePosts[pi]); g++) pi = (pi + 1) % marinePosts.length;
       const node = marinePosts[pi];
       const squad = { id: si, members: [], objective: null, morale: 1, respondingTo: null, phase1: false };
-      for (let m = 0; m < M.squadSize; m++) {
+      const squadSize = baseSquadSize + (si < largerSquads ? 1 : 0);
+      for (let m = 0; m < squadSize; m++) {
         const a = makeAgent(FACTION.MARINE, node, graph);
         a.hp = a.maxHp = P.combat.marine.hp;
         a.hasRadio = rng.chance(P.crew.radio.marine);
