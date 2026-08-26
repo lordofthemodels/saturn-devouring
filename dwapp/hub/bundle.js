@@ -69700,7 +69700,13 @@ var init_params = __esm({
         // captain + officers who never leave the bridge
         sweepDwellSec: 15,
         // min pause at each cleared room (+ jitter)
-        sweepDwellJitterSec: 10
+        sweepDwellJitterSec: 10,
+        radarMemorySec: 3.5,
+        // one shared room-level paint, long enough to survive the strategic cadence
+        radarCooldownSec: 6,
+        // finish checking one paint before chasing another
+        ladderBlastSettleSec: 0.75
+        // pause after a frag clears the far ladder mouth
       },
       civilian: {
         fleeHearingHops: 1,
@@ -69919,8 +69925,10 @@ var init_agentBuffer = __esm({
       // infection form seated on a corpse, digging in
       THRASHING: 1 << 18,
       // corpse convulsing — the pod is inside; it rises soon
-      MALE_PLAYER: 1 << 19
+      MALE_PLAYER: 1 << 19,
       // player-selected male ODST uses the helmeted marine rig
+      ARMS_HIGH: 1 << 20
+      // this combat-form charge uses the Halo CE arms-overhead rush
     };
     CLIP = { IDLE: 0, WALK: 1, RUN: 2, ATTACK: 3, DEATH: 4, WRITHE: 5 };
     AgentBuffer = class {
@@ -70947,6 +70955,9 @@ function makeAgent(kind, node, graph) {
     nextCombatLeapAt: 0,
     chargeTargetId: -1,
     // sticky spatial-charge target for LOS pursuit (sim.js)
+    chargePoseSequence: 0,
+    chargeArmsHigh: false,
+    chargeEndedAt: -Infinity,
     followNode: -1,
     // escort: last node re-pathed toward (humans.js)
     firePost: null,
@@ -71608,11 +71619,36 @@ function updateArmed(sim2, a2, dt) {
   a2.givingGround = false;
   updateCivilian(sim2, a2, dt);
 }
+function marineThrowFragAt(sim2, a2, node, x2, y2, chance = 1, targetRoomOnly = false) {
+  const G2 = sim2.P.grenade;
+  if (a2.frags <= 0 || a2.state === STATE.DEAD || a2.hp <= 0) return false;
+  if (sim2.t < (a2.nextFragAt ?? 0)) return false;
+  const target = sim2.graph.node(node);
+  for (const other of sim2.agents) {
+    if (other.dead || other.hp <= 0) continue;
+    if (other.faction !== FACTION.CIVILIAN && other.faction !== FACTION.ARMED && other.faction !== FACTION.MARINE) continue;
+    if (targetRoomOnly) {
+      if ((other.pnode ?? other.node) !== node) continue;
+    } else if (other.deck !== target.deck && other.id !== a2.id) continue;
+    if (Math.hypot(other.x - x2, other.y - y2) < G2.minSafeM) return false;
+  }
+  if (chance < 1 && !sim2.rng.chance(chance)) return false;
+  a2.frags--;
+  a2.nextFragAt = sim2.t + G2.cooldownSec;
+  (sim2.grenades ??= []).push({
+    at: sim2.t + G2.fuseSec,
+    deck: target.deck,
+    x: x2,
+    y: y2,
+    by: a2.id
+  });
+  sim2.log("combat", `${a2.callsign ? `${a2.callsign.rank} ${a2.callsign.name}` : "a marine"} throws a frag into ${target.name}`, node, x2, y2);
+  return true;
+}
 function maybeThrowFrag(sim2, a2, dt) {
-  const P2 = sim2.P;
+  const G2 = sim2.P.grenade;
   if (a2.frags <= 0 || a2.state === STATE.DEAD || a2.hp <= 0) return;
   if (sim2.t < (a2.nextFragAt ?? 0)) return;
-  const G2 = P2.grenade;
   const visible = sim2.lineOfSightAgents(a2, (o2) => !o2.downed && (o2.faction === FACTION.INFECTION || o2.faction === FACTION.COMBAT || o2.faction === FACTION.CARRIER), G2.rangeM);
   let best = null, bestN = G2.minTargets - 1;
   for (const target of visible) {
@@ -71628,23 +71664,7 @@ function maybeThrowFrag(sim2, a2, dt) {
   if (!best) return;
   const bx = best.x, by = best.y;
   const bestNode = best.pnode ?? best.node;
-  for (const o2 of sim2.agents) {
-    if (o2.dead || o2.hp <= 0) continue;
-    if (o2.faction !== FACTION.CIVILIAN && o2.faction !== FACTION.ARMED && o2.faction !== FACTION.MARINE) continue;
-    if (o2.deck !== best.deck && o2.id !== a2.id) continue;
-    if (Math.hypot(o2.x - bx, o2.y - by) < G2.minSafeM) return;
-  }
-  if (!sim2.rng.chance(G2.chancePerSec * dt)) return;
-  a2.frags--;
-  a2.nextFragAt = sim2.t + G2.cooldownSec;
-  (sim2.grenades ??= []).push({
-    at: sim2.t + G2.fuseSec,
-    deck: best.deck,
-    x: bx,
-    y: by,
-    by: a2.id
-  });
-  sim2.log("combat", `${a2.callsign ? `${a2.callsign.rank} ${a2.callsign.name}` : "a marine"} throws a frag into ${sim2.graph.node(bestNode).name}`, bestNode, bx, by);
+  if (dt > 0) marineThrowFragAt(sim2, a2, bestNode, bx, by, G2.chancePerSec * dt);
 }
 function updateMarineTick(sim2, a2, dt) {
   const P2 = sim2.P;
@@ -71883,6 +71903,7 @@ function strategicSquads(sim2) {
         sim2.log("radio", `squad ${squad.id + 1} responding to distress in ${sim2.graph.node(call3.node).name}`);
       }
     }
+    if (applyMotionRadar(sim2, squad, leader, members)) continue;
     if (squad.objective?.kind === "breach" && !squad.reachedBreach && leader.node === sim2.graph.breachNode) {
       squad.reachedBreach = true;
       sim2.log("sweep", `squad ${squad.id + 1} reaches the crash site`);
@@ -71941,6 +71962,8 @@ function patrolPlan(sim2, squad, leader) {
       sim2.log("radio", `patrol ${squad.patrolNo} responding to distress in ${sim2.graph.node(call3.node).name}`);
     }
   }
+  const members = squad.members.map((id) => sim2.byId.get(id)).filter((member) => member && !member.dead && member.hp > 0);
+  if (applyMotionRadar(sim2, squad, leader, members)) return;
   if (squad.objective?.kind === "distress") {
     const objNode = squad.objective.node;
     const clear = sim2.visibleNodes(objNode).every((n2) => sim2.floodStrengthAt(n2) === 0);
@@ -71953,6 +71976,45 @@ function patrolPlan(sim2, squad, leader) {
     squad.leg = (squad.leg + 1) % squad.route.length;
   }
   squad.objective = { kind: "patrol", node: squad.route[squad.leg] };
+}
+function applyMotionRadar(sim2, squad, leader, members) {
+  if (squad.objective?.kind === "motion") {
+    const contact = sim2.marineMotionAt(squad.objective.contactNode);
+    const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
+    if (contact.fresh && (!arrived || squad.objective.hold)) return true;
+    squad.objective = squad.radarResume ?? null;
+    squad.radarResume = null;
+    squad.radarSeenTick = void 0;
+    squad.radarCooldownUntil = sim2.t + sim2.P.marineDoctrine.radarCooldownSec;
+    return false;
+  }
+  const kind = squad.objective?.kind;
+  if (kind && kind !== "hold" && kind !== "sweep" && kind !== "patrol") return false;
+  if (sim2.t < (squad.radarCooldownUntil ?? -1)) return false;
+  let best = null;
+  for (const { to } of sim2.graph.neighbors(leader.pnode ?? leader.node, ["std"], humanPass)) {
+    const contact = sim2.marineMotionAt(to);
+    if (!contact.fresh) continue;
+    const score = contact.count;
+    if (!best || score > best.score || score === best.score && to < best.node) {
+      best = { node: to, score, tick: contact.tick };
+    }
+  }
+  if (best) {
+    squad.radarResume = squad.objective;
+    const hold = best.score > members.length;
+    squad.objective = {
+      kind: "motion",
+      node: hold ? leader.pnode ?? leader.node : best.node,
+      contactNode: best.node,
+      hold
+    };
+    for (const member of members) member.path = [];
+    sim2.log("radio", hold ? `squad ${squad.id + 1} picks up heavy movement in ${sim2.graph.node(best.node).name} — holding the threshold` : `squad ${squad.id + 1} picks up movement in ${sim2.graph.node(best.node).name} — checking it out`, best.node);
+    squad.radarSeenTick = best.tick;
+    return true;
+  }
+  return false;
 }
 function mergeThinSquads(sim2) {
   for (const A2 of sim2.squads) {
@@ -72633,6 +72695,102 @@ var init_hive = __esm({
         }
         return true;
       }
+      // Pick the carrier-side screen against the nearest known gun line. A safe
+      // first hop buys another room of time; once that approach becomes hot, the
+      // screen collapses behind the carrier room's own entrance. Nothing names a
+      // room: changing the ship graph changes the position automatically.
+      _carrierScreenPlan(carrier, fixedThreat = -1) {
+        const g2 = this.sim.graph;
+        let threatNode = fixedThreat, threatPath = null, bestScore = Infinity;
+        if (threatNode >= 0) threatPath = g2.path(carrier.node, threatNode, ["std"], this.bigPass);
+        else {
+          for (let node = 0; node < g2.n; node++) {
+            const pressure = this.believedHardness[node] + this.believedHumanStr[node] * 0.35;
+            if (pressure < 0.2) continue;
+            const path = g2.path(carrier.node, node, ["std"], this.bigPass);
+            if (!path) continue;
+            const score = path.length - Math.min(4, pressure) * 0.12;
+            if (score < bestScore - 1e-9 || Math.abs(score - bestScore) <= 1e-9 && node < threatNode) {
+              bestScore = score;
+              threatNode = node;
+              threatPath = path;
+            }
+          }
+        }
+        let screen2 = carrier.node;
+        if (threatPath?.length > 1 && (fixedThreat < 0 || threatPath.length > 2)) {
+          const forward = threatPath[0].to;
+          if (this.localThreat(forward) < 0.75 && this.believedHardness[forward] < 0.5) screen2 = forward;
+        }
+        return { carrier, threatNode, screen: screen2, distance: threatPath?.length ?? Infinity };
+      }
+      // One carrier plus a thin pool is the hive's future, not just another unit.
+      // Both opening and steady state call this planner so the successfully seated
+      // carrier—not a now-empty original den—owns the defense. Scarcity controls
+      // the size of a small guard detail, never a percentage of the whole army:
+      // surplus bodies are the hive's second bet, free to seed or make noise.
+      protectCarriers(combat, carriers, S2) {
+        const liveCarrierIds = new Set(carriers.map((carrier) => carrier.id));
+        for (const form of combat) {
+          if (form.task?.protect !== void 0 && !liveCarrierIds.has(form.task.protect)) form.task = null;
+        }
+        if (!carriers.length || !combat.length) return;
+        const g2 = this.sim.graph;
+        const plans = carriers.map((carrier) => this._carrierScreenPlan(carrier)).sort((a2, b2) => a2.distance - b2.distance || (b2.carrier.held ?? 0) - (a2.carrier.held ?? 0) || a2.carrier.id - b2.carrier.id);
+        const scarce = S2 >= 1.5;
+        const detailCap = carriers.length * (scarce ? 2 : 1);
+        const mobileReserve = combat.length > 1 ? 1 : 0;
+        const wanted = Math.min(detailCap, Math.max(1, combat.length - mobileReserve));
+        const eligible = combat.filter((form) => {
+          const task = form.task;
+          if (form.downed || form.fromPlayer || form.taskProgress > 0) return false;
+          if (!task) return true;
+          if (task.kind === TASK.TRANSFORM || task.kind === TASK.DECOY || task.kind === TASK.DART) return false;
+          if (task.muster !== void 0 || task.seed || task.screen !== void 0 || task.raid) return false;
+          if (task.retreat && task.protect === void 0) return false;
+          if (task.kind === TASK.ATTACK && (task.force || task.surge || form.state === STATE.FIGHT)) return false;
+          return true;
+        });
+        const chosen = /* @__PURE__ */ new Map();
+        for (let slot = 0; slot < wanted && eligible.length; slot++) {
+          const plan = plans[slot % plans.length];
+          let bestIndex = -1, bestScore = Infinity;
+          for (let index = 0; index < eligible.length; index++) {
+            const form2 = eligible[index];
+            const hops = g2.hops(form2.pnode ?? form2.node, plan.screen, ["std"], this.bigPass);
+            if (hops === -1) continue;
+            const keep = form2.task?.protect === plan.carrier.id ? -20 : 0;
+            const score = hops + keep + form2.id * 1e-6;
+            if (score < bestScore) {
+              bestScore = score;
+              bestIndex = index;
+            }
+          }
+          if (bestIndex === -1) continue;
+          const form = eligible.splice(bestIndex, 1)[0];
+          const keepRetreat = form.task?.retreat && (form.move || form.path.length);
+          if (form.move && (form.task?.node !== plan.screen || form.task?.protect !== plan.carrier.id)) {
+            this.sim._interruptMove(form);
+          }
+          this.assign(form, {
+            kind: TASK.GUARD,
+            node: plan.screen,
+            protect: plan.carrier.id,
+            threatNode: plan.threatNode,
+            retreat: keepRetreat ? true : void 0
+          });
+          chosen.set(form.id, plan.carrier.id);
+        }
+        for (const form of combat) {
+          if (form.task?.protect === void 0 || chosen.has(form.id)) continue;
+          if (form.move) this.sim._interruptMove(form);
+          form.task = null;
+        }
+        if (scarce && chosen.size && this.sim.t >= (this._carrierDefenseLogAt ?? 0)) {
+          this._carrierDefenseLogAt = this.sim.t + 30;
+          this.sim.log("hive", `the thin hive pulls ${chosen.size} combat form${chosen.size === 1 ? "" : "s"} back around its carrier line`);
+        }
+      }
       // Losing doorway odds have only two outcomes: withdraw or, if every open
       // route is cut off, fight. The retreat is ground-truth pathing because a
       // form deciding under visible guns cannot afford a stale-belief shortcut
@@ -72648,6 +72806,44 @@ var init_hive = __esm({
           if (threatNode !== from && (a2 === threatNode || b2 === threatNode)) return false;
           return true;
         };
+        const carriers = sim2.agents.filter((a2) => !a2.dead && a2.hp > 0 && a2.faction === FACTION.CARRIER);
+        const infection = sim2.agents.reduce((count, a2) => count + (!a2.dead && a2.hp > 0 && a2.faction === FACTION.INFECTION ? 1 : 0), 0);
+        if (carriers.length && this.scarcity(infection + carriers.length * 2) >= 1.5) {
+          let refuge = null, refugeScore = Infinity;
+          const fromAway = g2.hops(threatNode, from, ["std"], () => true);
+          for (const carrier of carriers) {
+            const plan = this._carrierScreenPlan(carrier, threatNode);
+            if (carrier.node === from) {
+              refuge = { cornered: true };
+              refugeScore = -Infinity;
+              continue;
+            }
+            const screen2 = plan.screen === from ? carrier.node : plan.screen;
+            const path = g2.path(from, screen2, ["std"], openEscape);
+            if (!path?.length || !this.retreatApproachSafe(form, path[0])) continue;
+            const toAway = g2.hops(threatNode, screen2, ["std"], () => true);
+            if (fromAway !== -1 && toAway !== -1 && toAway < fromAway) continue;
+            const score = path.length + this.localThreat(screen2) * 2 - (carrier.held ?? 0) * 0.15;
+            if (score < refugeScore - 1e-9 || Math.abs(score - refugeScore) <= 1e-9 && carrier.id < (refuge?.carrier.id ?? Infinity)) {
+              refuge = { carrier, plan: { ...plan, screen: screen2 }, path };
+              refugeScore = score;
+            }
+          }
+          if (refuge?.cornered) return false;
+          if (refuge) {
+            this.assign(form, {
+              kind: TASK.GUARD,
+              node: refuge.plan.screen,
+              protect: refuge.carrier.id,
+              threatNode,
+              retreat: true
+            });
+            sim2.setPath(form, refuge.path);
+            sim2._setCharging(form, false);
+            form.state = STATE.MOVE;
+            return true;
+          }
+        }
         let best = null, bestScore = -Infinity;
         for (const node of g2.nodes) {
           if (node.idx === from) continue;
@@ -72665,7 +72861,7 @@ var init_hive = __esm({
         if (!best) return false;
         this.assign(form, { kind: TASK.MOVE, node: best.node, retreat: true, threatNode });
         sim2.setPath(form, best.path);
-        form.charging = false;
+        sim2._setCharging(form, false);
         form.state = STATE.MOVE;
         return true;
       }
@@ -72739,6 +72935,7 @@ var init_hive = __esm({
         this.evade(forms, carriers);
         if (this.opening) {
           this.openingMove(infection, combat, bodies);
+          this.protectCarriers(combat, carriers, S2);
           if (sim2.firstSweepCleared) {
             this.opening = false;
             sim2.log("hive", "hive hands off to steady-state economy (first sweep has passed)");
@@ -73005,21 +73202,47 @@ var init_hive = __esm({
           }
           return { seed: seed2, node: bestPath?.[0]?.to ?? (seed2.pnode ?? seed2.node) };
         });
-        for (const guard of combat) {
-          if (guard.task?.kind === TASK.TRANSFORM || guard.task?.retreat || guard.taskProgress > 0 || guard.fromPlayer) continue;
-          let best = screens[0], bestHops = Infinity;
-          for (const screen2 of screens) {
-            const hops = g2.hops(guard.pnode ?? guard.node, screen2.node, ["std"], this.bigPass);
-            if (hops !== -1 && (hops < bestHops || hops === bestHops && screen2.seed.id < best.seed.id)) {
-              best = screen2;
-              bestHops = hops;
+        const availableGuards = combat.filter((guard) => {
+          const task = guard.task;
+          if (guard.fromPlayer || guard.taskProgress > 0 || task?.kind === TASK.TRANSFORM) return false;
+          if (!task) return true;
+          if (task.retreat || task.seed || task.raid || task.muster !== void 0) return false;
+          if (task.kind === TASK.DECOY || task.kind === TASK.DART) return false;
+          if (task.kind === TASK.ATTACK && (task.force || task.surge || guard.state === STATE.FIGHT)) return false;
+          return true;
+        });
+        const mobileReserve = Math.max(1, Math.floor(C2 / 3));
+        const guardBudget = Math.min(
+          rooting.length * 2,
+          Math.max(0, C2 - rooting.length - mobileReserve)
+        );
+        const chosenGuards = /* @__PURE__ */ new Set();
+        for (let slot = 0; slot < guardBudget && availableGuards.length; slot++) {
+          let chosenIndex = -1, chosenScreen = screens[0], bestHops = Infinity;
+          for (let index = 0; index < availableGuards.length; index++) {
+            const guard2 = availableGuards[index];
+            for (const screen2 of screens) {
+              const hops = g2.hops(guard2.pnode ?? guard2.node, screen2.node, ["std"], this.bigPass);
+              if (hops !== -1 && (hops < bestHops || hops === bestHops && (guard2.id < (availableGuards[chosenIndex]?.id ?? Infinity) || guard2.id === availableGuards[chosenIndex]?.id && screen2.seed.id < chosenScreen.seed.id))) {
+                chosenIndex = index;
+                chosenScreen = screen2;
+                bestHops = hops;
+              }
             }
           }
-          this.assign(guard, { kind: TASK.GUARD, node: best.node, screen: best.seed.id });
+          if (chosenIndex === -1) break;
+          const guard = availableGuards.splice(chosenIndex, 1)[0];
+          this.assign(guard, { kind: TASK.GUARD, node: chosenScreen.node, screen: chosenScreen.seed.id });
+          chosenGuards.add(guard.id);
+        }
+        for (const guard of combat) {
+          if (guard.task?.screen === void 0 || chosenGuards.has(guard.id)) continue;
+          if (guard.move) sim2._interruptMove(guard);
+          guard.task = null;
         }
         if (!this._pressureSeedLogged) {
           this._pressureSeedLogged = true;
-          sim2.log("hive", `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? "" : "s"} — the rest form a screen`);
+          sim2.log("hive", `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? "" : "s"} behind a ${chosenGuards.size}-form screen`);
         }
       }
       // Shared coverage planner for every mobile appendage. The target ordering
@@ -73228,32 +73451,24 @@ var init_hive = __esm({
               }
             }
             if (bestT !== -1) {
-              const spares = combat.filter((c2) => !c2.fromPlayer && !c2.downed && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0));
+              const spares = combat.filter((c2) => !c2.fromPlayer && !c2.downed && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0 && c2.task.protect === void 0));
               const r2 = this.nearest(spares, bestT, ["std"], this.combatPass);
               if (r2) {
                 this._raiderId = r2.id;
                 this._raidCooldownUntil = sim2.t + 60;
-                this.assign(r2, { kind: TASK.ATTACK, node: bestT });
+                this.assign(r2, { kind: TASK.ATTACK, node: bestT, raid: true });
                 sim2.log("rampage", `a combat form slips off to raid ${g2.node(bestT).name} — soft target, likely unguarded`);
               }
             }
           }
         }
-        const guardsWanted = S2 >= 1.5 ? 2 : 1;
-        for (const carrier of carriers) {
-          const guards = combat.filter((c2) => c2.task?.kind === TASK.GUARD && c2.task.node === carrier.node);
-          if (guards.length < guardsWanted) {
-            const free = combat.filter((c2) => !c2.task);
-            const guard = this.nearest(free, carrier.node, ["std"], this.bigPass);
-            if (guard) this.assign(guard, { kind: TASK.GUARD, node: carrier.node });
-          }
-        }
+        this.protectCarriers(combat, carriers, S2);
         for (const f2 of combat) {
           if (!this.allIn && !rampaging.has(f2.node)) continue;
           if (f2.task?.retreat) continue;
           if (f2.task && (f2.task.kind === TASK.ATTACK || f2.task.kind === TASK.TRANSFORM)) continue;
           if (f2.task?.kind === TASK.SCOUT && f2.task.sweep && (f2.move || f2.path.length || f2.node !== f2.task.node)) continue;
-          if (f2.task?.seed || f2.task?.screen !== void 0) continue;
+          if (f2.task?.seed || f2.task?.screen !== void 0 || f2.task?.protect !== void 0) continue;
           const target = this.allIn ? this.nearestAllInHuman(f2.node) : this.nearestBelievedHuman(f2.node);
           if (target === -1) {
             if (this.allIn) {
@@ -73302,7 +73517,7 @@ var init_hive = __esm({
               for (const f2 of forms) this.assign(f2, { kind: TASK.ATTACK, node: target });
               sim2.log("rampage", `the muster is up — ${forms.length} forms storm ${g2.node(target).name} together`);
               if (!sim2.agents.some((a2) => !a2.dead && a2.faction === FACTION.CARRIER && a2.hp > 0)) {
-                const spare = combat.find((c2) => !c2.fromPlayer && !c2.downed && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0));
+                const spare = combat.find((c2) => !c2.fromPlayer && !c2.downed && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0 && c2.task.protect === void 0));
                 if (spare) {
                   const den = this.quietNodeNear(spare.node, "big");
                   if (den !== -1) this.assign(spare, { kind: TASK.GUARD, node: den, seed: true });
@@ -73356,7 +73571,7 @@ var init_hive = __esm({
               continue;
             }
             if (!this._musterStart.has(target)) this._musterStart.set(target, sim2.t);
-            const spareCount = combat.filter((c2) => !c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0).length;
+            const spareCount = combat.filter((c2) => !c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0 && c2.task.protect === void 0).length;
             if (sim2.t - this._musterStart.get(target) > 120 && forms.length + spareCount < needed) {
               this._musterStart.delete(target);
               this._musterBan.set(target, { until: sim2.t + 180, needed });
@@ -73366,7 +73581,7 @@ var init_hive = __esm({
             }
             if (forms.length < needed + 2) {
               const stage = forms[0].task.node;
-              const spares = combat.filter((c2) => !c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0);
+              const spares = combat.filter((c2) => !c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 && !c2.task.seed && c2.task.screen === void 0 && c2.task.protect === void 0);
               const ranked = spares.map((c2) => ({ c: c2, d: g2.hops(c2.node, stage, ["std"], this.bigPass) })).filter((x2) => x2.d !== -1).sort((x2, y2) => x2.d - y2.d || x2.c.id - y2.c.id);
               let strength = forms.length;
               for (const { c: c2 } of ranked) {
@@ -73678,6 +73893,7 @@ var init_hive = __esm({
           for (const f2 of [...combat, ...infection]) {
             if (f2.task?.kind === TASK.TRANSFORM) continue;
             if (f2.task?.retreat) continue;
+            if (f2.task?.protect !== void 0) continue;
             const d2 = f2.faction === FACTION.INFECTION ? this.infectionHops(f2.node, bel.node) : g2.hops(f2.node, bel.node, ["std"], this.bigPass);
             if (d2 !== -1 && d2 <= P2.musterHops) {
               muster.push(f2);
@@ -75024,6 +75240,19 @@ var init_names = __esm({
   }
 });
 
+// sim/charge-pose.js
+function combatChargeArmsHigh(id, chargeSequence) {
+  let hash3 = (Math.imul(id, 2654435761) ^ Math.imul(chargeSequence, 2246822507)) >>> 0;
+  hash3 = Math.imul(hash3 ^ hash3 >>> 16, 2146121005) >>> 0;
+  hash3 = Math.imul(hash3 ^ hash3 >>> 15, 2221713035) >>> 0;
+  hash3 = (hash3 ^ hash3 >>> 16) >>> 0;
+  return hash3 % 3 === 0;
+}
+var init_charge_pose = __esm({
+  "sim/charge-pose.js"() {
+  }
+});
+
 // sim/sim.js
 function fmtTime(t2) {
   const m2 = Math.floor(t2 / 60), s2 = Math.floor(t2 % 60);
@@ -75050,6 +75279,7 @@ var init_sim = __esm({
     init_commands();
     init_commandApply();
     init_names();
+    init_charge_pose();
     TINT = {
       [FACTION.CIVILIAN]: 15921906,
       [FACTION.ARMED]: 15255616,
@@ -75127,6 +75357,9 @@ var init_sim = __esm({
         this.screamTick = new Int32Array(graph.n).fill(-9999);
         this.sweptAt = new Float64Array(graph.n).fill(-9999);
         this._panicked = new Uint8Array(graph.n);
+        this.marineMotionCount = new Uint16Array(graph.n);
+        this.marineMotionLastCount = new Uint16Array(graph.n);
+        this.marineMotionTick = new Int32Array(graph.n).fill(-9999);
         this.fires = [];
         {
           const br = graph.node(graph.breachNode);
@@ -75222,6 +75455,7 @@ var init_sim = __esm({
         this.hive = new Hive(this);
         assignFirstSweep(this);
         this._refreshOccupancy();
+        this._refreshMarineMotion();
         this._computeInfluence();
         const marineCount = agents2.filter((a2) => a2.faction === FACTION.MARINE).length;
         const civilianCount = agents2.filter((a2) => a2.faction === FACTION.CIVILIAN).length;
@@ -75258,6 +75492,37 @@ var init_sim = __esm({
           if (!this.senseCache[s2.upper].includes(s2.lower)) this.senseCache[s2.upper].push(s2.lower);
           if (!this.senseCache[s2.lower].includes(s2.upper)) this.senseCache[s2.lower].push(s2.upper);
         }
+      }
+      // Same purposeful-motion definition as AgentBuffer.MOVING, evaluated once
+      // at room granularity. The one-tick steer grace bridges the ordering seam:
+      // Flood steering happens after marine planning, but its movement was real
+      // and remains a valid radar paint on the next 15 Hz tick.
+      _refreshMarineMotion() {
+        const count = this.marineMotionCount;
+        count.fill(0);
+        for (const a2 of this.agents) {
+          if (a2.dead || a2.hp <= 0 || a2.downed) continue;
+          if (a2.faction !== FACTION.INFECTION && a2.faction !== FACTION.COMBAT && a2.faction !== FACTION.CARRIER) continue;
+          const moving = a2.move || a2.leaping || (a2.steeredTick ?? -9999) >= this.tickCount - 1 || a2.transformingUntil !== void 0 || a2.state === STATE.GRABBING && a2.grabTimer > 0;
+          if (!moving) continue;
+          const node = a2.pnode ?? a2.node;
+          count[node]++;
+        }
+        for (let node = 0; node < this.graph.n; node++) {
+          if (count[node] === 0) continue;
+          this.marineMotionLastCount[node] = count[node];
+          this.marineMotionTick[node] = this.tickCount;
+        }
+      }
+      marineMotionAt(node) {
+        const memoryTicks = Math.ceil(this.P.marineDoctrine.radarMemorySec * this.P.sim.tickHz);
+        const tick = this.marineMotionTick[node];
+        return {
+          fresh: this.tickCount - tick <= memoryTicks,
+          current: this.marineMotionCount[node],
+          count: this.marineMotionLastCount[node],
+          tick
+        };
       }
       visibleNodes(node) {
         return this.visCache[node];
@@ -75840,6 +76105,18 @@ var init_sim = __esm({
         a2.node = node;
         a2.deck = room.deck;
       }
+      _setCharging(a2, charging) {
+        if (a2.charging === charging) return;
+        if (charging && a2.faction === FACTION.COMBAT) {
+          if (this.t - a2.chargeEndedAt > 0.75) {
+            a2.chargePoseSequence++;
+            a2.chargeArmsHigh = combatChargeArmsHigh(a2.id, a2.chargePoseSequence);
+          }
+        } else if (!charging && a2.faction === FACTION.COMBAT) {
+          a2.chargeEndedAt = this.t;
+        }
+        a2.charging = charging;
+      }
       // ======================= main tick =======================
       tick() {
         const dt = this.dt;
@@ -75848,6 +76125,7 @@ var init_sim = __esm({
         this.t = this.tickCount * dt;
         this.graph.sweepBurns(this.t);
         this._refreshOccupancy();
+        this._refreshMarineMotion();
         for (const entry of this.commands.collect(this.tickCount)) {
           applyCommand(this, entry);
         }
@@ -76371,6 +76649,7 @@ var init_sim = __esm({
             }
           }
           if (a2.move) {
+            if (this._holdMarineAtRadarDoor(a2, dt) || this._holdMarineAtHotLadder(a2, dt)) continue;
             a2.move.t += dt / a2.move.travelSec;
             const from = g2.node(a2.move.from), to = g2.node(a2.move.to);
             const k2 = Math.min(1, a2.move.t);
@@ -76521,7 +76800,7 @@ var init_sim = __esm({
               a2.node = a2.move.to;
               a2.deck = to.deck;
               a2.move = null;
-              a2.charging = false;
+              this._setCharging(a2, false);
               a2.firstStruckIn = void 0;
               if (a2.state === STATE.MOVE) a2.state = a2.path.length ? STATE.MOVE : STATE.IDLE;
             }
@@ -76557,7 +76836,7 @@ var init_sim = __esm({
               const attackOutmatched = !retreating && !this.hive.canPressCombatContact(a2, !!a2.task?.surge, a2.task?.force);
               if (!sensedCrossing || retreatBlocked || attackOutmatched) {
                 a2.path = [];
-                a2.charging = false;
+                this._setCharging(a2, false);
                 if (sensedCrossing) {
                   this.hive.retreatOrFight(a2, visibleFight.threatNode !== -1 ? visibleFight.threatNode : step3.to);
                 }
@@ -76596,15 +76875,15 @@ var init_sim = __esm({
             a2.doorBalks = 0;
             a2.path.shift();
             let mult = this._speedMult(a2);
-            a2.charging = false;
+            this._setCharging(a2, false);
             const surging = a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.ATTACK && a2.task.surge && a2.dragging === -1 && link.kind === "std";
             if (a2.faction === FACTION.COMBAT && a2.dragging === -1 && link.kind === "std" && (surging || this._occ[step3.to].some((h2) => isLivingHuman(h2)))) {
               mult *= this.P.speed.chargeMult;
-              a2.charging = true;
+              this._setCharging(a2, true);
             }
             if (a2.faction === FACTION.INFECTION && a2.task?.kind === TASK.GRAB && link.kind === "std") {
               mult *= this.P.speed.infectionLunge;
-              a2.charging = true;
+              this._setCharging(a2, true);
             }
             const paceHash = (a2.id * 2654435761 >>> 0) / 4294967296;
             const pace = surging ? 1 : a2.faction === FACTION.INFECTION || a2.faction === FACTION.COMBAT ? 1 + (paceHash - 0.5) * 0.5 : 1 + (a2.id % 7 - 3) * 0.012;
@@ -76699,6 +76978,70 @@ var init_sim = __esm({
           }
         }
       }
+      // A radar check approaches an ordinary doorway but does not blindly cross
+      // it while the paint is live. Stopping just inside the origin room puts the
+      // marine on the real sightline, where the normal LOS/fire logic takes over;
+      // if nothing appears and the paint fades, the same leg continues through.
+      _holdMarineAtRadarDoor(a2, dt) {
+        if (a2.faction !== FACTION.MARINE || !a2.move || a2.move.layer !== "std") return false;
+        const link = a2.move.link;
+        const from = this.graph.node(a2.move.from), to = this.graph.node(a2.move.to);
+        if (!link.door || from.deck !== to.deck) return false;
+        const squad = this.squads[a2.squad];
+        if (squad?.objective?.kind !== "motion" || squad.objective.hold || squad.objective.contactNode !== to.idx) return false;
+        if (!this.marineMotionAt(to.idx).fresh) return false;
+        const fwd = a2.move.from === link.a;
+        const flipT = a2.move.flipT2 ?? (fwd ? link.flipT : 1 - link.flipT);
+        const sx = a2.move.sx ?? from.x, sy = a2.move.sy ?? from.y;
+        const approachM = Math.hypot(link.door.x - sx, link.door.y - sy);
+        const stopT = flipT * Math.max(0, 1 - 0.45 / Math.max(0.45, approachM));
+        if (a2.move.t + dt / a2.move.travelSec < stopT) return false;
+        a2.move.t = stopT;
+        const k2 = flipT > 1e-6 ? stopT / flipT : 1;
+        a2.x = sx + (link.door.x - sx) * k2;
+        a2.y = sy + (link.door.y - sy) * k2;
+        a2.move.hidden = false;
+        a2.followSpeed = 0;
+        a2.heading = Math.atan2(link.door.y - sy, link.door.x - sx);
+        a2.animTime += dt;
+        return true;
+      }
+      // Stop a marine AT the ladder mouth, not back at an abstract room centre.
+      // Downward crossings can be opened with one deliberate frag when the paint
+      // is dense enough; upward crossings and uncertain/sparse contacts wait.
+      // The reservation makes the whole squad queue behind the same decision.
+      _holdMarineAtHotLadder(a2, dt) {
+        if (a2.faction !== FACTION.MARINE || !a2.move || a2.move.layer !== "std") return false;
+        const link = a2.move.link;
+        const from = this.graph.node(a2.move.from), to = this.graph.node(a2.move.to);
+        if (link.type !== "ladder" || from.deck === to.deck) return false;
+        const appT = a2.move.appT ?? 0;
+        if (a2.move.t + dt / a2.move.travelSec < appT) return false;
+        const squad = this.squads[a2.squad];
+        const linkKey = link.i;
+        const blastHold = squad?.ladderFragLink === linkKey && squad.ladderFragNode === to.idx && this.t < (squad.ladderFragUntil ?? -1);
+        const contact = this.marineMotionAt(to.idx);
+        const risky = contact.fresh && contact.count >= this.P.grenade.minTargets;
+        if (!blastHold && !risky) return false;
+        const descending = to.deck > from.deck;
+        if (!blastHold && descending && contact.current >= this.P.grenade.minTargets) {
+          const farPad = (link.a === to.idx ? link.padA : link.padB) ?? { x: to.x, y: to.y };
+          if (marineThrowFragAt(this, a2, to.idx, farPad.x, farPad.y, 1, true) && squad) {
+            squad.ladderFragLink = linkKey;
+            squad.ladderFragNode = to.idx;
+            squad.ladderFragUntil = this.t + this.P.grenade.fuseSec + this.P.marineDoctrine.ladderBlastSettleSec;
+          }
+        }
+        a2.move.t = appT;
+        const pad = (link.a === from.idx ? link.padA : link.padB) ?? { x: from.x, y: from.y };
+        a2.x = pad.x;
+        a2.y = pad.y;
+        a2.move.hidden = false;
+        a2.followSpeed = 0;
+        a2.heading = Math.atan2(to.y - from.y, to.x - from.x);
+        a2.animTime += dt;
+        return true;
+      }
       // Nearest LIVE body sharing this room, inside `range` metres. This is the
       // pounce's own trigger — the user's rule is a DISTANCE ("when they get
       // within 2 meters of a live target"), so it must not depend on what the
@@ -76755,7 +77098,7 @@ var init_sim = __esm({
             a2.chargeTargetId = -1;
             if (a2.state === STATE.FIGHT) {
               a2.state = STATE.IDLE;
-              a2.charging = false;
+              this._setCharging(a2, false);
             }
             return false;
           }
@@ -76768,13 +77111,13 @@ var init_sim = __esm({
           if (targetNode !== pn) {
             const moveGoal = a2.move ? a2.path.at(-1)?.to ?? a2.move.to : -1;
             if (a2.move && moveGoal === targetNode) {
-              a2.charging = true;
+              this._setCharging(a2, true);
               a2.state = STATE.MOVE;
               return false;
             }
             if (a2.move) this._interruptMove(a2);
             if (this.setPathTo(a2, targetNode, ["std"], (l2) => !l2.locked) || this.setPathTo(a2, targetNode, ["std"], (l2) => l2.kind === "std" && !l2.armorySeal)) {
-              a2.charging = true;
+              this._setCharging(a2, true);
               a2.state = STATE.MOVE;
             }
             return false;
@@ -76782,7 +77125,7 @@ var init_sim = __esm({
           target = best;
           a2.chargeTargetId = best.id;
           stopAt = P2.combat.meleeRangeM * 0.6;
-          a2.charging = bestD > P2.combat.meleeRangeM;
+          this._setCharging(a2, bestD > P2.combat.meleeRangeM);
           mps = P2.movement.baseMps * this._speedMult(a2) * (a2.charging ? P2.speed.chargeMult : 1) * (a2.leaping ? 1.56 : 1);
           a2.state = STATE.FIGHT;
         } else if (a2.faction === FACTION.INFECTION) {
@@ -76797,7 +77140,7 @@ var init_sim = __esm({
           target = t2;
           stopAt = P2.combat.grabRangeM * 0.6;
           mps = P2.movement.baseMps * this._speedMult(a2) * P2.speed.infectionLunge * (a2.leaping ? P2.speed.infectionPounce : 1);
-          a2.charging = true;
+          this._setCharging(a2, true);
         } else return false;
         a2.move = null;
         if (a2.path.length) a2.path = [];
@@ -77153,6 +77496,31 @@ var init_sim = __esm({
       // _separate's job. Move legs LAND here too, so arrivals never converge
       // on the room's center point.
       _parkSlot(a2, nd) {
+        if (a2.task?.kind === TASK.GUARD && a2.task.protect !== void 0 && a2.task.threatNode !== void 0 && a2.task.threatNode >= 0) {
+          const path = this.graph.path(nd.idx, a2.task.threatNode, ["std"], (link) => !link.locked);
+          const step3 = path?.[0];
+          if (step3) {
+            const link = step3.link;
+            const mouth = link.door ?? (link.a === nd.idx ? link.padA : link.padB);
+            if (mouth) {
+              let ix = nd.x - mouth.x, iy = nd.y - mouth.y;
+              const length3 = Math.hypot(ix, iy) || 1;
+              ix /= length3;
+              iy /= length3;
+              const hash3 = (a2.id * 2654435761 >>> 0) / 4294967296;
+              const depth3 = 1.35 + a2.id % 3 * 0.55;
+              const lateral = (hash3 - 0.5) * Math.min(4, Math.max(1.4, Math.min(nd.w, nd.d) * 0.45));
+              const radius = this._bodyRadius(a2);
+              const hw2 = Math.max(0, nd.w / 2 - radius), hd2 = Math.max(0, nd.d / 2 - radius);
+              const x2 = mouth.x + ix * depth3 - iy * lateral;
+              const y2 = mouth.y + iy * depth3 + ix * lateral;
+              return [
+                Math.max(nd.x - hw2, Math.min(nd.x + hw2, x2)),
+                Math.max(nd.y - hd2, Math.min(nd.y + hd2, y2))
+              ];
+            }
+          }
+        }
         const h12 = (a2.id * 2654435761 >>> 0) / 4294967296;
         const h2 = ((a2.id + 7907) * 1597334677 >>> 0) / 4294967296;
         const hw = Math.max(0.7, nd.w / 2 - 1), hd = Math.max(0.7, nd.d / 2 - 1);
@@ -77421,6 +77789,7 @@ var init_sim = __esm({
           if (a2.move && a2.move.hidden && (a2.move.layer === "shaft" || a2.move.layer === "std")) flags |= FLAG.IN_SHAFT;
           if (a2.hostArmed || a2.faction === FACTION.CORPSE && a2.wasArmed && a2.damage < 100) flags |= FLAG.ARMED_HOST;
           if (a2.charging) flags |= FLAG.CHARGING;
+          if (a2.faction === FACTION.COMBAT && a2.charging && a2.chargeArmsHigh) flags |= FLAG.ARMS_HIGH;
           if (a2.hoverY > 0.05) flags |= FLAG.LEAPING;
           if (a2.lastHurtTick !== void 0 && this.tickCount - a2.lastHurtTick < 4) flags |= FLAG.FLINCH;
           b2.flags[i2] = flags;
@@ -82002,7 +82371,7 @@ var init_agents3d = __esm({
       // animated at all and are simply placed on the weapon, and `bob` swings that
       // whole assembly — arms AND rifle together, about the shoulder line — so
       // nothing can shake the gun out of the hands.
-      _stampAnimated(set, i2, clip, animT, id, hold = null, bob = 0, panic = false, aim = 0) {
+      _stampAnimated(set, i2, clip, animT, id, hold = null, bob = 0, panic = false, aim = 0, armsHighCharge = false) {
         if (this._curD2 < CAST_NEAR2) this._castNear.add(set);
         const arms = hold && clip !== CLIP.DEATH;
         if (arms && bob) {
@@ -82034,8 +82403,18 @@ var init_agents3d = __esm({
               mesh.setMatrixAt(i2, this._m);
               continue;
             }
+            const armsHigh = armsHighCharge && clip === CLIP.RUN && (set === this.combatCivSet || set === this.combatOdstSet) && (part === "armL" || part === "armR");
             const feral = clip === CLIP.ATTACK && (set === this.combatCivSet || set === this.combatOdstSet) && (part === "armL" || part === "armR");
-            if (feral) {
+            if (armsHigh) {
+              const side = part === "armR" ? 1 : -1;
+              const phase = gaitPhase(clip, animT, id);
+              (this._eHold ??= new Euler()).set(
+                -side * (2.3 + Math.sin(phase * 0.73 + side) * 0.1),
+                side * Math.sin(phase * 1.31 + id) * 0.1,
+                Math.sin(phase * 1.07 + side * 0.8) * 0.16
+              );
+              this._mRot.makeRotationFromEuler(this._eHold);
+            } else if (feral) {
               const u2 = Math.max(0, Math.min(1, animT / 0.74));
               const envelope = Math.sin(u2 * Math.PI);
               const side = part === "armR" ? 1 : -1;
@@ -82201,7 +82580,18 @@ var init_agents3d = __esm({
         const counts = this._counts ??= { civ: 0, armed: 0, marine: 0, infection: 0, combatCiv: 0, combatOdst: 0, carrier: 0, corpse: 0, rifle: 0, flamer: 0, flash: 0, beam: 0 };
         for (const key in counts) counts[key] = 0;
         let clip = 0, animT = 0, curId = 0, curPanic = false, curBob = 0, curAim = 0;
-        const stamp = (set, i2) => this._stampAnimated(set, i2, clip, animT, curId, null, 0, curPanic);
+        const stamp = (set, i2, armsHighCharge = false) => this._stampAnimated(
+          set,
+          i2,
+          clip,
+          animT,
+          curId,
+          null,
+          0,
+          curPanic,
+          0,
+          armsHighCharge
+        );
         const stampHold = (set, i2) => this._stampAnimated(
           set,
           i2,
@@ -82563,6 +82953,7 @@ var init_agents3d = __esm({
             }
             case FACTION.COMBAT: {
               const charging = flags & FLAG.CHARGING;
+              const armsHighCharge = charging && flags & FLAG.ARMS_HIGH;
               const leaping = flags & FLAG.LEAPING;
               const hover = rp.hoverY > 1e-3 ? rp.hoverY : 0;
               let bx = wx, by = elev + hover, bz = wz;
@@ -82606,7 +82997,7 @@ var init_agents3d = __esm({
                 this._s.set(1, leaping ? 1.08 : charging ? 1.05 : 1, leaping ? 1.18 : charging ? 1.12 : 1)
               );
               if (flags & FLAG.ARMED_HOST) {
-                stamp(this.combatOdstSet, counts.combatOdst++);
+                stamp(this.combatOdstSet, counts.combatOdst++, armsHighCharge);
                 (this._v ??= new Vector3()).set(0.26, 1.04, 0.16).applyQuaternion(this._q);
                 this._e.set(0, RIFLE_YAW, -0.18);
                 this._q2.setFromEuler(this._e).premultiply(this._q);
@@ -82617,7 +83008,7 @@ var init_agents3d = __esm({
                 );
                 this.rifle.setMatrixAt(counts.rifle++, this._m);
               } else {
-                stamp(this.combatCivSet, counts.combatCiv++);
+                stamp(this.combatCivSet, counts.combatCiv++, armsHighCharge);
               }
               break;
             }
