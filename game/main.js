@@ -28,6 +28,7 @@ import { LightPool } from '../engine/lights.js';
 import { createRenderer, installDeviceLostReload, QualityGovernor, TickScheduler } from '../engine/runtime.js';
 import { createGameSync } from '../multiplayer/game-sync.js';
 import { StandardGamepad, halo3Actions } from './gamepad.js';
+import { SporeFX } from './spore-fx.js';
 
 const canvas = document.getElementById('c');
 const gamepad = new StandardGamepad();
@@ -311,6 +312,7 @@ const sim = new Sim(seed, coopPlayers > 1
   ? { flood: { initialInfectionForms: BASE_POD_COUNT + 5 * (coopPlayers - 1) } }
   : null);
 const world = new World(scene, sim.graph, seed);
+const sporeFX = new SporeFX(scene, camera, world, sim);
 const agents = new Agents3D(scene, sim, world);
 // ?nosc=1: disable the shadow-caster curation (A/B lever for the live
 // real-WebGPU incident — webgl2 validates clean, webgpu can't run headless)
@@ -784,11 +786,11 @@ let _shadowAt = 0; // torch shadow refresh clock (wall time, not frame parity)
 // texture [ShadowDepthTexture] used in a submit"). It is fixed for the
 // session at boot (fixedShadowSize below); rungs only stop the caster.
 const RUNGS = [
-  { res: [0.85, 1.25], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, rag: 48, rifleLights: 6, teamSpots: 3 },
-  { res: [0.7, 1.1], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, rag: 48, rifleLights: 6, teamSpots: 3 },
-  { res: [0.7, 1.0], shadows: true, lights: 10, bloom: 0.375, litePost: false, motes: 24, rag: 32, rifleLights: 4, teamSpots: 2 },
-  { res: [0.6, 1.0], shadows: false, lights: 8, bloom: 0.375, litePost: true, motes: 24, rag: 24, rifleLights: 3, teamSpots: 1 },
-  { res: [0.55, 0.9], shadows: false, lights: 6, bloom: 0.25, litePost: true, motes: 12, rag: 16, rifleLights: 2, teamSpots: 0 },
+  { res: [0.85, 1.25], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, spores: [56, 20], rag: 48, rifleLights: 6, teamSpots: 3 },
+  { res: [0.7, 1.1], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, spores: [48, 18], rag: 48, rifleLights: 6, teamSpots: 3 },
+  { res: [0.7, 1.0], shadows: true, lights: 10, bloom: 0.375, litePost: false, motes: 24, spores: [40, 14], rag: 32, rifleLights: 4, teamSpots: 2 },
+  { res: [0.6, 1.0], shadows: false, lights: 8, bloom: 0.375, litePost: true, motes: 24, spores: [28, 10], rag: 24, rifleLights: 3, teamSpots: 1 },
+  { res: [0.55, 0.9], shadows: false, lights: 6, bloom: 0.25, litePost: true, motes: 12, spores: [18, 6], rag: 16, rifleLights: 2, teamSpots: 0 },
 ];
 // whole-frame pixel budget: huge windows can't buy retina supersampling on
 // an integrated GPU — the cap yields before the budget does (HD opts out)
@@ -825,6 +827,7 @@ const governor = new QualityGovernor({
     post.setBloomScale(R.bloom);
     post.setLite(R.litePost);
     motes.setCount(R.motes);
+    sporeFX.setBudget(...R.spores);
     // CPU lever (swarm finding: the ladder shed only GPU cost): fewer live
     // ragdoll solvers on the low rungs — the cap gates new flops, extras
     // evict oldest-asleep exactly as at the full cap
@@ -3977,6 +3980,7 @@ function frame(now) {
   updateFlameJets(dtReal);
   sparks.update(dtReal, now / 1000, povX, povZ, elevOf(povDeck));
   updateMotes(dtReal);
+  sporeFX.update(dtReal, povNode, povDeck, povX, povZ);
   updateRoomLightPool(inDark, povNode, povDeck, povX, povZ);
   // the player's own fill, declared like any fixture (add() no-ops under
   // 0.02 intensity, so the dark case costs nothing and needs no branch)

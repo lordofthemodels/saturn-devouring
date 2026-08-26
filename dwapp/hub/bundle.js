@@ -74221,20 +74221,20 @@ function resolveCombat(sim2, dt) {
     if (shooters.length && (combatForms.length || carriers.length)) {
       sim2.gunfireAt(shaft.a);
       sim2.gunfireAt(shaft.b);
-      let pool = shooters.reduce((s2, a2) => s2 + (a2.faction === FACTION.MARINE ? P2.combat.marine.dps : P2.combat.armed.dps), 0) * dt;
+      let pool2 = shooters.reduce((s2, a2) => s2 + (a2.faction === FACTION.MARINE ? P2.combat.marine.dps : P2.combat.armed.dps), 0) * dt;
       for (const t2 of [...combatForms, ...carriers].sort((a2, b2) => a2.id - b2.id)) {
-        if (pool <= 0) break;
-        const d2 = Math.min(pool, t2.hp);
-        pool -= d2;
+        if (pool2 <= 0) break;
+        const d2 = Math.min(pool2, t2.hp);
+        pool2 -= d2;
         hurtFloodForm(sim2, t2, d2, false);
       }
     }
     if (combatForms.length && humans.length) {
-      let pool = combatForms.reduce((s2, f2) => s2 + P2.combat.combatForm.dps + (f2.hostArmed ? P2.combat.hostWeaponDps : 0), 0) * dt;
+      let pool2 = combatForms.reduce((s2, f2) => s2 + P2.combat.combatForm.dps + (f2.hostArmed ? P2.combat.hostWeaponDps : 0), 0) * dt;
       for (const v2 of humans.sort((a2, b2) => rank(a2) - rank(b2) || a2.id - b2.id)) {
-        if (pool <= 0) break;
-        const d2 = Math.min(pool, v2.hp);
-        pool -= d2;
+        if (pool2 <= 0) break;
+        const d2 = Math.min(pool2, v2.hp);
+        pool2 -= d2;
         sim2.hurtHuman(v2, d2);
       }
     }
@@ -74756,8 +74756,8 @@ function nameFor(seed2, id) {
   const initial = String.fromCharCode(65 + (h2 >>> 16) % 26);
   return `${initial}. ${SURNAMES[h2 % SURNAMES.length]}`;
 }
-function rankFromPool(seed2, id, pool) {
-  return pool[hash32(`${seed2}:rank:${id}`) % pool.length];
+function rankFromPool(seed2, id, pool2) {
+  return pool2[hash32(`${seed2}:rank:${id}`) % pool2.length];
 }
 var SURNAMES, RANK_POOLS;
 var init_names = __esm({
@@ -79911,11 +79911,11 @@ var init_world = __esm({
           const nearDeck = Math.abs(sim2.graph.node(n2).deck - playerDeck) <= 1;
           const fog3 = sim2.fogAt(n2);
           const fixtureDead = (this.roomLights[n2]?.lvl ?? 1) <= 0.1;
-          const target = n2 === playerNode ? 0 : sim2.darkAt(n2) ? fog3 ? 0.96 : 0.88 : fixtureDead ? 0.5 : 0;
+          const target = n2 === playerNode ? 0 : sim2.darkAt(n2) ? fog3 ? 0.7 : 0.88 : fixtureDead ? 0.5 : 0;
           const m2 = veil.material;
           m2.opacity += (target - m2.opacity) * Math.min(1, dt * 2.5);
           veil.visible = nearDeck && m2.opacity > 0.03;
-          m2.color.setHex(fog3 ? 1581068 : 0);
+          m2.color.setHex(fog3 ? 1317133 : 0);
           const L2 = this.roomLights[n2];
           if (L2 && sim2.darkAt(n2)) {
             L2.lvl = 0.02;
@@ -83791,9 +83791,9 @@ var init_audio = __esm({
           s2 = s2 * 0.985 + (Math.random() - 0.5) * 0.03;
           nd[i2] = s2;
         }
-        const noise = this.ctx.createBufferSource();
-        noise.buffer = nb;
-        noise.loop = true;
+        const noise3 = this.ctx.createBufferSource();
+        noise3.buffer = nb;
+        noise3.loop = true;
         const nf = this.ctx.createBiquadFilter();
         nf.type = "lowpass";
         nf.frequency.value = 420;
@@ -83803,12 +83803,12 @@ var init_audio = __esm({
         o1.connect(og2);
         o2.connect(og2);
         og2.connect(g2);
-        noise.connect(nf).connect(ng2).connect(g2);
+        noise3.connect(nf).connect(ng2).connect(g2);
         g2.connect(this.master);
         o1.start();
         o2.start();
-        noise.start();
-        this.ambNodes = { g: g2, o1, o2, noise };
+        noise3.start();
+        this.ambNodes = { g: g2, o1, o2, noise: noise3 };
         this._nextGroan = performance.now() + 15e3 + Math.random() * 2e4;
       }
       // called each frame: schedules the occasional ambience one-shot (set
@@ -91931,6 +91931,241 @@ var init_game_sync = __esm({
   }
 });
 
+// game/spore-fx.js
+function sporeDoorFlow(graph, sim2, door) {
+  if (!door?.edge || door.open01 <= 0.04) return null;
+  const fogA = sim2.fogAt(door.edge.a);
+  const fogB = sim2.fogAt(door.edge.b);
+  if (fogA === fogB) return null;
+  const fogNode = fogA ? door.edge.a : door.edge.b;
+  const clearNode = fogA ? door.edge.b : door.edge.a;
+  const clear = graph.node(clearNode);
+  const doorway = door.edge.door;
+  let dx = clear.x - (doorway?.x ?? graph.node(fogNode).x);
+  let dz = clear.y - (doorway?.y ?? graph.node(fogNode).y);
+  let length3 = Math.hypot(dx, dz);
+  if (length3 < 1e-3) {
+    const fog3 = graph.node(fogNode);
+    dx = clear.x - fog3.x;
+    dz = clear.y - fog3.y;
+    length3 = Math.hypot(dx, dz);
+  }
+  if (length3 < 1e-3) return null;
+  return {
+    fogNode,
+    clearNode,
+    dx: dx / length3,
+    dz: dz / length3,
+    openness: clamp01((door.open01 - 0.04) / 0.96)
+  };
+}
+function fogTexture() {
+  const canvas2 = document.createElement("canvas");
+  canvas2.width = canvas2.height = 96;
+  const ctx = canvas2.getContext("2d");
+  ctx.clearRect(0, 0, 96, 96);
+  const lobes = [
+    [46, 53, 39, 0.78],
+    [25, 58, 25, 0.58],
+    [68, 59, 24, 0.56],
+    [34, 34, 24, 0.46],
+    [61, 31, 22, 0.42],
+    [48, 72, 22, 0.38]
+  ];
+  for (const [x2, y2, radius, alpha] of lobes) {
+    const gradient = ctx.createRadialGradient(x2, y2, 0, x2, y2, radius);
+    gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    gradient.addColorStop(0.48, `rgba(255,255,255,${alpha * 0.52})`);
+    gradient.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(x2 - radius, y2 - radius, radius * 2, radius * 2);
+  }
+  return new CanvasTexture(canvas2);
+}
+function moteTexture() {
+  const canvas2 = document.createElement("canvas");
+  canvas2.width = canvas2.height = 16;
+  const ctx = canvas2.getContext("2d");
+  const gradient = ctx.createRadialGradient(8, 8, 0.5, 8, 8, 7.5);
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.35, "rgba(255,255,255,.75)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 16, 16);
+  return new CanvasTexture(canvas2);
+}
+function pool(capacity, material) {
+  const mesh = new InstancedMesh(new PlaneGeometry(1, 1), material, capacity);
+  mesh.instanceMatrix.setUsage(DynamicDrawUsage);
+  mesh.count = 0;
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+var MAX_WISPS, MAX_MOTES, RANGE2, clamp01, fract3, noise, SporeFX;
+var init_spore_fx = __esm({
+  "game/spore-fx.js"() {
+    init_three_webgpu_module();
+    init_world();
+    MAX_WISPS = 56;
+    MAX_MOTES = 20;
+    RANGE2 = 34 * 34;
+    clamp01 = (n2) => Math.max(0, Math.min(1, n2));
+    fract3 = (n2) => n2 - Math.floor(n2);
+    noise = (doorIndex, slot, channel = 0) => fract3(Math.sin(
+      (doorIndex + 1) * 12.9898 + (slot + 1) * 78.233 + channel * 37.719
+    ) * 43758.5453);
+    SporeFX = class {
+      constructor(scene2, camera2, world2, sim2) {
+        this.camera = camera2;
+        this.world = world2;
+        this.sim = sim2;
+        this.t = 0;
+        this.wispBudget = MAX_WISPS;
+        this.moteBudget = MAX_MOTES;
+        const fogMap = fogTexture();
+        this.wisps = pool(MAX_WISPS, new MeshBasicMaterial({
+          color: 4936507,
+          map: fogMap,
+          transparent: true,
+          opacity: 0.18,
+          depthWrite: false,
+          fog: false,
+          side: DoubleSide
+        }));
+        this.wisps.renderOrder = 6;
+        const moteMap = moteTexture();
+        this.motes = pool(MAX_MOTES, new MeshBasicMaterial({
+          color: 7557171,
+          map: moteMap,
+          transparent: true,
+          opacity: 0.34,
+          depthWrite: false,
+          fog: false,
+          side: DoubleSide
+        }));
+        this.motes.renderOrder = 7;
+        scene2.add(this.wisps, this.motes);
+        this._matrix = new Matrix4();
+        this._position = new Vector3();
+        this._scale = new Vector3();
+        this._side = new Vector3();
+        this._flow = new Vector3();
+        this._up = new Vector3(0, 1, 0);
+      }
+      setBudget(wisps, motes2) {
+        this.wispBudget = Math.max(0, Math.min(MAX_WISPS, wisps));
+        this.moteBudget = Math.max(0, Math.min(MAX_MOTES, motes2));
+      }
+      _stamp(mesh, slot, x2, y2, z2, width, height) {
+        this._position.set(x2, y2, z2);
+        this._scale.set(width, height, 1);
+        this._matrix.compose(this._position, this.camera.quaternion, this._scale);
+        mesh.setMatrixAt(slot, this._matrix);
+      }
+      _stampFloor(mesh, slot, x2, y2, z2, dx, dz, width, length3) {
+        this._side.set(-dz, 0, dx);
+        this._flow.set(dx, 0, dz);
+        this._matrix.makeBasis(this._side, this._flow, this._up);
+        this._matrix.scale(this._scale.set(width, length3, 1));
+        this._matrix.setPosition(x2, y2, z2);
+        mesh.setMatrixAt(slot, this._matrix);
+      }
+      update(dt, povNode, povDeck, povX, povZ) {
+        this.t += Math.min(dt, 0.1);
+        const candidates = [];
+        for (const door of this.world.doors) {
+          if (door.deck !== povDeck) continue;
+          const d2 = (door.x - povX) ** 2 + (door.z - povZ) ** 2;
+          if (d2 > RANGE2) continue;
+          const flow = sporeDoorFlow(this.world.graph, this.sim, door);
+          if (flow) candidates.push({ door, flow, d2 });
+        }
+        candidates.sort((a2, b2) => a2.d2 - b2.d2);
+        let wispCount = 0;
+        let moteCount = 0;
+        for (const { door, flow } of candidates) {
+          const doorIndex = door.edge.i ?? this.world.doors.indexOf(door);
+          const open = 0.35 + flow.openness * 0.65;
+          const sideX = -flow.dz;
+          const sideZ = flow.dx;
+          if (wispCount < this.wispBudget) {
+            this._stampFloor(
+              this.wisps,
+              wispCount++,
+              door.x + flow.dx * 0.05,
+              door.elev + 0.07,
+              door.z + flow.dz * 0.05,
+              flow.dx,
+              flow.dz,
+              DOOR_W * 1.22 * open,
+              2.9 * open
+            );
+          }
+          if (wispCount < this.wispBudget) {
+            this._stampFloor(
+              this.wisps,
+              wispCount++,
+              door.x - flow.dx * 0.18,
+              door.elev + 0.2,
+              door.z - flow.dz * 0.18,
+              flow.dx,
+              flow.dz,
+              DOOR_W * 0.92 * open,
+              2.1 * open
+            );
+          }
+          const layers = Math.min(6, this.wispBudget - wispCount);
+          for (let slot = 0; slot < layers; slot++) {
+            const progress = slot / 5;
+            const distance3 = -1.15 + progress * 2.45;
+            const phase = this.t * (0.15 + noise(doorIndex, slot, 1) * 0.08) + noise(doorIndex, slot, 2) * Math.PI * 2;
+            const lateral = (noise(doorIndex, slot, 3) - 0.5) * DOOR_W * 0.62 + Math.sin(phase) * 0.1;
+            const x2 = door.x + flow.dx * distance3 + sideX * lateral;
+            const z2 = door.z + flow.dz * distance3 + sideZ * lateral;
+            const outside = clamp01(distance3 / 1.3);
+            const y2 = door.elev + 0.34 + noise(doorIndex, slot, 4) * 1.15 - outside * 0.22 + Math.sin(phase * 0.7) * 0.05;
+            const width = (DOOR_W * (0.65 + noise(doorIndex, slot, 5) * 0.3) + outside * 0.36) * open;
+            const height = (0.62 + noise(doorIndex, slot, 6) * 0.58) * open;
+            this._stamp(this.wisps, wispCount++, x2, y2, z2, width, height);
+          }
+          const doorMotes = Math.min(2, this.moteBudget - moteCount);
+          for (let slot = 0; slot < doorMotes; slot++) {
+            const phase = this.t * (0.35 + noise(doorIndex, slot, 7) * 0.18) + noise(doorIndex, slot, 8) * Math.PI * 2;
+            const distance3 = -0.85 + noise(doorIndex, slot, 9) * 2.2;
+            const lateral = (noise(doorIndex, slot, 10) - 0.5) * DOOR_W * open;
+            const x2 = door.x + flow.dx * distance3 + sideX * lateral + Math.sin(phase) * 0.08;
+            const z2 = door.z + flow.dz * distance3 + sideZ * lateral + Math.cos(phase * 0.8) * 0.07;
+            const y2 = door.elev + 0.28 + noise(doorIndex, slot, 11) * 1.75 + Math.sin(phase * 0.6) * 0.12;
+            const size = 0.026 + noise(doorIndex, slot, 12) * 0.035;
+            this._stamp(this.motes, moteCount++, x2, y2, z2, size, size);
+          }
+          if (wispCount >= this.wispBudget && moteCount >= this.moteBudget) break;
+        }
+        if (this.sim.fogAt(povNode)) {
+          const ambient2 = Math.min(8, this.moteBudget - moteCount);
+          for (let slot = 0; slot < ambient2; slot++) {
+            const phase = this.t * (0.22 + noise(povNode, slot, 13) * 0.16) + noise(povNode, slot, 14) * Math.PI * 2;
+            const radius = 1.2 + noise(povNode, slot, 15) * 3.4;
+            const angle = noise(povNode, slot, 16) * Math.PI * 2 + phase * 0.14;
+            const x2 = povX + Math.cos(angle) * radius;
+            const z2 = povZ + Math.sin(angle) * radius;
+            const y2 = elevOf(povDeck) + 0.25 + noise(povNode, slot, 17) * 2.1 + Math.sin(phase) * 0.12;
+            const size = 0.024 + noise(povNode, slot, 18) * 0.038;
+            this._stamp(this.motes, moteCount++, x2, y2, z2, size, size);
+          }
+        }
+        this.wisps.count = wispCount;
+        this.wisps.visible = wispCount > 0;
+        this.wisps.instanceMatrix.needsUpdate = wispCount > 0;
+        this.motes.count = moteCount;
+        this.motes.visible = moteCount > 0;
+        this.motes.instanceMatrix.needsUpdate = moteCount > 0;
+      }
+    };
+  }
+});
+
 // game/main.js?v=1
 var main_exports = {};
 function setInputMode(mode) {
@@ -93883,6 +94118,7 @@ function frame(now) {
   updateFlameJets(dtReal);
   sparks.update(dtReal, now / 1e3, povX, povZ, elevOf(povDeck));
   updateMotes(dtReal);
+  sporeFX.update(dtReal, povNode, povDeck, povX, povZ);
   updateRoomLightPool(inDark, povNode, povDeck, povX, povZ);
   lightPool.add(_fillX, _fillY, _fillZ, 13623551, _fillI, 10, 1.8);
   updateDoorSpill(povDeck, povX, povZ);
@@ -94184,7 +94420,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -94209,6 +94445,7 @@ var init_main = __esm({
     init_runtime();
     init_game_sync();
     init_gamepad();
+    init_spore_fx();
     canvas = document.getElementById("c");
     gamepad = new StandardGamepad();
     inputMode = document.body.dataset.input === "gamepad" ? "gamepad" : "keyboard";
@@ -94340,6 +94577,7 @@ var init_main = __esm({
     coopPlayers = LAUNCH.session ? Math.max(1, new Set(LAUNCH.members || []).size) : 1;
     sim = new Sim(seed, coopPlayers > 1 ? { flood: { initialInfectionForms: BASE_POD_COUNT + 5 * (coopPlayers - 1) } } : null);
     world = new World(scene, sim.graph, seed);
+    sporeFX = new SporeFX(scene, camera, world, sim);
     agents = new Agents3D(scene, sim, world);
     world.shadowCull = agents.shadowCull = !QP.has("nosc");
     cic = sim.graph.byId.get("cic");
@@ -94573,11 +94811,11 @@ var init_main = __esm({
     agents.rifle.castShadow = true;
     _shadowAt = 0;
     RUNGS = [
-      { res: [0.85, 1.25], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, rag: 48, rifleLights: 6, teamSpots: 3 },
-      { res: [0.7, 1.1], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, rag: 48, rifleLights: 6, teamSpots: 3 },
-      { res: [0.7, 1], shadows: true, lights: 10, bloom: 0.375, litePost: false, motes: 24, rag: 32, rifleLights: 4, teamSpots: 2 },
-      { res: [0.6, 1], shadows: false, lights: 8, bloom: 0.375, litePost: true, motes: 24, rag: 24, rifleLights: 3, teamSpots: 1 },
-      { res: [0.55, 0.9], shadows: false, lights: 6, bloom: 0.25, litePost: true, motes: 12, rag: 16, rifleLights: 2, teamSpots: 0 }
+      { res: [0.85, 1.25], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, spores: [56, 20], rag: 48, rifleLights: 6, teamSpots: 3 },
+      { res: [0.7, 1.1], shadows: true, lights: 14, bloom: 0.5, litePost: false, motes: 36, spores: [48, 18], rag: 48, rifleLights: 6, teamSpots: 3 },
+      { res: [0.7, 1], shadows: true, lights: 10, bloom: 0.375, litePost: false, motes: 24, spores: [40, 14], rag: 32, rifleLights: 4, teamSpots: 2 },
+      { res: [0.6, 1], shadows: false, lights: 8, bloom: 0.375, litePost: true, motes: 24, spores: [28, 10], rag: 24, rifleLights: 3, teamSpots: 1 },
+      { res: [0.55, 0.9], shadows: false, lights: 6, bloom: 0.25, litePost: true, motes: 12, spores: [18, 6], rag: 16, rifleLights: 2, teamSpots: 0 }
     ];
     PIXEL_BUDGET = 3e6;
     rung = 0;
@@ -94599,6 +94837,7 @@ var init_main = __esm({
         post.setBloomScale(R2.bloom);
         post.setLite(R2.litePost);
         motes.setCount(R2.motes);
+        sporeFX.setBudget(...R2.spores);
         if (agents.ragdolls) agents.ragdolls.p.maxActive = R2.rag ?? 48;
       },
       onResize: (w4, h2) => post.setSize(w4, h2)
