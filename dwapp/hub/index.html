@@ -148,6 +148,20 @@
   #overlay h1 { font-size: 28px; color: #e8eef7; letter-spacing: 2px; }
   #overlay p { color: #8a97a8; max-width: 520px; }
   #overlay .keys { color: #6a7686; font-size: 12px; }
+  #overlay button {
+    min-height: 44px; background: #16283a; color: #9fd8ff;
+    border: 1px solid #2f4a63; padding: 7px 16px;
+    font: 11px ui-monospace, Menlo, monospace; letter-spacing: .1em; cursor: pointer;
+  }
+  #overlay button:focus-visible,
+  body[data-input="gamepad"] #overlay button:focus {
+    color: #fff0c8; border-color: #f2a93b; outline: 2px solid rgba(242,169,59,.42);
+  }
+  #resultShareText {
+    width: min(460px, 78vw); min-height: 62px; margin-top: 12px; resize: none;
+    border: 1px solid #26384b; background: #090e15; color: #8fa8c4;
+    padding: 8px; font: 11px/1.45 ui-monospace, Menlo, monospace;
+  }
   #overlay.hidden { display: none; }
   #pinned {
     top: 58%; left: 50%; transform: translateX(-50%);
@@ -173,6 +187,12 @@
     color: #e8d98c; font-size: 15px; font-weight: 700;
     background: rgba(8, 11, 15, 0.75); padding: 6px 14px; border-radius: 5px;
     border: 1px solid #3a3616;
+  }
+  #audioGate {
+    position: fixed; left: 50%; top: 12px; z-index: 45; transform: translateX(-50%);
+    min-height: 44px; padding: 8px 14px; border: 1px solid #f2a93b;
+    background: rgba(8,13,19,.94); color: #f2c675; font: 11px/1.2 monospace;
+    letter-spacing: .1em; cursor: pointer;
   }
 
   #hitmarker {
@@ -262,19 +282,24 @@
   #intro {
     position: absolute; inset: 0; z-index: 12; background: #020409;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    cursor: pointer;
+    padding: 20px 0 72px; cursor: pointer;
+  }
+  #introScroll {
+    width: min(700px, 86vw); max-height: calc(100dvh - 100px);
+    overflow-y: auto; overscroll-behavior: contain; padding: 4px 8px 16px;
+    scrollbar-color: #355443 #0a1110;
   }
   #introText {
-    width: min(700px, 86vw); white-space: pre-wrap;
-    font-size: 14px; line-height: 1.68; color: #9fc8ac;
+    width: 100%; white-space: pre-wrap;
+    font-size: clamp(11px, 1.35vh, 14px); line-height: 1.55; color: #9fc8ac;
     text-shadow: 0 0 9px rgba(110, 220, 155, 0.22);
   }
   #introText::after {
     content: "▊"; color: #b8e8c8; animation: introblink 0.9s steps(1) infinite;
   }
   #introMission {
-    width: min(700px, 86vw); margin-top: 10px; white-space: pre-wrap;
-    font-size: 17px; font-weight: 700; letter-spacing: 2px; color: #ff6a4d;
+    width: 100%; margin-top: 10px; white-space: pre-wrap;
+    font-size: clamp(14px, 1.8vh, 17px); font-weight: 700; letter-spacing: 2px; color: #ff6a4d;
     text-shadow: 0 0 12px rgba(255, 90, 60, 0.35);
   }
   #introHint {
@@ -285,7 +310,7 @@
   @keyframes introblink { 50% { opacity: 0.15; } }
 </style>
 </head>
-<body class="launcher-active">
+<body class="launcher-active" data-input="keyboard">
   <div id="launcher">
     <header class="hub-top">
       <div class="hub-brand"><span class="hub-mark" aria-hidden="true"></span><div><strong>CHARON</strong><span>PEER-TO-PEER SURVIVAL</span></div></div>
@@ -368,10 +393,11 @@ npm run build:dwapp</pre></article>
           </div>
         </div>
       </section>
-      <footer class="hub-footer"><span>CHARON NETWORK PROTOCOL v9</span><span>WEBGPU · WEBGL2 · WEBRTC · PEERD DWEB</span></footer>
+      <footer class="hub-footer"><span>CHARON NETWORK PROTOCOL v9</span><span data-input-copy="gamepad">A SELECT · B BACK · D-PAD / LEFT STICK NAVIGATE</span><span>WEBGPU · WEBGL2 · WEBRTC · PEERD DWEB</span></footer>
     </main>
   </div>
   <canvas id="c"></canvas>
+  <button id="audioGate" type="button" hidden>TAP SCREEN OR PRESS A KEY FOR AUDIO</button>
   <div class="hud" id="topbar"><b>UNSC SATURN DEVOURING</b> · <span id="clock">0:00</span> · <span id="room">—</span></div>
   <div class="hud" id="vitals">
     <div class="bar"><div id="armorBar"></div></div>
@@ -400,7 +426,7 @@ npm run build:dwapp</pre></article>
     <div id="maptitle">MARINE TACNET — UNSC SATURN DEVOURING</div>
     <div id="mapdecks" aria-label="Tactical map deck"><button type="button" data-deck="1">1</button><button type="button" data-deck="2">2</button><button type="button" data-deck="3">3</button><button type="button" data-deck="4">4</button><button type="button" data-deck="5">5</button></div>
     <div id="mapside"></div>
-    <div id="maplegend">M close · 1–5 or ←/→ switch deck · opens on your current deck — contacts, bodies and lights-out
+    <div id="maplegend"><span data-input-copy="keyboard">M close · 1–5 or ←/→ switch deck</span><span data-input-copy="gamepad">VIEW or B close · D-PAD ←/→ switch deck</span> · opens on your current deck — contacts, bodies and lights-out
       show only where a marine team (or you) has eyes; red ◇ = last-seen report, fading with age</div>
   </div>
   <div class="hud" id="logwrap">
@@ -413,17 +439,19 @@ npm run build:dwapp</pre></article>
        the text the moment the type roll starts (user: first render must be
        a Loading… in the intro typeface) -->
   <div id="intro" role="button" tabindex="0" aria-label="Mission briefing. Press Enter to advance.">
-    <div id="introText">Loading…</div>
-    <div id="introMission"></div>
+    <div id="introScroll">
+      <div id="introText">Loading…</div>
+      <div id="introMission"></div>
+    </div>
     <div id="introHint">any key or click — skip</div>
   </div>
-  <div id="overlay">
+  <div id="overlay" class="hidden" role="dialog" aria-modal="true" aria-labelledby="ovTitle">
     <h1 id="ovTitle">HALO CHARON</h1>
     <p id="ovText">You are a lone crew member aboard the UNSC Saturn Devouring, a Charon-class frigate. Something hit the hangar deck.
       The ship's marines, crew — and whatever came aboard — act entirely on their own. Survive.</p>
-    <p class="keys">click to enter · WASD + SHIFT sprint + SPACE jump · hold LEFT CLICK — full auto MA5 (loud) · R reload · F melee · G frag · E scavenge ammo/flamethrower · Q or MOUSE WHEEL swap weapon · M tac map · 1 follow / 2 hold / 3 advance (fireteam) ·
+    <p class="keys"><span data-input-copy="keyboard">click to enter · WASD + SHIFT sprint + SPACE jump · hold LEFT CLICK — full auto MA5 (loud) · R reload · F melee · G frag · E pick up ammo / health / armor / weapons · Q or MOUSE WHEEL swap weapon · M tac map · 1 follow / 2 hold / 3 advance (fireteam) ·
       ladders/stairs: stand at one, press L — always takes you to the other end · your fireteam follows you · ESC frees the mouse ·
-      K sound board · J audio log (names every cue as it plays) · H flood readout</p>
+      K sound board · J audio log (names every cue as it plays) · H flood readout</span><span data-input-copy="gamepad">HALO 3 LAYOUT · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB reload / use / climb · B melee · Y swap weapon · L3 sprint · VIEW tac map · D-PAD ↑ follow / ← hold / → advance / ↓ give magazine · MENU release controls</span></p>
   </div>
   <script type="module" src="./bundle.js"></script>
 </body>

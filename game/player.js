@@ -12,7 +12,7 @@
 // from where you stand, so the direction is never a guess.
 
 import { FpsController } from '../engine/fps-controller.js';
-import { elevOf } from './world.js';
+import { armoryStations, elevOf } from './world.js';
 import { ODST } from './fps-data.js';
 
 export class Player extends FpsController {
@@ -34,6 +34,7 @@ export class Player extends FpsController {
     this.armed = true; // ODST loadout: you board with the MA5
     this._eLatch = false;
     this._wLatch = false;
+    this._gamepadActionConsumed = false;
     this._armoryIdx = sim.graph.byId.get('armory');
 
     // armor over health (first-strike shield model, ODST-flavored) — the
@@ -55,11 +56,11 @@ export class Player extends FpsController {
 
   // ONE fixed-timestep step (dt === PHYS_DT), driven by main.js's accumulator.
   step(dt) {
-    if (!this.physics) return; // physics not attached yet — hold still
+    if (!this.physics) { this.discardGamepadJump(); return; } // physics not attached yet — hold still
     this._prev = this._cur;
 
     if (!this.dead) this.adoptCapsule();
-    if (this.dead) { this._cur = this._worldPose(); return; }
+    if (this.dead) { this.discardGamepadJump(); this._cur = this._worldPose(); return; }
 
     // ARMOR IS THE SIM'S NOW (co-op death desync). This used to read its own
     // agent's hp drop and write it back up by the absorbed amount — which on
@@ -79,19 +80,27 @@ export class Player extends FpsController {
       this.onShoved?.(Math.hypot(this.shoveX, this.shoveZ));
     }
 
-    // --- E: scavenge ammo from the armory rack or the armed dead ---
-    if (this.keys.has('KeyE') && !this._eLatch) {
+    // --- E / controller action: every contextual pickup uses one button ---
+    const gamepadInteract = this.gamepadInteractionPending();
+    if (!gamepadInteract) this._gamepadActionConsumed = false;
+    const wantInteract = this.keys.has('KeyE') || gamepadInteract;
+    let interactionConsumed = false;
+    if (wantInteract && !this._eLatch) {
       this._eLatch = true;
       // the flamethrower gets first refusal on the press — the game layer owns
       // the "do I already have one / is the tank full" question, so it answers
       // whether it consumed the key rather than us guessing
-      if (!this.onFlamerTaken?.() && !this.onMedkitUsed?.() && !this.onArmorUsed?.()) {
+      interactionConsumed = !!this.onFlamerTaken?.() || !!this.onMedkitUsed?.()
+        || !!this.onArmorUsed?.();
+      if (!interactionConsumed) {
         const src = this.ammoSource();
-        if (src && this.onAmmoTaken) this.onAmmoTaken(src);
+        if (src && this.onAmmoTaken) { this.onAmmoTaken(src); interactionConsumed = true; }
       }
-    } else if (!this.keys.has('KeyE')) this._eLatch = false;
+      if (gamepadInteract && interactionConsumed) this._gamepadActionConsumed = true;
+    } else if (!wantInteract) this._eLatch = false;
 
-    const wantClimb = this.keys.has('KeyL');
+    const wantClimb = this.keys.has('KeyL')
+      || (gamepadInteract && !this._gamepadActionConsumed);
 
     // --- climbing: press L at a shaft, arrive at its only other end ---
     this.climbing = !!this.climb;
@@ -122,11 +131,15 @@ export class Player extends FpsController {
       }
     }
     if (!wantClimb) this._wLatch = false;
+    this.consumeGamepadInteraction();
 
     // --- walking (engine stepMove) or holding in place ---
+    this.climbing = !!this.climb;
+    if (this.climbing || !this.locked || this.pinned) this.discardGamepadJump();
     if (!this.climbing && this.locked && !this.pinned) {
       this.stepMove(dt);
     } else if (!this.climb) {
+      this.discardGamepadJump();
       this.holdStill();
     }
 
@@ -307,8 +320,11 @@ export class Player extends FpsController {
   // ammo scavenging: the rack, or rifles on the armed dead
   ammoSource() {
     if (this.dead) return null;
-    if (this.agent.node === this._armoryIdx && this.sim.armoryStock > 0) return 'armory';
     const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
+    const armory = this.sim.graph.node(this._armoryIdx);
+    const { ammo } = armoryStations(armory);
+    if (this.agent.node === this._armoryIdx && this.sim.armoryStock > 0
+      && Math.hypot(sx - ammo.x, sy - ammo.y) < 2.4) return 'armory';
     for (const c of this.sim.agents) {
       if (c.dead || c.faction !== 6 || !c.wasArmed || c.damage >= 100) continue;
       if (this.sim.graph.node(c.node).deck !== this.deck) continue;
@@ -340,12 +356,15 @@ export class Player extends FpsController {
   // Returns 'armory' | 'refuel' | <corpse> | null.
   flamerSource(hasFlamer, fuelFrac) {
     if (this.dead) return null;
-    const atArmory = this.agent.node === this._armoryIdx;
+    const armory = this.sim.graph.node(this._armoryIdx);
+    const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
+    const { flamer } = armoryStations(armory);
+    const atArmory = this.agent.node === this._armoryIdx
+      && Math.hypot(sx - flamer.x, sy - flamer.y) < 2.2;
     if (atArmory && !hasFlamer && this.sim.armoryFlamer) return 'armory';
     // only offer a can when there is room in the tank for one to matter
     if (atArmory && hasFlamer && this.sim.armoryFuelCans > 0 && fuelFrac < 0.9) return 'refuel';
     if (hasFlamer) return null; // you already carry the only one you can hold
-    const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
     for (const c of this.sim.agents) {
       if (c.dead || c.faction !== 6 || !c.hadFlamer || (c.flamerFuel ?? 0) <= 0) continue;
       if (this.sim.graph.node(c.node).deck !== this.deck) continue;

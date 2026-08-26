@@ -68243,6 +68243,174 @@ var init_peerd_browser = __esm({
   }
 });
 
+// game/gamepad.js
+function halo3Actions(state, contextualAction = false) {
+  return {
+    jumpHeld: state.held(HALO3_BINDINGS.jump),
+    jumpPressed: state.pressed(HALO3_BINDINGS.jump),
+    fireHeld: state.held(HALO3_BINDINGS.fire),
+    grenadePressed: state.pressed(HALO3_BINDINGS.grenade),
+    interactHeld: state.held(HALO3_BINDINGS.action),
+    interactPressed: state.pressed(HALO3_BINDINGS.action),
+    reloadPressed: state.pressed(HALO3_BINDINGS.action) && !contextualAction,
+    meleePressed: state.pressed(HALO3_BINDINGS.melee),
+    swapPressed: state.pressed(HALO3_BINDINGS.swapWeapon)
+  };
+}
+function radialDeadzone(x2, y2, inner = 0.18, outer = 0.95) {
+  const magnitude = Math.hypot(x2, y2);
+  if (!Number.isFinite(magnitude) || magnitude <= inner) return [0, 0];
+  const span = Math.max(1e-3, outer - inner);
+  const scaled = Math.min(1, (Math.min(magnitude, outer) - inner) / span);
+  return [x2 / magnitude * scaled, y2 / magnitude * scaled];
+}
+function curvedPair(x2, y2, exponent) {
+  const magnitude = Math.hypot(x2, y2);
+  if (!magnitude) return [0, 0];
+  const curved = Math.pow(magnitude, exponent);
+  return [x2 / magnitude * curved, y2 / magnitude * curved];
+}
+function buttonDown(button) {
+  return !!button && (button.pressed || Number(button.value) >= 0.5);
+}
+function usablePad(pad) {
+  return pad?.connected !== false && pad?.mapping === "standard" && pad?.buttons?.length >= 16 && pad?.axes?.length >= 4;
+}
+var STANDARD_BUTTONS, HALO3_BINDINGS, EMPTY_STATE, StandardGamepad;
+var init_gamepad = __esm({
+  "game/gamepad.js"() {
+    STANDARD_BUTTONS = Object.freeze({
+      a: 0,
+      b: 1,
+      x: 2,
+      y: 3,
+      lb: 4,
+      rb: 5,
+      lt: 6,
+      rt: 7,
+      view: 8,
+      menu: 9,
+      leftStick: 10,
+      rightStick: 11,
+      dpadUp: 12,
+      dpadDown: 13,
+      dpadLeft: 14,
+      dpadRight: 15,
+      home: 16
+    });
+    HALO3_BINDINGS = Object.freeze({
+      jump: "a",
+      melee: "b",
+      swapWeapon: "y",
+      action: "rb",
+      grenade: "lt",
+      fire: "rt"
+    });
+    EMPTY_STATE = Object.freeze({
+      connected: false,
+      id: "",
+      mapping: "",
+      moveX: 0,
+      moveY: 0,
+      lookX: 0,
+      lookY: 0,
+      navX: 0,
+      navY: 0,
+      used: false,
+      held: () => false,
+      pressed: () => false,
+      released: () => false
+    });
+    StandardGamepad = class {
+      constructor({ getGamepads, deadzone = 0.18, outerThreshold = 0.95 } = {}) {
+        this.getGamepads = getGamepads ?? (() => globalThis.navigator?.getGamepads?.() ?? []);
+        this.deadzone = deadzone;
+        this.outerThreshold = outerThreshold;
+        this.index = null;
+        this.previousByIndex = /* @__PURE__ */ new Map();
+        this.suppressedByIndex = /* @__PURE__ */ new Map();
+      }
+      poll() {
+        const pads = [...this.getGamepads() ?? []].filter(usablePad);
+        const snapshots = pads.map((pad2) => ({
+          pad: pad2,
+          down: pad2.buttons.map(buttonDown),
+          previous: this.previousByIndex.get(pad2.index)
+        }));
+        let selected = snapshots.find((snapshot) => snapshot.pad.index === this.index);
+        const deliberate = (snapshot) => !!snapshot.previous && (snapshot.down.some((value, index) => value && !snapshot.previous[index]) || Math.hypot(Number(snapshot.pad.axes[0]) || 0, Number(snapshot.pad.axes[1]) || 0) > 0.65 || Math.hypot(Number(snapshot.pad.axes[2]) || 0, Number(snapshot.pad.axes[3]) || 0) > 0.65);
+        const takeover = snapshots.find((snapshot) => snapshot !== selected && deliberate(snapshot));
+        if (!selected || !deliberate(selected) && takeover) selected = takeover ?? snapshots[0];
+        const pad = selected?.pad;
+        if (!pad) {
+          this.index = null;
+          this.previousByIndex.clear();
+          this.suppressedByIndex.clear();
+          return EMPTY_STATE;
+        }
+        const changedPad = this.index !== pad.index;
+        this.index = pad.index;
+        const rawDown = selected.down;
+        if (changedPad) {
+          this.suppressedByIndex.set(
+            pad.index,
+            new Set(rawDown.flatMap((value, index) => value ? [index] : []))
+          );
+        }
+        const suppressed = this.suppressedByIndex.get(pad.index) ?? /* @__PURE__ */ new Set();
+        const wasSuppressed = new Set(suppressed);
+        for (const index of [...suppressed]) if (!rawDown[index]) suppressed.delete(index);
+        const down = rawDown.map((value, index) => value && !suppressed.has(index));
+        const previous = selected.previous ?? rawDown;
+        const pressed = down.map((value, index) => value && !previous[index]);
+        const released = rawDown.map((value, index) => !value && !!previous[index] && !wasSuppressed.has(index));
+        const online = new Set(pads.map((candidate) => candidate.index));
+        for (const index of this.previousByIndex.keys()) {
+          if (!online.has(index)) {
+            this.previousByIndex.delete(index);
+            this.suppressedByIndex.delete(index);
+          }
+        }
+        for (const snapshot of snapshots) this.previousByIndex.set(snapshot.pad.index, snapshot.down);
+        const [moveX, moveAxisY] = radialDeadzone(
+          Number(pad.axes[0]) || 0,
+          Number(pad.axes[1]) || 0,
+          this.deadzone,
+          this.outerThreshold
+        );
+        const lookLinear = radialDeadzone(
+          Number(pad.axes[2]) || 0,
+          Number(pad.axes[3]) || 0,
+          this.deadzone,
+          this.outerThreshold
+        );
+        const [lookX, lookY] = curvedPair(lookLinear[0], lookLinear[1], 1.6);
+        const held = (name) => !!down[STANDARD_BUTTONS[name]];
+        const justPressed = (name) => !!pressed[STANDARD_BUTTONS[name]];
+        const justReleased = (name) => !!released[STANDARD_BUTTONS[name]];
+        const navX = held("dpadLeft") ? -1 : held("dpadRight") ? 1 : moveX < -0.55 ? -1 : moveX > 0.55 ? 1 : 0;
+        const navY = held("dpadUp") ? -1 : held("dpadDown") ? 1 : moveAxisY < -0.55 ? -1 : moveAxisY > 0.55 ? 1 : 0;
+        const used = changedPad && deliberate(selected) || pressed.some(Boolean) || Math.hypot(moveX, moveAxisY) > 0.35 || Math.hypot(lookX, lookY) > 0.35;
+        return {
+          connected: true,
+          id: String(pad.id || "Standard gamepad"),
+          mapping: pad.mapping || "",
+          moveX,
+          moveY: -moveAxisY,
+          lookX,
+          lookY,
+          navX,
+          navY,
+          used,
+          held,
+          pressed: justPressed,
+          released: justReleased
+        };
+      }
+    };
+  }
+});
+
 // multiplayer/protocol.js
 function createInviteCode(random = globalThis.crypto) {
   if (!random?.getRandomValues) throw new Error("secure random values are unavailable");
@@ -77507,6 +77675,12 @@ var init_fps_data = __esm({
 });
 
 // game/world.js
+function armoryStations(room) {
+  return {
+    ammo: { x: room.x - 1, y: room.y + room.d / 2 - 0.6 },
+    flamer: { x: room.x + room.w / 2 - 1.1, y: room.y + room.d / 2 - 1.1 }
+  };
+}
 function segDist2(px2, py2, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
   const L2 = vx * vx + vy * vy;
@@ -78783,6 +78957,7 @@ var init_world = __esm({
         if (idx === void 0) return;
         const n2 = g2.node(idx);
         const [cx, cz] = this.simToWorld(n2.x, n2.y, n2.deck);
+        const stations = armoryStations(n2);
         const elev = elevOf(n2.deck);
         const rackMat = new MeshStandardMaterial({ color: 3817801, roughness: 0.6, metalness: 0.7 });
         const gunMat = new MeshStandardMaterial({ color: 1580064, roughness: 0.5, metalness: 0.6 });
@@ -78818,25 +78993,19 @@ var init_world = __esm({
           const [sx, sy] = this.worldToSim(bx, bz, n2.deck);
           add3(crate, sx, sy, 0.55, 0.45, c2 < 4);
         }
-        const shelfZ = cz + n2.d / 2 - 0.6;
+        const [shelfX, shelfZ] = this.simToWorld(stations.ammo.x, stations.ammo.y, n2.deck);
         const shelf = new Mesh(new BoxGeometry(5.6, 0.5, 0.7), rackMat);
-        shelf.position.set(cx - 1, elev + 0.25, shelfZ);
-        {
-          const [sx, sy] = this.worldToSim(cx - 1, shelfZ, n2.deck);
-          add3(shelf, sx, sy, 2.9, 0.55);
-        }
+        shelf.position.set(shelfX, elev + 0.25, shelfZ);
+        add3(shelf, stations.ammo.x, stations.ammo.y, 2.9, 0.55);
         for (let k2 = 0; k2 < 8; k2++) {
           const can = new Mesh(new BoxGeometry(0.42, 0.3, 0.3), ammoMat);
-          can.position.set(cx - 3.4 + k2 * 0.68, elev + 0.65, shelfZ);
+          can.position.set(shelfX - 2.4 + k2 * 0.68, elev + 0.65, shelfZ);
           this.scene.add(can);
         }
-        const fx = cx + n2.w / 2 - 1.1, fz = cz + n2.d / 2 - 1.1;
+        const [fx, fz] = this.simToWorld(stations.flamer.x, stations.flamer.y, n2.deck);
         const stand = new Mesh(new BoxGeometry(0.7, 0.85, 0.55), rackMat);
         stand.position.set(fx, elev + 0.425, fz);
-        {
-          const [sx, sy] = this.worldToSim(fx, fz, n2.deck);
-          add3(stand, sx, sy, 0.5, 0.42);
-        }
+        add3(stand, stations.flamer.x, stations.flamer.y, 0.5, 0.42);
         for (const off of [-0.15, 0.15]) {
           const tank = new Mesh(new CylinderGeometry(0.13, 0.13, 0.75, 10), tankMat);
           tank.position.set(fx + off, elev + 1.25, fz);
@@ -82144,23 +82313,72 @@ var init_fps_controller = __esm({
         this.yaw = -Math.PI / 2;
         this.pitch = 0;
         this.keys = /* @__PURE__ */ new Set();
+        this.gamepad = null;
+        this.gamepadActive = false;
+        this.gamepadJumpQueued = false;
+        this.gamepadJumpQueuedAt = 0;
+        this.gamepadInteractQueued = false;
+        this.gamepadInteractQueuedAt = 0;
+        this.pointerLocked = false;
         this.locked = false;
         if (this.physics) this.physics.spawnPlayer(this.x, this.elevOf(this.deck) + this.h, this.z);
         this._prev = this._worldPose();
         this._cur = this._worldPose();
         canvas2.addEventListener("click", () => {
-          if (!this.locked) canvas2.requestPointerLock();
+          if (!this.pointerLocked) canvas2.requestPointerLock();
         });
         document.addEventListener("pointerlockchange", () => {
-          this.locked = document.pointerLockElement === canvas2;
+          this.pointerLocked = document.pointerLockElement === canvas2;
+          this.locked = this.pointerLocked || this.gamepadActive;
         });
         document.addEventListener("mousemove", (e2) => {
-          if (!this.locked) return;
+          if (!this.pointerLocked) return;
           this.yaw -= e2.movementX * 22e-4;
           this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch - e2.movementY * 22e-4));
         });
         window.addEventListener("keydown", (e2) => this.keys.add(e2.code));
         window.addEventListener("keyup", (e2) => this.keys.delete(e2.code));
+        window.addEventListener("blur", () => this.keys.clear());
+      }
+      setGamepadInput(input) {
+        const wasGamepadActive = this.gamepadActive;
+        this.gamepad = input;
+        this.gamepadActive = !!input?.active;
+        if (this.gamepadActive && input.jumpPressed) {
+          this.gamepadJumpQueued = true;
+          this.gamepadJumpQueuedAt = performance.now();
+        }
+        if (this.gamepadActive && input.interactPressed) {
+          this.gamepadInteractQueued = true;
+          this.gamepadInteractQueuedAt = performance.now();
+        }
+        if (!this.gamepadActive) {
+          this.gamepadJumpQueued = false;
+          this.gamepadJumpQueuedAt = 0;
+          this.gamepadInteractQueued = false;
+          this.gamepadInteractQueuedAt = 0;
+        }
+        if (this.gamepadActive) this.locked = true;
+        else if (wasGamepadActive) this.locked = this.pointerLocked;
+      }
+      stepGamepadLook(dt) {
+        if (!this.gamepadActive || !this.locked) return;
+        this.yaw -= this.gamepad.lookX * (this.tune.gamepadLookYaw ?? 2.8) * dt;
+        this.pitch = Math.max(-1.45, Math.min(
+          1.45,
+          this.pitch - this.gamepad.lookY * (this.tune.gamepadLookPitch ?? 2.15) * dt
+        ));
+      }
+      gamepadInteractionPending() {
+        return this.gamepadActive && (this.gamepad?.interact || this.gamepadInteractQueued && performance.now() - this.gamepadInteractQueuedAt <= 250);
+      }
+      consumeGamepadInteraction() {
+        this.gamepadInteractQueued = false;
+        this.gamepadInteractQueuedAt = 0;
+      }
+      discardGamepadJump() {
+        this.gamepadJumpQueued = false;
+        this.gamepadJumpQueuedAt = 0;
       }
       // Wire the physics world once its wasm is ready. why deferred: a slow or
       // failed physics load must never wedge the host on its loading screen, so
@@ -82197,24 +82415,31 @@ var init_fps_controller = __esm({
         if (this.keys.has("KeyS")) fz -= 1;
         if (this.keys.has("KeyA")) fx -= 1;
         if (this.keys.has("KeyD")) fx += 1;
-        const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+        if (this.gamepadActive) {
+          fx += this.gamepad.moveX;
+          fz += this.gamepad.moveY;
+        }
+        const sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || this.gamepadActive && this.gamepad.sprint;
         const speed = sprint ? T3.sprintSpeed : T3.walkSpeed;
         let wx = 0, wz = 0;
         if (fx || fz) {
           const len = Math.hypot(fx, fz);
+          const strength = Math.min(1, len);
           const fwdX = -Math.sin(this.yaw), fwdZ = -Math.cos(this.yaw);
           const rightX = Math.cos(this.yaw), rightZ = -Math.sin(this.yaw);
-          wx = (fwdX * fz + rightX * fx) / len * speed;
-          wz = (fwdZ * fz + rightZ * fx) / len * speed;
+          wx = (fwdX * fz + rightX * fx) / len * speed * strength;
+          wz = (fwdZ * fz + rightZ * fx) / len * speed * strength;
         }
         const k2 = this.onGround ? T3.accel : T3.accel * T3.airControl;
         const blend = 1 - Math.exp(-k2 * dt);
         this.vx += (wx - this.vx) * blend;
         this.vz += (wz - this.vz) * blend;
-        if (this.keys.has("Space") && this.onGround) {
+        const gamepadJump = this.gamepadActive && this.gamepadJumpQueued && performance.now() - this.gamepadJumpQueuedAt <= 250;
+        if ((this.keys.has("Space") || gamepadJump) && this.onGround) {
           this.vy = T3.jumpVel;
           this.onGround = false;
         }
+        this.discardGamepadJump();
         this.vy -= T3.gravity * dt;
         const wantX = (this.vx + this.shoveX) * dt, wantZ = (this.vz + this.shoveZ) * dt;
         const moved = this.physics.movePlayer(wantX, wantZ, this.elevOf(this.deck) + this.h);
@@ -82310,6 +82535,7 @@ var init_player = __esm({
         this.armed = true;
         this._eLatch = false;
         this._wLatch = false;
+        this._gamepadActionConsumed = false;
         this._armoryIdx = sim2.graph.byId.get("armory");
         this.sinceHit = 99;
         this.agent = existingAgent ?? sim2.attachPlayer(startNode, { odst: true });
@@ -82331,10 +82557,14 @@ var init_player = __esm({
       }
       // ONE fixed-timestep step (dt === PHYS_DT), driven by main.js's accumulator.
       step(dt) {
-        if (!this.physics) return;
+        if (!this.physics) {
+          this.discardGamepadJump();
+          return;
+        }
         this._prev = this._cur;
         if (!this.dead) this.adoptCapsule();
         if (this.dead) {
+          this.discardGamepadJump();
           this._cur = this._worldPose();
           return;
         }
@@ -82346,14 +82576,23 @@ var init_player = __esm({
           this.agent.shoveY = 0;
           this.onShoved?.(Math.hypot(this.shoveX, this.shoveZ));
         }
-        if (this.keys.has("KeyE") && !this._eLatch) {
+        const gamepadInteract = this.gamepadInteractionPending();
+        if (!gamepadInteract) this._gamepadActionConsumed = false;
+        const wantInteract = this.keys.has("KeyE") || gamepadInteract;
+        let interactionConsumed = false;
+        if (wantInteract && !this._eLatch) {
           this._eLatch = true;
-          if (!this.onFlamerTaken?.() && !this.onMedkitUsed?.() && !this.onArmorUsed?.()) {
+          interactionConsumed = !!this.onFlamerTaken?.() || !!this.onMedkitUsed?.() || !!this.onArmorUsed?.();
+          if (!interactionConsumed) {
             const src = this.ammoSource();
-            if (src && this.onAmmoTaken) this.onAmmoTaken(src);
+            if (src && this.onAmmoTaken) {
+              this.onAmmoTaken(src);
+              interactionConsumed = true;
+            }
           }
-        } else if (!this.keys.has("KeyE")) this._eLatch = false;
-        const wantClimb = this.keys.has("KeyL");
+          if (gamepadInteract && interactionConsumed) this._gamepadActionConsumed = true;
+        } else if (!wantInteract) this._eLatch = false;
+        const wantClimb = this.keys.has("KeyL") || gamepadInteract && !this._gamepadActionConsumed;
         this.climbing = !!this.climb;
         if (this.climb) {
           this._stepClimb(dt);
@@ -82374,9 +82613,13 @@ var init_player = __esm({
           }
         }
         if (!wantClimb) this._wLatch = false;
+        this.consumeGamepadInteraction();
+        this.climbing = !!this.climb;
+        if (this.climbing || !this.locked || this.pinned) this.discardGamepadJump();
         if (!this.climbing && this.locked && !this.pinned) {
           this.stepMove(dt);
         } else if (!this.climb) {
+          this.discardGamepadJump();
           this.holdStill();
         }
         this._stairPortal();
@@ -82551,8 +82794,10 @@ var init_player = __esm({
       // ammo scavenging: the rack, or rifles on the armed dead
       ammoSource() {
         if (this.dead) return null;
-        if (this.agent.node === this._armoryIdx && this.sim.armoryStock > 0) return "armory";
         const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
+        const armory = this.sim.graph.node(this._armoryIdx);
+        const { ammo } = armoryStations(armory);
+        if (this.agent.node === this._armoryIdx && this.sim.armoryStock > 0 && Math.hypot(sx - ammo.x, sy - ammo.y) < 2.4) return "armory";
         for (const c2 of this.sim.agents) {
           if (c2.dead || c2.faction !== 6 || !c2.wasArmed || c2.damage >= 100) continue;
           if (this.sim.graph.node(c2.node).deck !== this.deck) continue;
@@ -82581,11 +82826,13 @@ var init_player = __esm({
       // Returns 'armory' | 'refuel' | <corpse> | null.
       flamerSource(hasFlamer2, fuelFrac) {
         if (this.dead) return null;
-        const atArmory = this.agent.node === this._armoryIdx;
+        const armory = this.sim.graph.node(this._armoryIdx);
+        const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
+        const { flamer: flamer2 } = armoryStations(armory);
+        const atArmory = this.agent.node === this._armoryIdx && Math.hypot(sx - flamer2.x, sy - flamer2.y) < 2.2;
         if (atArmory && !hasFlamer2 && this.sim.armoryFlamer) return "armory";
         if (atArmory && hasFlamer2 && this.sim.armoryFuelCans > 0 && fuelFrac < 0.9) return "refuel";
         if (hasFlamer2) return null;
-        const [sx, sy] = this.world.worldToSim(this.x, this.z, this.deck);
         for (const c2 of this.sim.agents) {
           if (c2.dead || c2.faction !== 6 || !c2.hadFlamer || (c2.flamerFuel ?? 0) <= 0) continue;
           if (this.sim.graph.node(c2.node).deck !== this.deck) continue;
@@ -91005,6 +91252,12 @@ var init_game_sync = __esm({
 
 // game/main.js?v=1
 var main_exports = {};
+function setInputMode(mode) {
+  if (inputMode === mode) return;
+  inputMode = mode;
+  document.body.dataset.input = mode;
+  refreshInputModeCopy();
+}
 function reportFatal(what, err) {
   console.error("[charon] " + what, err);
   if (_fatalShown >= 3) return;
@@ -91041,6 +91294,9 @@ function toggleMap(open = !mapOpen) {
     selectMapDeck(marineMap.selectedDeck());
   }
   document.getElementById("mapview").classList.toggle("mv-hidden", !mapOpen);
+}
+function syncAudioGate() {
+  audioGate.hidden = !(inputMode === "gamepad" && introGone && (!audio.ctx || audio.ctx.state !== "running"));
 }
 function toggleSoundBoard() {
   if (soundBoard) {
@@ -91366,7 +91622,7 @@ function introRender() {
   introMission.textContent = introChars > INTRO_BODY.length ? INTRO_MISSION.slice(0, introChars - INTRO_BODY.length) : "";
   if (introChars >= INTRO_TOTAL && !introDone) {
     introDone = true;
-    introHint.textContent = "CLICK TO DEPLOY";
+    introHint.textContent = inputPrompt("CLICK TO DEPLOY", "A — DEPLOY");
     introHint.classList.add("ready");
   }
 }
@@ -91386,8 +91642,29 @@ function dismissIntro() {
   intro.style.display = "none";
   overlay.classList.add("hidden");
   audio.ensure();
-  canvas.requestPointerLock()?.catch?.(() => {
-  });
+  if (inputMode !== "gamepad") {
+    canvas.requestPointerLock()?.catch?.(() => {
+    });
+  }
+}
+function refreshOverlayPrompt() {
+  if (!introGone) {
+    introHint.textContent = introDone ? inputPrompt("CLICK TO DEPLOY", "A — DEPLOY") : inputPrompt("ANY KEY OR CLICK — SKIP", "ANY BUTTON — SKIP");
+  }
+  if (overlay.dataset.screen === "pause") {
+    const voice = !LAUNCH.session ? "" : voiceBlocked ? " · TAP SCREEN OR PRESS A KEY FOR TEAM AUDIO" : voiceActive ? ` · Y ${voiceMuted ? "UNMUTE" : "MUTE"} MIC` : " · TAP MIC TO ENABLE VOICE";
+    overlay.querySelector(".keys").textContent = inputPrompt(
+      `${KEYBOARD_CONTROLS} · CLICK — return to action`,
+      `${CONTROLLER_CONTROLS} · A / MENU resume${voice}`
+    );
+  } else if (overlay.dataset.screen === "result") {
+    overlay.querySelector(".keys").textContent = inputPrompt(
+      "TAB / ARROWS choose · ENTER activate",
+      "D-PAD / LEFT STICK choose · A activate · share/copy require tap or Enter"
+    );
+  } else if (overlay.dataset.screen === "watch") {
+    overlay.querySelector(".keys").textContent = inputPrompt("click to keep watching", "A — keep watching");
+  }
 }
 function endScreen(title, text, final = true) {
   if (ended) return;
@@ -91395,7 +91672,8 @@ function endScreen(title, text, final = true) {
   document.exitPointerLock?.();
   el("ovTitle").textContent = title;
   el("ovText").textContent = text;
-  overlay.querySelector(".keys").textContent = final ? "reload the page for a new run (add ?seed=... for a specific ship)" : "click to keep watching";
+  overlay.dataset.screen = final ? "result" : "watch";
+  refreshOverlayPrompt();
   overlay.classList.remove("hidden");
 }
 function victoryScreen() {
@@ -91431,15 +91709,23 @@ function resultCard({ headline, color: color3, label: label3, secs, share }) {
   card.id = "victoryCard";
   card.style.cssText = "margin:18px auto 0;max-width:520px;text-align:center;font:13px/1.7 ui-monospace,Menlo,monospace";
   const url = location.origin + location.pathname;
-  card.innerHTML = `<div style="font:700 26px/1.2 ui-monospace,Menlo,monospace;letter-spacing:0.14em;color:${color3}">${headline}</div><div style="margin-top:10px;color:#8fa8c4;letter-spacing:0.18em;font-size:11px">${label3}</div><div style="font:700 40px/1.1 ui-monospace,Menlo,monospace;color:#e8eef7">${time3}</div><div style="margin-top:14px;color:#6a7686">${sim.stats.combatFormsDowned} forms put down · seed ${escq(sim.seed)}</div><div id="shareRow" style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"></div><div id="shareNote" style="margin-top:8px;height:16px;color:#7fd1a0;font-size:11px"></div>`;
+  card.innerHTML = `<div style="font:700 26px/1.2 ui-monospace,Menlo,monospace;letter-spacing:0.14em;color:${color3}">${headline}</div><div style="margin-top:10px;color:#8fa8c4;letter-spacing:0.18em;font-size:11px">${label3}</div><div style="font:700 40px/1.1 ui-monospace,Menlo,monospace;color:#e8eef7">${time3}</div><div style="margin-top:14px;color:#6a7686">${sim.stats.combatFormsDowned} forms put down · seed ${escq(sim.seed)}</div><textarea id="resultShareText" readonly aria-label="Share result text"></textarea><div id="shareRow" style="margin-top:16px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"></div><div id="shareNote" style="margin-top:8px;height:16px;color:#7fd1a0;font-size:11px"></div>`;
   overlay.querySelector(".keys").before(card);
   const row = card.querySelector("#shareRow");
   const note = card.querySelector("#shareNote");
-  const mkBtn = (label4, fn) => {
+  const shareText = card.querySelector("#resultShareText");
+  shareText.value = `${share}
+${url}`;
+  const activationFallback = (button) => {
+    shareText.select();
+    button.focus({ preventScroll: true });
+    note.textContent = "tap this action or press Enter; result text is available above";
+  };
+  const mkBtn = (label4, fn, requiresActivation = false) => {
     const b2 = document.createElement("button");
     b2.textContent = label4;
-    b2.style.cssText = "background:#16283a;color:#9fd8ff;border:1px solid #2f4a63;padding:7px 16px;font:11px ui-monospace,monospace;letter-spacing:0.1em;cursor:pointer";
-    b2.onclick = fn;
+    if (requiresActivation) b2.dataset.requiresActivation = "true";
+    b2.onclick = (event) => requiresActivation && !event.isTrusted ? activationFallback(b2) : fn();
     row.appendChild(b2);
     return b2;
   };
@@ -91451,18 +91737,17 @@ ${url}`);
     } catch {
       note.textContent = "clipboard blocked — select the text above";
     }
-  });
+  }, true);
   mkBtn("POST TO X", () => {
-    window.open(
-      `https://x.com/intent/tweet?text=${encodeURIComponent(share)}&url=${encodeURIComponent(url)}`,
-      "_blank",
-      "noopener"
-    );
+    location.href = `https://x.com/intent/tweet?text=${encodeURIComponent(share)}&url=${encodeURIComponent(url)}`;
   });
   if (navigator.share) {
     mkBtn("SHARE…", () => navigator.share({ title: "Halo Charon", text: share, url }).catch(() => {
-    }));
+    }), true);
   }
+  const restart = mkBtn("PLAY AGAIN", () => location.reload());
+  restart.dataset.primary = "true";
+  restart.focus({ preventScroll: true });
 }
 function humanIn(node, pred) {
   for (const a2 of sim.agents) {
@@ -91811,6 +92096,144 @@ function selectWeapon(wantFlamer) {
 }
 function swapWeapon() {
   selectWeapon(!heldIsFlamer);
+}
+function giveMagazine() {
+  if (player.dead || weapon.reserve < 32) return;
+  if (sim.giveMag(player.agent)) weapon.reserve -= 32;
+}
+function contextualActionAvailable() {
+  if (player.dead) return false;
+  return !!(player.flamerSource(hasFlamer, flamer.frac) || player.medkitSource() || player.armorSource() || player.ammoSource() || world.trunkAt(player.deck, player.x, player.z));
+}
+function moveOverlayFocus(direction) {
+  const controls = [...overlay.querySelectorAll("#victoryCard button")];
+  if (!controls.length) return;
+  const current = controls.indexOf(document.activeElement);
+  const fallback = controls.findIndex((button) => button.dataset.primary === "true");
+  const index = current < 0 ? Math.max(0, fallback) : (current + direction + controls.length) % controls.length;
+  controls[index].focus({ preventScroll: true });
+}
+function moveOverlayTabFocus(direction) {
+  const controls = [...overlay.querySelectorAll("#victoryCard textarea, #victoryCard button")];
+  if (!controls.length) return;
+  const current = controls.indexOf(document.activeElement);
+  const fallback = controls.findIndex((control) => control.dataset.primary === "true");
+  const index = current < 0 ? Math.max(0, fallback) : (current + direction + controls.length) % controls.length;
+  controls[index].focus({ preventScroll: true });
+}
+function pauseGamepadControls() {
+  if (ended || gamepadPaused) return;
+  gamepadPaused = true;
+  gamepadFireHeld = false;
+  player.setGamepadInput(null);
+  document.exitPointerLock?.();
+  el("ovTitle").textContent = "CONTROLS RELEASED";
+  el("ovText").textContent = LAUNCH.session ? "The fireteam and ship simulation continue while your controls are released." : "The ship simulation continues while your controls are released.";
+  overlay.dataset.screen = "pause";
+  refreshOverlayPrompt();
+  overlay.classList.remove("hidden");
+}
+function resumeGamepadControls() {
+  if (!gamepadPaused) return;
+  gamepadPaused = false;
+  delete overlay.dataset.screen;
+  overlay.classList.add("hidden");
+  audio.ensure();
+}
+function handleGamepad(state, dt) {
+  if (state.used) setInputMode("gamepad");
+  if (!state.connected || inputMode !== "gamepad") {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    return;
+  }
+  if (!introGone) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    if (introDone) introHint.textContent = inputPrompt("CLICK TO DEPLOY", "A — DEPLOY");
+    if (state.used && !introDone) {
+      introChars = INTRO_TOTAL;
+      introRender();
+    } else if (introDone) {
+      const lookScroll = Math.abs(state.lookY) > 0.3 ? state.lookY * 12 : 0;
+      introScroll.scrollTop += state.navY * 8 + lookScroll;
+      if (state.pressed("a")) dismissIntro();
+    }
+    return;
+  }
+  if (gamepadPaused) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    refreshOverlayPrompt();
+    if (state.pressed("view")) {
+      resumeGamepadControls();
+      toggleMap(true);
+    } else if (state.pressed("y") && LAUNCH.session && voiceActive && !voiceBlocked) {
+      gameVoice.click();
+    } else if (state.pressed("a") || state.pressed("menu")) resumeGamepadControls();
+    return;
+  }
+  if (!overlay.classList.contains("hidden")) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    refreshOverlayPrompt();
+    if (ended) {
+      const nav = state.navY || state.navX;
+      if (nav && nav !== gamepadOverlayNav) moveOverlayFocus(nav > 0 ? 1 : -1);
+      gamepadOverlayNav = nav;
+      if (state.pressed("a")) {
+        const focused = document.activeElement;
+        if (focused?.closest?.("#victoryCard")) focused.click();
+        else moveOverlayFocus(1);
+      }
+    } else if (state.pressed("a")) {
+      overlay.classList.add("hidden");
+      delete overlay.dataset.screen;
+    }
+    return;
+  }
+  gamepadOverlayNav = 0;
+  if (state.pressed("menu")) {
+    pauseGamepadControls();
+    return;
+  }
+  if (state.pressed("view")) toggleMap();
+  if (mapOpen) {
+    gamepadFireHeld = false;
+    player.setGamepadInput(null);
+    if (state.pressed("b")) toggleMap(false);
+    else if (state.navX && state.navX !== gamepadMapNavX) {
+      selectMapDeck(Math.max(1, Math.min(5, marineMap.selectedDeck() + state.navX)));
+    }
+    gamepadMapNavX = state.navX;
+    return;
+  }
+  gamepadMapNavX = 0;
+  const actions = halo3Actions(state, contextualActionAvailable());
+  player.setGamepadInput({
+    active: true,
+    moveX: state.moveX,
+    moveY: state.moveY,
+    lookX: state.lookX,
+    lookY: state.lookY,
+    sprint: state.held("leftStick"),
+    jump: actions.jumpHeld,
+    jumpPressed: actions.jumpPressed,
+    interact: actions.interactHeld,
+    interactPressed: actions.interactPressed
+  });
+  player.stepGamepadLook(dt);
+  gamepadFireHeld = actions.fireHeld;
+  if (!player.dead && player.locked) {
+    if (actions.reloadPressed) reloadPressed = true;
+    if (actions.swapPressed) swapWeapon();
+    if (actions.meleePressed) meleePressed = true;
+    if (actions.grenadePressed) fragPressed = true;
+    if (state.pressed("dpadUp")) setOrder2("follow");
+    else if (state.pressed("dpadLeft")) setOrder2("hold");
+    else if (state.pressed("dpadRight")) setOrder2("advance");
+    else if (state.pressed("dpadDown")) giveMagazine();
+  }
 }
 function dryEscortName() {
   if (performance.now() - _dryNearAt > 300) {
@@ -92447,6 +92870,8 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dtReal = Math.min(0.1, (now - last) / 1e3);
   last = now;
+  handleGamepad(gamepad.poll(), dtReal);
+  syncAudioGate();
   physAcc += dtReal;
   let alpha = 0;
   if (physics) {
@@ -92464,7 +92889,7 @@ function frame(now) {
     if (pSteps >= 6) physAcc = 0;
     alpha = physAcc / PHYS_DT;
   }
-  const triggerLive = fireHeld && player.locked && !player.dead;
+  const triggerLive = (fireHeld || gamepadFireHeld) && player.locked && !player.dead;
   const meleeLive = meleePressed && player.locked && !player.dead;
   const wevents = [];
   weapon.step(dtReal, {
@@ -92748,7 +93173,7 @@ function frame(now) {
   setStyle("armorBar", "width", `${ghost ? 0 : player.armor / 50 * 100}%`);
   setText("hpText", ghost ? `IT ${hp}` : `${Math.ceil(player.armor)} | ${hp}`);
   setText("ammo", ghost ? "" : heldIsFlamer ? flamer.empty ? "TANK DRY" : `FUEL ${Math.ceil(flamer.frac * 100)}%` : weapon.reloading ? "RELOADING" : `${weapon.mag} / ${weapon.reserve}`);
-  setText("weaponName", ghost ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? " · Q / WHEEL SWAP" : ""}`);
+  setText("weaponName", ghost ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? inputPrompt(" · Q / WHEEL SWAP", " · Y SWAP") : ""}`);
   {
     const wn = el("weaponName");
     const wc = heldIsFlamer && !ghost ? "wn-flamer" : "";
@@ -92775,32 +93200,37 @@ function frame(now) {
   const src = fsrc ? null : player.dead ? null : player.ammoSource();
   if (swapHintAt && (now - swapHintAt > SWAP_HINT_MS || _swapAt > swapHintAt)) swapHintAt = 0;
   if (!player.dead && swapHintAt) {
-    setText("hint", "Q swaps · MOUSE WHEEL: up = MA5, down = flamethrower");
+    setText("hint", inputPrompt(
+      "Q swaps · MOUSE WHEEL: up = MA5, down = flamethrower",
+      "Y — swap MA5 / flamethrower"
+    ));
     setStyle("hint", "display", "block");
   } else if (fsrc) {
-    setText("hint", fsrc === "armory" ? "E — take the flamethrower off the rack" : fsrc === "refuel" ? `E — swap a fuel can (${sim.armoryFuelCans} left)` : "E — take the flamethrower off the operator");
+    const use = inputPrompt("E", "RB");
+    setText("hint", fsrc === "armory" ? `${use} — take the flamethrower off the rack` : fsrc === "refuel" ? `${use} — swap a fuel can (${sim.armoryFuelCans} left)` : `${use} — take the flamethrower off the operator`);
     setStyle("hint", "display", "block");
   } else if (!player.dead && player.medkitSource()) {
-    setText("hint", "E — use the med pack");
+    setText("hint", `${inputPrompt("E", "RB")} — use the med pack`);
     setStyle("hint", "display", "block");
   } else if (!player.dead && player.armorSource()) {
-    setText("hint", "E — strap on armor plates");
+    setText("hint", `${inputPrompt("E", "RB")} — strap on armor plates`);
     setStyle("hint", "display", "block");
   } else if (src) {
-    setText("hint", src === "armory" ? `E — strip mags from the rack (${sim.armoryStock} rifles)` : "E — take mags off the dead");
+    const use = inputPrompt("E", "RB");
+    setText("hint", src === "armory" ? `${use} — strip mags from the rack (${sim.armoryStock} rifles)` : `${use} — take mags off the dead`);
     setStyle("hint", "display", "block");
   } else if (player.climb) {
     setText("hint", player.climb.toDeck < player.climb.fromDeck ? "climbing up…" : "climbing down…");
     setStyle("hint", "display", "block");
   } else if (!player.dead && weapon.reserve >= 32 && dryEscortName()) {
-    setText("hint", `T — hand a mag to ${dryEscortName()}`);
+    setText("hint", `${inputPrompt("T", "D-PAD ↓")} — hand a mag to ${dryEscortName()}`);
     setStyle("hint", "display", "block");
   } else {
     const trunk = player.dead ? null : world.trunkAt(player.deck, player.x, player.z);
     if (trunk) {
       const up = player.deck === trunk.lowerDeck;
       const kind = trunk.vertical ? "ladder" : "stairs";
-      setText("hint", player.queuedTrunk === trunk ? "in line for the ladder — you go next" : trunk.edge?.type === "ladder" && sim.vertBusy(trunk.edge, player.agent.id) ? `${kind} busy — L to take the next slot` : `L — climb ${kind} ${up ? "up" : "down"} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+      setText("hint", player.queuedTrunk === trunk ? "in line for the ladder — you go next" : trunk.edge?.type === "ladder" && sim.vertBusy(trunk.edge, player.agent.id) ? `${kind} busy — ${inputPrompt("L", "RB")} to take the next slot` : `${inputPrompt("L", "RB")} — climb ${kind} ${up ? "up" : "down"} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
       setStyle("hint", "display", "block");
     } else setStyle("hint", "display", "none");
   }
@@ -92946,7 +93376,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, marineMap, mapDeckButtons, mapOpen, audio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, reloadPressed, meleePressed, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, ghostAlive, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, dmgAngle, lastSinceHit, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, spectateShown, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -92970,7 +93400,15 @@ var init_main = __esm({
     init_lights();
     init_runtime();
     init_game_sync();
+    init_gamepad();
     canvas = document.getElementById("c");
+    gamepad = new StandardGamepad();
+    inputMode = document.body.dataset.input === "gamepad" ? "gamepad" : "keyboard";
+    refreshInputModeCopy = () => {
+    };
+    inputPrompt = (keyboard, controller) => inputMode === "gamepad" ? controller : keyboard;
+    window.addEventListener("keydown", () => setInputMode("keyboard"), true);
+    window.addEventListener("pointerdown", () => setInputMode("keyboard"), true);
     QP = new URLSearchParams(location.search);
     LAUNCH = globalThis.__charonLaunch ?? { mode: "solo", session: null };
     BASE_POD_COUNT = PARAMS.flood.initialInfectionForms;
@@ -93132,10 +93570,10 @@ var init_main = __esm({
     voiceMuted = false;
     voiceActive = false;
     voiceBlocked = false;
+    gameVoice = document.getElementById("gameVoice");
     if (LAUNCH.session) {
       const networkHud = document.getElementById("networkHud");
       const networkState = document.getElementById("networkState");
-      const gameVoice = document.getElementById("gameVoice");
       networkHud.hidden = false;
       const updateNetwork = () => {
         const online = new Set(LAUNCH.session.roster().map((peer) => peer.did));
@@ -93197,6 +93635,11 @@ var init_main = __esm({
     mapOpen = false;
     audio = new GameAudio();
     canvas.addEventListener("click", () => audio.ensure());
+    audioGate = document.getElementById("audioGate");
+    ensureTrustedAudio = () => audio.ensure();
+    window.addEventListener("keydown", ensureTrustedAudio, true);
+    window.addEventListener("pointerdown", ensureTrustedAudio, true);
+    audioGate.addEventListener("click", ensureTrustedAudio);
     soundBoard = null;
     audioLog = null;
     floodHud = null;
@@ -93450,7 +93893,10 @@ var init_main = __esm({
         if (!hasFlamer) {
           hasFlamer = true;
           heldIsFlamer = true;
-          sim.log("combat", "flamethrower up — Q, or the mouse wheel UP, brings the MA5 back");
+          sim.log("combat", inputPrompt(
+            "flamethrower up — Q, or the mouse wheel UP, brings the MA5 back",
+            "flamethrower up — Y brings the MA5 back"
+          ));
           swapHintAt = performance.now();
         }
       }
@@ -93624,6 +94070,7 @@ var init_main = __esm({
     introText = el("introText");
     introMission = el("introMission");
     introHint = el("introHint");
+    introScroll = el("introScroll");
     introChars = 0;
     introDone = false;
     introGone = false;
@@ -93652,13 +94099,22 @@ var init_main = __esm({
       const gh = sim.playerConvertedTo ? sim.byId.get(sim.playerConvertedTo) : null;
       return gh && !gh.dead && gh.damage < 100 ? gh : null;
     };
-    overlay.addEventListener("click", () => {
+    overlay.addEventListener("click", (event) => {
+      if (event.target.closest("button") || ended) return;
+      if (gamepadPaused) {
+        resumeGamepadControls();
+        return;
+      }
       if (player.dead && !ghostAlive()) return;
       overlay.classList.add("hidden");
       if (!player.dead) canvas.requestPointerLock()?.catch?.(() => {
       });
     });
     ended = false;
+    KEYBOARD_CONTROLS = "WASD move · MOUSE look · SPACE jump · CLICK fire · G frag · E pick up / use · R reload · F melee · Q / WHEEL swap · L climb · M map · SHIFT sprint";
+    CONTROLLER_CONTROLS = "HALO 3 · LEFT STICK move · RIGHT STICK look · A jump · RT fire · LT frag · RB pick up / use / climb / reload · B melee · Y swap · L3 sprint · VIEW map · D-PAD orders";
+    refreshInputModeCopy = refreshOverlayPrompt;
+    refreshOverlayPrompt();
     VICTORY_RANKS = [
       {
         under: 300,
@@ -94032,8 +94488,12 @@ var init_main = __esm({
     window.addEventListener("resize", resize);
     resize();
     fireHeld = false;
+    gamepadFireHeld = false;
     reloadPressed = false;
     meleePressed = false;
+    gamepadPaused = false;
+    gamepadMapNavX = 0;
+    gamepadOverlayNav = 0;
     canvas.addEventListener("mousedown", (e2) => {
       if (e2.button === 0) fireHeld = true;
     });
@@ -94050,6 +94510,18 @@ var init_main = __esm({
     }, { passive: true });
     window.addEventListener("keydown", (e2) => {
       if (!introGone) return;
+      if (ended && !overlay.classList.contains("hidden")) {
+        if (e2.code === "Tab") {
+          e2.preventDefault();
+          moveOverlayTabFocus(e2.shiftKey ? -1 : 1);
+          return;
+        }
+        if (["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(e2.code)) {
+          e2.preventDefault();
+          moveOverlayFocus(e2.code === "ArrowLeft" || e2.code === "ArrowUp" ? -1 : 1);
+          return;
+        }
+      }
       if (e2.code === "KeyM") {
         toggleMap();
         return;
@@ -94068,10 +94540,7 @@ var init_main = __esm({
       if (e2.code === "KeyJ") toggleAudioLog();
       if (e2.code === "KeyH") toggleFloodHud();
       if (e2.code === "KeyQ") swapWeapon();
-      if (e2.code === "KeyT" && !player.dead && weapon.reserve >= 32) {
-        const took = sim.giveMag(player.agent);
-        if (took) weapon.reserve -= 32;
-      }
+      if (e2.code === "KeyT") giveMagazine();
       if (!player.dead && player.locked) {
         if (e2.code === "Digit1") setOrder2("follow");
         else if (e2.code === "Digit2") setOrder2("hold");
@@ -95311,6 +95780,7 @@ async function joinMultiplayerRoom(options) {
 }
 
 // game/launcher.js
+init_gamepad();
 init_protocol();
 
 // multiplayer/lobby-state.js
@@ -96035,6 +96505,7 @@ function reduceLaunchBarrier(current, event, now = Date.now()) {
 var byId = (id) => document.getElementById(id);
 var launcher = byId("launcher");
 var pages = [...document.querySelectorAll("[data-launch-page]")];
+var launcherGamepad = new StandardGamepad();
 var lobbyNames = /* @__PURE__ */ new Map();
 var session = null;
 var lobbyMode = null;
@@ -96068,6 +96539,81 @@ var lobbyMaintenanceTimer = 0;
 var singletonSettleTimer = 0;
 var lobbyMaintenanceBusy = false;
 var lobbyTransportError = "";
+function setInputMode2(mode) {
+  document.body.dataset.input = mode;
+}
+window.addEventListener("keydown", () => setInputMode2("keyboard"), true);
+window.addEventListener("pointerdown", () => setInputMode2("keyboard"), true);
+function visibleLauncherControls() {
+  return [...launcher.querySelectorAll("button, input, [tabindex]")].filter((control) => !control.disabled && control.tabIndex >= 0 && !control.closest("[hidden]") && control.getClientRects().length > 0);
+}
+function moveLauncherFocus(dx, dy) {
+  const controls = visibleLauncherControls();
+  if (!controls.length) return;
+  const current = document.activeElement;
+  if (!controls.includes(current)) {
+    (controls.find((control) => control.matches(".hub-button.primary")) ?? controls[0]).focus();
+    return;
+  }
+  if (current.matches("[data-doc-tab]")) {
+    const tabs = [...document.querySelectorAll("[data-doc-tab]")];
+    const direction = dx > 0 || dy > 0 ? 1 : -1;
+    const next = tabs[(tabs.indexOf(current) + direction + tabs.length) % tabs.length];
+    next.click();
+    next.focus();
+    return;
+  }
+  const from = current.getBoundingClientRect();
+  const fx = from.left + from.width / 2;
+  const fy = from.top + from.height / 2;
+  let best = null;
+  let bestScore = Infinity;
+  for (const candidate of controls) {
+    if (candidate === current) continue;
+    const rect = candidate.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const along = (cx - fx) * dx + (cy - fy) * dy;
+    if (along <= 1) continue;
+    const across = Math.abs((cx - fx) * dy - (cy - fy) * dx);
+    const score = along + across * 2.5;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  best?.focus({ preventScroll: true });
+  best?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+var launcherNavDirection = "";
+var launcherNavRepeatAt = 0;
+function launcherGamepadFrame(now) {
+  requestAnimationFrame(launcherGamepadFrame);
+  if (launcher.hidden) return;
+  const state = launcherGamepad.poll();
+  if (!state.connected) return;
+  if (state.used) setInputMode2("gamepad");
+  if (document.body.dataset.input !== "gamepad") return;
+  const direction = state.navY < 0 ? "up" : state.navY > 0 ? "down" : state.navX < 0 ? "left" : state.navX > 0 ? "right" : "";
+  if (!direction) {
+    launcherNavDirection = "";
+  } else if (direction !== launcherNavDirection || now >= launcherNavRepeatAt) {
+    const vectors = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+    moveLauncherFocus(...vectors[direction]);
+    launcherNavRepeatAt = now + (direction === launcherNavDirection ? 110 : 360);
+    launcherNavDirection = direction;
+  }
+  if (state.pressed("a")) {
+    const active = document.activeElement;
+    if (!visibleLauncherControls().includes(active)) moveLauncherFocus(0, 1);
+    else if (active.matches("button")) active.click();
+    else active.focus();
+  }
+  if (state.pressed("b")) {
+    if (document.activeElement?.matches("input:not([readonly])")) document.activeElement.blur();
+    else document.querySelector("[data-launch-page]:not([hidden]) .hub-back")?.click();
+  }
+}
 var lobbyRevisionKey = (id, host) => `${String(id)}\0${String(host)}`;
 function savedName() {
   try {
@@ -97151,18 +97697,26 @@ byId("join-private").addEventListener("click", () => joinLobby("join"));
 byId("lobby-start").addEventListener("click", startMatch);
 byId("lobby-leave").addEventListener("click", leaveLobby);
 byId("voice-toggle").addEventListener("click", toggleVoice);
-byId("copy-invite").addEventListener("click", async () => {
+byId("copy-invite").addEventListener("click", async (event) => {
   const input = byId("invite-value");
+  const button = byId("copy-invite");
   input.select();
+  if (!event.isTrusted) {
+    button.textContent = "TAP OR ENTER TO COPY";
+    setTimeout(() => {
+      button.textContent = "COPY CODE";
+    }, 1800);
+    return;
+  }
   try {
     await navigator.clipboard.writeText(input.value);
-    byId("copy-invite").textContent = "COPIED";
+    button.textContent = "COPIED";
   } catch {
     document.execCommand?.("copy");
-    byId("copy-invite").textContent = "SELECTED";
+    button.textContent = "SELECTED";
   }
   setTimeout(() => {
-    byId("copy-invite").textContent = "COPY CODE";
+    button.textContent = "COPY CODE";
   }, 1800);
 });
 byId("player-name").value = savedName();
@@ -97173,6 +97727,7 @@ else if (initialRoute.startsWith("docs")) {
   const requested = initialRoute.split("/")[1];
   document.querySelector(`[data-doc-tab="${requested}"]`)?.click();
 } else showPage("menu");
+requestAnimationFrame(launcherGamepadFrame);
 function launcherObservation() {
   const activePage = pages.find((page) => !page.hidden)?.dataset.launchPage || "menu";
   return {

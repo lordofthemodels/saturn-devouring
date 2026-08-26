@@ -1,6 +1,9 @@
 body.launcher-active { overflow: auto; }
 [hidden] { display: none !important; }
 body.launcher-active > :not(#launcher) { display: none !important; }
+[data-input-copy="gamepad"] { display: none; }
+body[data-input="gamepad"] [data-input-copy="keyboard"] { display: none; }
+body[data-input="gamepad"] [data-input-copy="gamepad"] { display: inline; }
 /* ODST PASS (user: "look more like Halo ODST's menu", just a tad).
    Three things carry that look, and they are all cheap:
    1. AMBER LEADS. The old palette was cyan-primary; VISR is amber-primary with
@@ -97,7 +100,10 @@ body.launcher-active > :not(#launcher) { display: none !important; }
   min-height: 44px; border: 0; background: transparent; color: var(--hub-muted); cursor: pointer;
   padding: 8px 13px; font: 11px/1 monospace; letter-spacing: .13em; text-transform: uppercase;
 }
-.hub-nav button:hover, .hub-link:hover { color: var(--hub-cyan); }
+.hub-nav button:hover, .hub-link:hover,
+.hub-nav button:focus-visible, .hub-link:focus-visible,
+body[data-input="gamepad"] .hub-nav button:focus,
+body[data-input="gamepad"] .hub-link:focus { color: var(--hub-cyan); outline: 1px solid var(--hub-cyan); }
 .hub-shell { position: relative; width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: clamp(42px, 8vh, 92px) 0 46px; }
 [data-launch-page][hidden], [data-doc-panel][hidden] { display: none !important; }
 /* every kicker gets a lit tick in front of it — the small "this line is live"
@@ -147,13 +153,16 @@ body.launcher-active > :not(#launcher) { display: none !important; }
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: var(--hub-amber-dim); transition: background .16s, box-shadow .16s;
 }
-.hub-button:hover, .hub-button:focus-visible {
+.hub-button:hover, .hub-button:focus-visible,
+body[data-input="gamepad"] .hub-button:focus {
   border-color: rgba(242,169,59,.55); background: #101823; outline: none;
 }
-.hub-button:hover::before, .hub-button:focus-visible::before {
+.hub-button:hover::before, .hub-button:focus-visible::before,
+body[data-input="gamepad"] .hub-button:focus::before {
   background: var(--hub-amber); box-shadow: 0 0 16px rgba(242,169,59,.75);
 }
-.hub-button:hover em, .hub-button:focus-visible em { color: var(--hub-amber); }
+.hub-button:hover em, .hub-button:focus-visible em,
+body[data-input="gamepad"] .hub-button:focus em { color: var(--hub-amber); }
 .hub-button.primary { border-color: rgba(242,169,59,.42); background: rgba(58,40,14,.34); }
 .hub-button.primary::before { background: var(--hub-amber); box-shadow: 0 0 14px rgba(242,169,59,.6); }
 .hub-button .num { color: var(--hub-amber-dim); font-size: 10px; letter-spacing: .1em; }
@@ -206,13 +215,16 @@ body.launcher-active > :not(#launcher) { display: none !important; }
 .invite-copy { display: flex; gap: 8px; margin-top: 8px; }
 .invite-copy .hub-input { flex: 1; }
 .mini-button { min-height: 44px; border: 1px solid #3a5060; background: #101a22; color: var(--hub-ink); padding: 8px 12px; font: 10px monospace; cursor: pointer; }
-.mini-button:hover { border-color: var(--hub-cyan); }
+.mini-button:hover, .mini-button:focus-visible,
+body[data-input="gamepad"] .mini-button:focus { border-color: var(--hub-cyan); outline: none; }
 .voice-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--hub-line); }
 #voice-state { color: var(--hub-muted); font-size: 11px; }
 .docs-layout { display: grid; grid-template-columns: 220px 1fr; gap: 34px; margin-top: 32px; }
 .docs-tabs { display: flex; flex-direction: column; gap: 5px; }
 .docs-tabs button { min-height: 44px; border: 1px solid transparent; background: transparent; color: var(--hub-muted); text-align: left; padding: 8px 12px; font: 11px monospace; cursor: pointer; }
 .docs-tabs button[aria-selected="true"] { color: var(--hub-cyan); border-color: var(--hub-line); background: var(--hub-panel); }
+.docs-tabs button:focus-visible,
+body[data-input="gamepad"] .docs-tabs button:focus { outline: 1px solid var(--hub-amber); }
 .docs-panel { max-width: 790px; border-left: 1px solid var(--hub-line); padding-left: 30px; }
 .docs-panel h2 { color: #edf5f7; font: 300 30px system-ui, sans-serif; margin-bottom: 16px; }
 .docs-panel h3 { color: var(--hub-amber); font-size: 12px; letter-spacing: .1em; margin: 28px 0 8px; }
