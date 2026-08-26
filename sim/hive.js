@@ -667,6 +667,106 @@ export class Hive {
     return true;
   }
 
+  // Pick the carrier-side screen against the nearest known gun line. A safe
+  // first hop buys another room of time; once that approach becomes hot, the
+  // screen collapses behind the carrier room's own entrance. Nothing names a
+  // room: changing the ship graph changes the position automatically.
+  _carrierScreenPlan(carrier, fixedThreat = -1) {
+    const g = this.sim.graph;
+    let threatNode = fixedThreat, threatPath = null, bestScore = Infinity;
+    if (threatNode >= 0) threatPath = g.path(carrier.node, threatNode, ['std'], this.bigPass);
+    else {
+      for (let node = 0; node < g.n; node++) {
+        const pressure = this.believedHardness[node] + this.believedHumanStr[node] * 0.35;
+        if (pressure < 0.2) continue;
+        const path = g.path(carrier.node, node, ['std'], this.bigPass);
+        if (!path) continue;
+        const score = path.length - Math.min(4, pressure) * 0.12;
+        if (score < bestScore - 1e-9
+          || (Math.abs(score - bestScore) <= 1e-9 && node < threatNode)) {
+          bestScore = score;
+          threatNode = node;
+          threatPath = path;
+        }
+      }
+    }
+    let screen = carrier.node;
+    if (threatPath?.length > 1 && (fixedThreat < 0 || threatPath.length > 2)) {
+      const forward = threatPath[0].to;
+      // A light contact can be delayed one room forward. Reinforcement raises
+      // localThreat through the same adjacent life-sense field and pulls the
+      // line back without a scenario-specific room list.
+      if (this.localThreat(forward) < 0.75 && this.believedHardness[forward] < 0.5) screen = forward;
+    }
+    return { carrier, threatNode, screen, distance: threatPath?.length ?? Infinity };
+  }
+
+  // One carrier plus a thin pool is the hive's future, not just another unit.
+  // Both opening and steady state call this planner so the successfully seated
+  // carrier—not a now-empty original den—owns the defense. Scarcity controls
+  // how much of the available military body is recalled; committed conversions,
+  // live musters, forced fights and the opening decoy retain their jobs.
+  protectCarriers(combat, carriers, S) {
+    const liveCarrierIds = new Set(carriers.map((carrier) => carrier.id));
+    for (const form of combat) {
+      if (form.task?.protect !== undefined && !liveCarrierIds.has(form.task.protect)) form.task = null;
+    }
+    if (!carriers.length || !combat.length) return;
+    const g = this.sim.graph;
+    const plans = carriers.map((carrier) => this._carrierScreenPlan(carrier))
+      .sort((a, b) => (a.distance - b.distance)
+        || ((b.carrier.held ?? 0) - (a.carrier.held ?? 0)) || (a.carrier.id - b.carrier.id));
+    const scarce = S >= 1.5;
+    const routine = Math.min(combat.length, carriers.length * (scarce ? 2 : 1));
+    const wanted = scarce
+      ? Math.min(combat.length, Math.max(routine, Math.ceil(combat.length * 0.75)))
+      : routine;
+    const eligible = combat.filter((form) => {
+      const task = form.task;
+      if (form.downed || form.fromPlayer || form.taskProgress > 0) return false;
+      if (!task) return true;
+      if (task.kind === TASK.TRANSFORM || task.kind === TASK.DECOY || task.kind === TASK.DART) return false;
+      if (task.muster !== undefined || task.seed || task.screen !== undefined || task.raid) return false;
+      if (task.retreat && task.protect === undefined) return false;
+      if (task.kind === TASK.ATTACK && (task.force || task.surge || form.state === STATE.FIGHT)) return false;
+      return true;
+    });
+    const chosen = new Map();
+    for (let slot = 0; slot < wanted && eligible.length; slot++) {
+      const plan = plans[slot % plans.length];
+      let bestIndex = -1, bestScore = Infinity;
+      for (let index = 0; index < eligible.length; index++) {
+        const form = eligible[index];
+        const hops = g.hops(form.pnode ?? form.node, plan.screen, ['std'], this.bigPass);
+        if (hops === -1) continue;
+        const keep = form.task?.protect === plan.carrier.id ? -20 : 0;
+        const score = hops + keep + form.id * 1e-6;
+        if (score < bestScore) { bestScore = score; bestIndex = index; }
+      }
+      if (bestIndex === -1) continue;
+      const form = eligible.splice(bestIndex, 1)[0];
+      const keepRetreat = form.task?.retreat && (form.move || form.path.length);
+      if (form.move && (form.task?.node !== plan.screen || form.task?.protect !== plan.carrier.id)) {
+        this.sim._interruptMove(form);
+      }
+      this.assign(form, { kind: TASK.GUARD, node: plan.screen,
+        protect: plan.carrier.id, threatNode: plan.threatNode,
+        retreat: keepRetreat ? true : undefined });
+      chosen.set(form.id, plan.carrier.id);
+    }
+    // A recovered production line releases surplus defenders back to hunting;
+    // a dead carrier cannot leave permanent guards on an empty compartment.
+    for (const form of combat) {
+      if (form.task?.protect === undefined || chosen.has(form.id)) continue;
+      if (form.move) this.sim._interruptMove(form);
+      form.task = null;
+    }
+    if (scarce && chosen.size && this.sim.t >= (this._carrierDefenseLogAt ?? 0)) {
+      this._carrierDefenseLogAt = this.sim.t + 30;
+      this.sim.log('hive', `the thin hive pulls ${chosen.size} combat form${chosen.size === 1 ? '' : 's'} back around its carrier line`);
+    }
+  }
+
   // Losing doorway odds have only two outcomes: withdraw or, if every open
   // route is cut off, fight. The retreat is ground-truth pathing because a
   // form deciding under visible guns cannot afford a stale-belief shortcut
@@ -686,6 +786,48 @@ export class Hive {
       if (threatNode !== from && (a === threatNode || b === threatNode)) return false;
       return true;
     };
+    // Under scarcity, a clean carrier-side fallback outranks an unrelated far
+    // corner. This is the reactive half of protectCarriers: the proactive
+    // screen does not dissolve the instant its guards come under fire.
+    const carriers = sim.agents.filter((a) => !a.dead && a.hp > 0
+      && a.faction === FACTION.CARRIER);
+    const infection = sim.agents.reduce((count, a) => count
+      + (!a.dead && a.hp > 0 && a.faction === FACTION.INFECTION ? 1 : 0), 0);
+    if (carriers.length && this.scarcity(infection + carriers.length * 2) >= 1.5) {
+      let refuge = null, refugeScore = Infinity;
+      const fromAway = g.hops(threatNode, from, ['std'], () => true);
+      for (const carrier of carriers) {
+        const plan = this._carrierScreenPlan(carrier, threatNode);
+        // Once the fallback has reached the carrier itself there is nowhere
+        // more valuable to run. Returning false below makes retreatOrFight
+        // force the guard to turn and buy the womb its last seconds.
+        if (carrier.node === from) {
+          refuge = { cornered: true };
+          refugeScore = -Infinity;
+          continue;
+        }
+        const screen = plan.screen === from ? carrier.node : plan.screen;
+        const path = g.path(from, screen, ['std'], openEscape);
+        if (!path?.length || !this.retreatApproachSafe(form, path[0])) continue;
+        const toAway = g.hops(threatNode, screen, ['std'], () => true);
+        if (fromAway !== -1 && toAway !== -1 && toAway < fromAway) continue;
+        const score = path.length + this.localThreat(screen) * 2 - (carrier.held ?? 0) * 0.15;
+        if (score < refugeScore - 1e-9
+          || (Math.abs(score - refugeScore) <= 1e-9 && carrier.id < (refuge?.carrier.id ?? Infinity))) {
+          refuge = { carrier, plan: { ...plan, screen }, path };
+          refugeScore = score;
+        }
+      }
+      if (refuge?.cornered) return false;
+      if (refuge) {
+        this.assign(form, { kind: TASK.GUARD, node: refuge.plan.screen,
+          protect: refuge.carrier.id, threatNode, retreat: true });
+        sim.setPath(form, refuge.path);
+        sim._setCharging(form, false);
+        form.state = STATE.MOVE;
+        return true;
+      }
+    }
     let best = null, bestScore = -Infinity;
     for (const node of g.nodes) {
       if (node.idx === from) continue;
@@ -821,6 +963,7 @@ export class Hive {
 
     if (this.opening) {
       this.openingMove(infection, combat, bodies);
+      this.protectCarriers(combat, carriers, S);
       if (sim.firstSweepCleared) {
         this.opening = false;
         sim.log('hive', 'hive hands off to steady-state economy (first sweep has passed)');
@@ -1453,30 +1596,22 @@ export class Hive {
         if (bestT !== -1) {
           const spares = combat.filter((c) => !c.fromPlayer && !c.downed
             && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined
-              && !c.task.seed && c.task.screen === undefined)));
+              && !c.task.seed && c.task.screen === undefined && c.task.protect === undefined)));
           const r = this.nearest(spares, bestT, ['std'], this.combatPass);
           if (r) {
             this._raiderId = r.id;
             this._raidCooldownUntil = sim.t + 60;
-            this.assign(r, { kind: TASK.ATTACK, node: bestT });
+            this.assign(r, { kind: TASK.ATTACK, node: bestT, raid: true });
             sim.log('rampage', `a combat form slips off to raid ${g.node(bestT).name} — soft target, likely unguarded`);
           }
         }
       }
     }
 
-    // 3. guards on each carrier. Protecting the first carriers through
-    //    incubation is the whole game (§13.4), so guard HARDER when the pool
-    //    is thin — that's exactly when losing a carrier is fatal.
-    const guardsWanted = S >= 1.5 ? 2 : 1;
-    for (const carrier of carriers) {
-      const guards = combat.filter((c) => c.task?.kind === TASK.GUARD && c.task.node === carrier.node);
-      if (guards.length < guardsWanted) {
-        const free = combat.filter((c) => !c.task);
-        const guard = this.nearest(free, carrier.node, ['std'], this.bigPass);
-        if (guard) this.assign(guard, { kind: TASK.GUARD, node: carrier.node });
-      }
-    }
+    // 3. dynamic carrier defense—the same scarcity-driven planner used during
+    //    the opening, so successfully seating the first carrier immediately
+    //    turns the surrounding combat forms into a real fallback screen.
+    this.protectCarriers(combat, carriers, S);
 
     // 4. rampage: combat forms in hot regions attack believed humans openly
     //    (infection forms swarm through the grab scoring below — rampage
@@ -1493,7 +1628,7 @@ export class Hive {
       if (f.task && (f.task.kind === TASK.ATTACK || f.task.kind === TASK.TRANSFORM)) continue; // a rooting carrier is not a soldier
       if (f.task?.kind === TASK.SCOUT && f.task.sweep
         && (f.move || f.path.length || f.node !== f.task.node)) continue;
-      if (f.task?.seed || f.task?.screen !== undefined) continue; // production detail is off-limits to the draft
+      if (f.task?.seed || f.task?.screen !== undefined || f.task?.protect !== undefined) continue; // production detail is off-limits to the draft
       // Once the counter calls all-in, a gun line is an objective rather than
       // a reason to report every survivor beyond it as unreachable.
       const target = this.allIn ? this.nearestAllInHuman(f.node) : this.nearestBelievedHuman(f.node);
@@ -1568,7 +1703,7 @@ export class Hive {
           if (!sim.agents.some((a) => !a.dead && a.faction === FACTION.CARRIER && a.hp > 0)) {
             const spare = combat.find((c) => !c.fromPlayer && !c.downed
               && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined
-                && !c.task.seed && c.task.screen === undefined)));
+                && !c.task.seed && c.task.screen === undefined && c.task.protect === undefined)));
             if (spare) {
               const den = this.quietNodeNear(spare.node, 'big');
               if (den !== -1) this.assign(spare, { kind: TASK.GUARD, node: den, seed: true });
@@ -1659,7 +1794,7 @@ export class Hive {
         if (!this._musterStart.has(target)) this._musterStart.set(target, sim.t);
         const spareCount = combat.filter((c) => !c.task
           || (c.task.kind === TASK.GUARD && c.task.muster === undefined
-            && !c.task.seed && c.task.screen === undefined)).length;
+            && !c.task.seed && c.task.screen === undefined && c.task.protect === undefined)).length;
         if (sim.t - this._musterStart.get(target) > 120 && forms.length + spareCount < needed) {
           this._musterStart.delete(target);
           this._musterBan.set(target, { until: sim.t + 180, needed });
@@ -1675,7 +1810,7 @@ export class Hive {
           const stage = forms[0].task.node;
           const spares = combat.filter((c) => !c.task
             || (c.task.kind === TASK.GUARD && c.task.muster === undefined
-              && !c.task.seed && c.task.screen === undefined));
+              && !c.task.seed && c.task.screen === undefined && c.task.protect === undefined));
           const ranked = spares
             .map((c) => ({ c, d: g.hops(c.node, stage, ['std'], this.bigPass) }))
             .filter((x) => x.d !== -1)
@@ -2066,6 +2201,7 @@ export class Hive {
       for (const f of [...combat, ...infection]) {
         if (f.task?.kind === TASK.TRANSFORM) continue;
         if (f.task?.retreat) continue;
+        if (f.task?.protect !== undefined) continue;
         const d = f.faction === FACTION.INFECTION
           ? this.infectionHops(f.node, bel.node)
           : g.hops(f.node, bel.node, ['std'], this.bigPass);
