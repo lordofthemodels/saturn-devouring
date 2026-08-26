@@ -419,8 +419,8 @@ export class Agents3D {
     // call for every carried rifle on the ship (marines, armed crew, armed
     // combat forms) — see game/rifle-model.js
     this.rifle = makeInstanced(scene, carryGeometry(), MA5_GUNMETAL);
-    this.rifle.material.roughness = 0.45;
-    this.rifle.material.metalness = 0.65;
+    this.rifle.material.roughness = 0.78;
+    this.rifle.material.metalness = 0.25;
     // THE FLAMETHROWER IS NOT AN MA5 (it was rendering as one, which made the
     // only weapon that permanently destroys a body indistinguishable from the
     // ones that don't). Same carry solve, different silhouette — see

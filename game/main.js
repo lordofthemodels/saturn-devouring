@@ -3869,8 +3869,9 @@ function frame(now) {
   torchSpill.intensity = torch.intensity * 0.09;
   // 0.0038 put ~40 lux on the receiver — past the ~30-lux white point, so
   // the gun clipped white no matter its albedo (user: white/striped rifle).
-  // A third of that reads as lit gunmetal.
-  gunFill.intensity = torch.intensity * 0.0008;
+  // Keep only a narrow edge read on the near-black receiver. A brighter fill
+  // turns even a black albedo into grey at arm's length after exposure.
+  gunFill.intensity = torch.intensity * 0.00025;
   torch.distance = inFog ? sim.P.darkness.fogViewM + 2 : 30;
   torchSpill.distance = inFog ? sim.P.darkness.fogViewM + 1 : 14;
   {

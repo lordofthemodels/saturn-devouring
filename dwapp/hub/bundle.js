@@ -80780,8 +80780,8 @@ function buildRifleViewmodel() {
   const group = new Group();
   const bodyMat = new MeshStandardMaterial({
     color: MA5_GUNMETAL,
-    roughness: 0.82,
-    metalness: 0.22
+    roughness: 0.9,
+    metalness: 0.08
   });
   const dispMat = new MeshStandardMaterial({ map: tex("display"), emissive: 16777215, emissiveMap: tex("display"), emissiveIntensity: 0.8, roughness: 0.6 });
   const compassMat = new MeshStandardMaterial({ map: tex("compass"), emissive: 16777215, emissiveMap: tex("compass"), emissiveIntensity: 0.8 });
@@ -80940,7 +80940,7 @@ var init_rifle_model = __esm({
   "game/rifle-model.js"() {
     init_three_webgpu_module();
     init_rifle_model_data();
-    MA5_GUNMETAL = 1053464;
+    MA5_GUNMETAL = 197637;
     RIFLE_MUZZLE = new Vector3(0, 0.015, 0.515);
     GUN_TUNE = { x: 0.1485, y: -0.235, z: 0.2115, ry: -0.08, rx: -0.045, rz: 0.02, s: 1.15 };
     texLoader = new TextureLoader();
@@ -82011,8 +82011,8 @@ var init_agents3d = __esm({
         this._bursting = [];
         this.corpse = makeInstanced(scene2, new BoxGeometry(1.5, 0.28, 0.55), 5921370);
         this.rifle = makeInstanced(scene2, carryGeometry(), MA5_GUNMETAL);
-        this.rifle.material.roughness = 0.45;
-        this.rifle.material.metalness = 0.65;
+        this.rifle.material.roughness = 0.78;
+        this.rifle.material.metalness = 0.25;
         this.flamer = makeInstanced(scene2, flamerGeometry(), 3553327, 2754560, 0.16);
         this.flamer.material.roughness = 0.72;
         this.flamer.material.metalness = 0.45;
@@ -94781,7 +94781,7 @@ function frame(now) {
   _fillI = inDark ? 0 : 4.5 * (0.3 + 0.7 * world.lightLevel(povNode));
   torch.intensity += ((player.dead ? 0 : inDark ? 430 : 260) - torch.intensity) * dimT;
   torchSpill.intensity = torch.intensity * 0.09;
-  gunFill.intensity = torch.intensity * 8e-4;
+  gunFill.intensity = torch.intensity * 25e-5;
   torch.distance = inFog ? sim.P.darkness.fogViewM + 2 : 30;
   torchSpill.distance = inFog ? sim.P.darkness.fogViewM + 1 : 14;
   {
