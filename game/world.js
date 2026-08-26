@@ -1794,19 +1794,19 @@ export class World {
       if (!veil) continue;
       const nearDeck = Math.abs(sim.graph.node(n).deck - playerDeck) <= 1;
       const fog = sim.fogAt(n);
-      // unlit rooms are veiled from OUTSIDE too — but NOT flat black (user:
-      // light transfers between rooms). A dead-fixture room's veil is thin
-      // enough that the doorway spill light pooling inside it reads through;
-      // flood-held murk stays near-opaque (the growth eats the light).
+      // Unlit rooms are veiled from OUTSIDE too. Flood murk used to be a
+      // near-opaque green face exactly across the doorway; it now stays only
+      // as the deep-room backstop while SporeFX layers soft volumes through
+      // the opening. Plain darkness remains black and substantially opaque.
       const fixtureDead = (this.roomLights[n]?.lvl ?? 1) <= 0.1;
       const target = n === playerNode ? 0
-        : sim.darkAt(n) ? (fog ? 0.96 : 0.88)
+        : sim.darkAt(n) ? (fog ? 0.7 : 0.88)
         : fixtureDead ? 0.5 : 0;
       const m = veil.material;
       m.opacity += (target - m.opacity) * Math.min(1, dt * 2.5);
       veil.visible = nearDeck && m.opacity > 0.03;
       // spore fog reads green-brown, plain darkness reads black
-      m.color.setHex(fog ? 0x18200c : 0x000000);
+      m.color.setHex(fog ? 0x14190d : 0x000000);
       // an overgrown room's fixture dies with it — and its sign fades into
       // the dark instead of glowing through the murk
       const L = this.roomLights[n];

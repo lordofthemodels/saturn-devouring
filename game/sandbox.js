@@ -9,6 +9,7 @@
 //   ?room=<node id>  start in a specific room (default: the biggest on deck 3)
 //   ?gl=1            force the WebGL2 fallback backend
 //   ?dark=1          start in the game's real lighting instead of demo lighting
+//   ?fog=1           frame an open fog boundary for the spore-FX review
 //
 // Deliberately NOT a copy of main.js: no player controller, no HUD, no weapon,
 // no intro. If a demo needs those, play the game.
@@ -23,6 +24,7 @@ import { Agents3D } from './agents3d.js';
 import { CARRIER_CLIPS } from './carrier-model.js';
 import { FireFX, FlameJetFX } from '../engine/fx.js';
 import { LightPool } from '../engine/lights.js';
+import { SporeFX } from './spore-fx.js';
 
 const QP = new URLSearchParams(location.search);
 const canvas = document.getElementById('c');
@@ -46,12 +48,20 @@ sim.byId.clear();
 sim._refreshOccupancy?.();
 
 // --- pick the room --------------------------------------------------------
+const fogDoor = QP.has('fog') ? world.doors.find((door) => !door.edge.locked) : null;
 const roomId = QP.get('room');
 const room = roomId && sim.graph.byId.has(roomId)
   ? sim.graph.node(sim.graph.byId.get(roomId))
+  : fogDoor ? sim.graph.node(fogDoor.edge.a)
   : sim.graph.nodes.filter((n) => n.deck === 3).sort((a, b) => b.w * b.d - a.w * a.d)[0];
 const [roomX, roomZ] = world.simToWorld(room.x, room.y, room.deck);
 const floorY = elevOf(room.deck);
+if (fogDoor) {
+  const fogNode = fogDoor.edge.a === room.idx ? fogDoor.edge.b : fogDoor.edge.a;
+  sim.floodHoldSec[fogNode] = sim.P.darkness.fogSec;
+  fogDoor.open01 = 1;
+  world._stampDoor(fogDoor);
+}
 
 // Agents3D hides anything more than one deck from the player and skips the
 // player's own body. A dead marker agent parked in the room gives it the right
@@ -89,7 +99,14 @@ applyLighting();
 
 // --- orbit camera ---------------------------------------------------------
 const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 300);
-const orbit = { yaw: 2.3, pitch: 0.42, dist: 5.6, tx: roomX, ty: floorY + 0.9, tz: roomZ };
+const previewTarget = fogDoor ? [fogDoor.x, fogDoor.elev + 1.0, fogDoor.z] : null;
+const orbit = {
+  yaw: 2.3, pitch: 0.42, dist: fogDoor ? 4.4 : 5.6,
+  tx: previewTarget?.[0] ?? roomX,
+  ty: previewTarget?.[1] ?? floorY + 0.9,
+  tz: previewTarget?.[2] ?? roomZ,
+};
+const sporeFX = new SporeFX(scene, camera, world, sim);
 
 // COMBAT FX, on the game's own wiring. Without these a flamethrower spawned
 // here is a man holding a prop: the jet and the fire it lights are DECLARED by
@@ -114,7 +131,7 @@ function framingTarget() {
   };
   const sel = live.find((a) => a.id === selectedId);
   if (sel) return of(sel);
-  if (!live.length) return [roomX, floorY + 0.9, roomZ];
+  if (!live.length) return previewTarget ?? [roomX, floorY + 0.9, roomZ];
   const sum = live.reduce((s, a) => { const p = of(a); return [s[0] + p[0], s[1] + p[1], s[2] + p[2]]; }, [0, 0, 0]);
   return sum.map((v) => v / live.length);
 }
@@ -302,6 +319,9 @@ renderer.setAnimationLoop(() => {
 
   placeCamera(dt);
   agents.update(dt);
+  world.updateLights(now * 0.001);
+  world.updateDarkness(sim, room.idx, dt);
+  sporeFX.update(dt, room.idx, room.deck, camera.position.x, camera.position.z);
   // drain the combat FX exactly as game/main.js does
   lightPool.frame();
   for (let n = 0; n < sim.graph.n; n++) {
@@ -324,7 +344,8 @@ renderer.setAnimationLoop(() => {
 
   el('hud').textContent = `${room.name} · deck ${room.deck} · `
     + `${sim.agents.length - 1} bodies · carrier clips: ${Object.keys(CARRIER_CLIPS).join('/')}`
+    + (fogDoor ? ' · FOG REVIEW' : '')
     + (running ? ' · SIM RUNNING' : ' · sim paused');
 });
 
-window.__sandbox = { sim, world, agents, scene, camera, room, spawn, clearAll, orbit, jets, fire };
+window.__sandbox = { sim, world, agents, scene, camera, room, spawn, clearAll, orbit, jets, fire, sporeFX };
