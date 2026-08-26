@@ -69509,6 +69509,8 @@ var init_params = __esm({
           dps: 20,
           hpJitter: 0.18,
           // spawn hp varies ±18%
+          crowdRadiusScale: 1.15,
+          // slightly looser combat-form rushes; pair separation only
           swing: {
             dmg: 18,
             cooldownSec: 0.9,
@@ -76924,7 +76926,8 @@ var init_sim = __esm({
             const a2 = E2[i2];
             for (let j2 = i2 + 1; j2 < k2; j2++) {
               const b2 = E2[j2];
-              const need = R2[i2] + R2[j2];
+              const crowdScale = a2.faction === FACTION.COMBAT && b2.faction === FACTION.COMBAT ? this.P.combat.combatForm.crowdRadiusScale : 1;
+              const need = (R2[i2] + R2[j2]) * crowdScale;
               let dx = b2.x - a2.x, dy = b2.y - a2.y;
               const d2 = dx * dx + dy * dy;
               if (d2 >= need * need) continue;

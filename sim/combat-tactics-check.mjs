@@ -344,6 +344,20 @@ for (let i = 0; i < stacked.length; i++) for (let j = i + 1; j < stacked.length;
     'responding combat forms must separate instead of stacking');
 }
 
+// The extra space is combat-form-to-combat-form only: it should loosen a
+// rush visually without making the forms wider at doors, walls or targets.
+stacked[2].dead = loneMarine.dead = true;
+const baseCombatPair = stackSim._bodyRadius(stacked[0]) + stackSim._bodyRadius(stacked[1]);
+stacked[0].x = stackRoom.x - baseCombatPair / 2;
+stacked[0].y = stackRoom.y;
+stacked[1].x = stackRoom.x + baseCombatPair / 2;
+stacked[1].y = stackRoom.y;
+stackSim._refreshOccupancy();
+stackSim._separate(1);
+assert.ok(Math.abs(Math.hypot(stacked[0].x - stacked[1].x, stacked[0].y - stacked[1].y)
+    - baseCombatPair * stackSim.P.combat.combatForm.crowdRadiusScale) < 1e-9,
+  'combat-form pairs must keep the configured extra crowd spacing');
+
 // Under live pressure with no infection economy, scarcity roots one or two
 // rearmost carrier seeds and turns the remaining forms into a screen.
 const seedSim = new Sim('pressured-carrier-seed-check');
