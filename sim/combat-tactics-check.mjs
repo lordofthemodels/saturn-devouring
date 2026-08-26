@@ -220,8 +220,13 @@ attacker.move = null;
 sim._refreshOccupancy();
 assert.equal(sim.hive.retreatCombatForm(attacker, link.b), true, 'the outnumbered form must find an escape');
 const retreatNode = attacker.task.node;
+for (const rear of rearMarines) rear.dead = true;
+attacker.lastHurtBy = marine.id;
+attacker.lastHurtTick = sim.tickCount;
+sim._refreshOccupancy();
 sim._spatialSteer(attacker, sim.dt);
-assert.equal(attacker.task.retreat, true, 'the isolated pursuer must not flip a retreat back to aggression');
+assert.equal(attacker.task.retreat, true,
+  'ordinary fire at the threshold must not flip a committed retreat back to aggression');
 assert.equal(attacker.task.node, retreatNode, 'the retreat destination must remain stable');
 const marineHp = marine.hp;
 resolveCombat(sim, sim.dt);
@@ -245,6 +250,10 @@ surgeForm.lastHurtTick = surgeSim.tickCount;
 surgeSim._spatialSteer(surgeForm, surgeSim.dt);
 assert.equal(surgeForm.task.kind, TASK.ATTACK, 'a form fired on at even odds must attack');
 assert.equal(surgeForm.task.surge, true, 'the provoked attack must persist as a surge');
+assert.equal(surgeSim.hive.respondToSensedRoom(surgeForm, surgeDoor.b), true,
+  'a fire-triggered surge must keep the same even-odds rule while crossing the threshold');
+assert.equal(surgeForm.task.kind, TASK.ATTACK,
+  'the doorway safety check must not reverse a live surge');
 
 const secondShooter = makeAgent(FACTION.MARINE, surgeDoor.b, surgeSim.graph);
 surgeSim.spawn(secondShooter);
