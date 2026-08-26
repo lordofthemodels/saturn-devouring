@@ -65040,7 +65040,7 @@ var<${access}> ${name} : ${structName};`;
   }
 });
 
-// multiplayer/peerd-browser.js
+// multiplayer/peerd-browser.js?v=2
 var peerd_browser_exports = {};
 __export(peerd_browser_exports, {
   DEFAULT_ICE_SERVERS: () => DEFAULT_ICE_SERVERS2,
@@ -65052,9 +65052,9 @@ __export(peerd_browser_exports, {
   generateIdentity: () => generateIdentity,
   joinRoom: () => joinRoom
 });
-var __require2, ALPHABET, BASE, LOOKUP, base58encode, base58decode, ED25519_PUB_PREFIX, DID_PREFIX, DID_KEY_LENGTH, encodeDidKey, decodeDidKey, utf8, toHex, toBase64, fromBase64, base64ByteLength, concat, generateIdentity, PKCS8_ED25519_PREFIX, MATERIAL_PROOF, importVerifyKey, verifySignature, createBufferedChannel, DirectPathUnavailableError, summarizeCandidates, famOf, connectionPath, DWEB_LOG, on, BADGE, TAG, dlog, dwarn, DEFAULT_ICE_SERVERS2, DISCONNECT_GRACE_MS, MAX_DATA_CHANNEL_FRAME_BYTES, decode, createPeer, requireSignaling, abortClosesPc, createWebrtcTransport, DEFAULT_SIGNALING, openRendezvous, canonicalize, DOMAIN, signingBytes, buildEnvelope, signEnvelope, envelopeBytes, verifyEnvelope, CHUNK_SIZE, sha256hex, withoutSig, canonicalManifestBytes, manifestHash, DEFAULT_MAX_PACKED_BYTES, DEFAULT_MAX_DECODED_BYTES, MAX_NETWORK_BUNDLE_BYTES, pako, Deflate, Inflate, BUNDLE_TRANSPORT_VERSION, BUNDLE_TRANSPORT_ENCODING, BUNDLE_TRANSPORT_CODEC, MAX_BUNDLE_CONTAINER_BYTES, MAX_BUNDLE_DECODED_BYTES, MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_FILES, MAX_BUNDLE_PATH_CHARS, SHA256_HEX, assertBundleTransportDescriptor, CODEC_OUTPUT_CHUNK_BYTES, CODEC_INPUT_CHUNK_BYTES, signingBytes2, MAX_BUNDLE_BYTES, MAX_BUNDLE_CHUNKS, MAX_MANIFEST_BYTES, SHA256_HEX2, assertBundleWithinLimits, decodeCommittedChunk, verifyManifest, SCHEME, HASH_RE, parsePeerdUri, ALPHA, createContentResponder, fetchBundle, CTRL, CONTENT_REQ, CONTENT_RESP, newId, DEFAULT_BUDGET, createRoomMesh, newId2, createSession, short, newId3, ANSWER_TIMEOUT_MS, joinRoom, PUB, MAX_GOSSIP_ENVELOPE_BYTES, createGossip, SYNC, MAX_HAVES, MAX_RESP, createMemoryTopicStore, createTopicSync, PRESENCE_TOPIC, FORGET_SUPPRESS_MS, createPresence, MSG, createDirect;
+var __require2, ALPHABET, BASE, LOOKUP, base58encode, base58decode, ED25519_PUB_PREFIX, DID_PREFIX, DID_KEY_LENGTH, encodeDidKey, decodeDidKey, utf8, toHex, toBase64, fromBase64, base64ByteLength, concat, generateIdentity, PKCS8_ED25519_PREFIX, MATERIAL_PROOF, importVerifyKey, verifySignature, createBufferedChannel, DirectPathUnavailableError, summarizeCandidates, famOf, connectionPath, DWEB_LOG, on, BADGE, TAG, dlog, dwarn, DEFAULT_ICE_SERVERS2, DISCONNECT_GRACE_MS, MAX_DATA_CHANNEL_FRAME_BYTES, decode, createPeer, requireSignaling, orderedCandidates, abortClosesPc, createWebrtcTransport, DEFAULT_SIGNALING, openRendezvous, canonicalize, DOMAIN, signingBytes, buildEnvelope, signEnvelope, envelopeBytes, verifyEnvelope, CHUNK_SIZE, sha256hex, withoutSig, canonicalManifestBytes, manifestHash, DEFAULT_MAX_PACKED_BYTES, DEFAULT_MAX_DECODED_BYTES, MAX_NETWORK_BUNDLE_BYTES, pako, Deflate, Inflate, BUNDLE_TRANSPORT_VERSION, BUNDLE_TRANSPORT_ENCODING, BUNDLE_TRANSPORT_CODEC, MAX_BUNDLE_CONTAINER_BYTES, MAX_BUNDLE_DECODED_BYTES, MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_FILES, MAX_BUNDLE_PATH_CHARS, SHA256_HEX, assertBundleTransportDescriptor, CODEC_OUTPUT_CHUNK_BYTES, CODEC_INPUT_CHUNK_BYTES, signingBytes2, MAX_BUNDLE_BYTES, MAX_BUNDLE_CHUNKS, MAX_MANIFEST_BYTES, SHA256_HEX2, assertBundleWithinLimits, decodeCommittedChunk, verifyManifest, SCHEME, HASH_RE, parsePeerdUri, ALPHA, createContentResponder, fetchBundle, CTRL, CONTENT_REQ, CONTENT_RESP, newId, DEFAULT_BUDGET, createRoomMesh, newId2, createSession, short, newId3, ANSWER_TIMEOUT_MS, joinRoom, PUB, MAX_GOSSIP_ENVELOPE_BYTES, createGossip, SYNC, MAX_HAVES, MAX_RESP, createMemoryTopicStore, createTopicSync, PRESENCE_TOPIC, FORGET_SUPPRESS_MS, createPresence, MSG, createDirect;
 var init_peerd_browser = __esm({
-  "multiplayer/peerd-browser.js"() {
+  "multiplayer/peerd-browser.js?v=2"() {
     __require2 = /* @__PURE__ */ ((x2) => typeof __require !== "undefined" ? __require : typeof Proxy !== "undefined" ? new Proxy(x2, {
       get: (a2, b2) => (typeof __require !== "undefined" ? __require : a2)[b2]
     }) : x2)(function(x2) {
@@ -65546,6 +65546,21 @@ var init_peerd_browser = __esm({
         throw new Error("webrtc: a signaling channel is required ({ send, onRemote })");
       }
     };
+    orderedCandidates = (signaling) => {
+      const pending = [];
+      let descriptionSent = false;
+      return {
+        /** @param {any} candidate */
+        send(candidate) {
+          if (descriptionSent) signaling.send({ ice: candidate });
+          else pending.push(candidate);
+        },
+        flush() {
+          descriptionSent = true;
+          for (const candidate of pending.splice(0)) signaling.send({ ice: candidate });
+        }
+      };
+    };
     abortClosesPc = (signal, p2, isOpen) => {
       if (!signal) return;
       signal.addEventListener("abort", () => {
@@ -65580,11 +65595,12 @@ var init_peerd_browser = __esm({
             /** @type {Signaling} */
             signaling
           );
+          const candidates = orderedCandidates(sig);
           const p2 = createPeer({
             initiator: true,
             RTCPeerConnection,
             config: cfgFor(sameMachine, ice),
-            onCandidate: (c2) => sig.send({ ice: c2 })
+            onCandidate: candidates.send
           });
           const off = sig.onRemote(async (msg) => {
             if (!msg) return;
@@ -65603,6 +65619,7 @@ var init_peerd_browser = __esm({
             /** @type {RTCSessionDescription} */
             p2.pc.localDescription.sdp
           ) });
+          candidates.flush();
           return p2.channelReady;
         },
         // RESPONDER. The offer already arrived (passed in); the answer +
@@ -65618,11 +65635,12 @@ var init_peerd_browser = __esm({
             /** @type {Signaling} */
             signaling
           );
+          const candidates = orderedCandidates(sig);
           const p2 = createPeer({
             initiator: false,
             RTCPeerConnection,
             config: cfgFor(sameMachine, ice),
-            onCandidate: (c2) => sig.send({ ice: c2 })
+            onCandidate: candidates.send
           });
           const off = sig.onRemote(async (msg) => {
             if (msg && "ice" in msg) await p2.addRemoteCandidate(msg.ice);
@@ -65640,6 +65658,7 @@ var init_peerd_browser = __esm({
             /** @type {RTCSessionDescription} */
             p2.pc.localDescription.sdp
           ) });
+          candidates.flush();
           return { channel: p2.channelReady };
         }
       };
@@ -95165,8 +95184,8 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
     } catch (error2) {
       if (signal?.aborted) throw cancelledJoinError();
     }
+    const iceServers = [...DEFAULT_ICE_SERVERS3, ...relayIceServers ?? []];
     try {
-      const iceServers = relayIceServers ? [...DEFAULT_ICE_SERVERS3, ...relayIceServers] : DEFAULT_ICE_SERVERS3;
       room = await joinRoom2({
         roomId,
         identity,
@@ -95200,7 +95219,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
       sync,
       presence,
       direct,
-      iceServers: [...DEFAULT_ICE_SERVERS3, ...relayIceServers ?? []],
+      iceServers,
       unsubscribers
     });
     unsubscribers.push(

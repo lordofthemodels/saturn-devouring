@@ -507,6 +507,21 @@ var requireSignaling = (signaling) => {
     throw new Error("webrtc: a signaling channel is required ({ send, onRemote })");
   }
 };
+var orderedCandidates = (signaling) => {
+  const pending = [];
+  let descriptionSent = false;
+  return {
+    /** @param {any} candidate */
+    send(candidate) {
+      if (descriptionSent) signaling.send({ ice: candidate });
+      else pending.push(candidate);
+    },
+    flush() {
+      descriptionSent = true;
+      for (const candidate of pending.splice(0)) signaling.send({ ice: candidate });
+    }
+  };
+};
 var abortClosesPc = (signal, p, isOpen) => {
   if (!signal) return;
   signal.addEventListener("abort", () => {
@@ -541,11 +556,12 @@ var createWebrtcTransport = ({ RTCPeerConnection, iceServers = DEFAULT_ICE_SERVE
         /** @type {Signaling} */
         signaling
       );
+      const candidates = orderedCandidates(sig);
       const p = createPeer({
         initiator: true,
         RTCPeerConnection,
         config: cfgFor(sameMachine, ice),
-        onCandidate: (c) => sig.send({ ice: c })
+        onCandidate: candidates.send
       });
       const off = sig.onRemote(async (msg) => {
         if (!msg) return;
@@ -564,6 +580,7 @@ var createWebrtcTransport = ({ RTCPeerConnection, iceServers = DEFAULT_ICE_SERVE
         /** @type {RTCSessionDescription} */
         p.pc.localDescription.sdp
       ) });
+      candidates.flush();
       return p.channelReady;
     },
     // RESPONDER. The offer already arrived (passed in); the answer +
@@ -579,11 +596,12 @@ var createWebrtcTransport = ({ RTCPeerConnection, iceServers = DEFAULT_ICE_SERVE
         /** @type {Signaling} */
         signaling
       );
+      const candidates = orderedCandidates(sig);
       const p = createPeer({
         initiator: false,
         RTCPeerConnection,
         config: cfgFor(sameMachine, ice),
-        onCandidate: (c) => sig.send({ ice: c })
+        onCandidate: candidates.send
       });
       const off = sig.onRemote(async (msg) => {
         if (msg && "ice" in msg) await p.addRemoteCandidate(msg.ice);
@@ -601,6 +619,7 @@ var createWebrtcTransport = ({ RTCPeerConnection, iceServers = DEFAULT_ICE_SERVE
         /** @type {RTCSessionDescription} */
         p.pc.localDescription.sdp
       ) });
+      candidates.flush();
       return { channel: p.channelReady };
     }
   };
