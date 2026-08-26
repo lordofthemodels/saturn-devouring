@@ -69380,7 +69380,8 @@ var init_params = __esm({
         // per marine
         chancePerSec: 0.55,
         // "occasionally", once the shot is actually there
-        fuseSec: 1.5,
+        fuseSec: 1.275,
+        // same 15% fuse reduction as the player's frag
         damage: 120,
         radiusM: 6.5
       },
@@ -78323,8 +78324,8 @@ var init_fps_data = __esm({
       upBoost: 4.2,
       // lofted arc so it carries down a long corridor
       gravity: 20,
-      fuseS: 2.4,
-      // cooked from release — flies far before it goes
+      fuseS: 2.04,
+      // 15% shorter fuse; still long enough for the full throw arc
       bounce: 0.42,
       // velocity kept on impact
       radiusM: 8,
