@@ -117,7 +117,8 @@ assert.equal(pocket.filter((form) => form.task?.kind === TASK.TRANSFORM).length,
   'a pressured six-form pocket must hedge with two carrier seeds');
 assert.equal(pocket.filter((form) => form.task?.screen !== undefined).length, 2,
   'two seeds need a bounded two-form screen, not the whole pocket');
-assert.equal(pocket.filter((form) => !form.task).length, 2,
-  'the pressured portfolio must retain two mobile forms for disruption');
+assert.equal(pocket.filter((form) => form.task?.kind === TASK.DECOY
+  && form.task.pressured).length, 2,
+  'the pressured portfolio must send two mobile forms to disrupt the guns');
 
 console.log('carrier defense check passed');

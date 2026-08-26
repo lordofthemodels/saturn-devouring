@@ -1312,6 +1312,20 @@ export class Hive {
       this.assign(guard, { kind: TASK.GUARD, node: chosenScreen.node, screen: chosenScreen.seed.id });
       chosenGuards.add(guard.id);
     }
+    // The reserve is not a passive third line. Send it toward quiet ground
+    // beside the nearest gun line so it draws eyes and radio traffic away
+    // from the rooting carriers, then lets the ordinary decoy executor evade.
+    // This stays graph-derived: no room names or scenario coordinates.
+    const disruptors = [];
+    for (let index = 0; index < Math.min(mobileReserve, availableGuards.length); index++) {
+      const form = availableGuards[index];
+      const threatNode = threatNodes[index % threatNodes.length];
+      const staging = this.stagingNodeNear(threatNode);
+      const show = staging !== -1 ? staging : (form.pnode ?? form.node);
+      if (form.move) sim._interruptMove(form);
+      this.assign(form, { kind: TASK.DECOY, show, stage: 0, pressured: true });
+      disruptors.push(form.id);
+    }
     for (const guard of combat) {
       if (guard.task?.screen === undefined || chosenGuards.has(guard.id)) continue;
       if (guard.move) sim._interruptMove(guard);
@@ -1319,7 +1333,7 @@ export class Hive {
     }
     if (!this._pressureSeedLogged) {
       this._pressureSeedLogged = true;
-      sim.log('hive', `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? '' : 's'} behind a ${chosenGuards.size}-form screen`);
+      sim.log('hive', `the cornered hive roots ${rooting.length} rear carrier seed${rooting.length === 1 ? '' : 's'} behind a ${chosenGuards.size}-form screen while ${disruptors.length} disruptor${disruptors.length === 1 ? '' : 's'} draw the guns`);
     }
   }
 

@@ -8,7 +8,6 @@
 
 import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import { InstancedEmissiveFixtures } from '../engine/lights.js';
-import { DOORS } from './fps-data.js';
 import { RNG } from '../shared/rng.js';
 import { DECK_H, CLEAR_H, elevOf, clearHeightOf, floorBandOf } from '../shared/geometry.js';
 
@@ -1719,7 +1718,7 @@ export class World {
         bad, slots: bad ? [badSlot++, badSlot++] : [okSlot++, okSlot++],
         // a sealed door BOOTS ajar (no boot-time hiss chorus from 16 sealed
         // doors all grinding open on frame one)
-        lampSlots, open01: e.locked ? (DOORS.ajar01 ?? 0.22) : 0,
+        lampSlots, open01: e.open01 ?? 0,
         // deterministic buckle for the jammed doors (user: broken doors
         // being just red is unrealistic) — a slight ajar gap and tilt
         buckle: bad ? {
@@ -1947,17 +1946,9 @@ export class World {
     this._lamps.commit();
   }
 
-  updateDoors(dt, movers, nMovers = movers.length) {
-    const r2 = DOORS.openRadius * DOORS.openRadius;
+  updateDoors(dt, slideSpeedMps) {
     let anyStamp = false;
-    // bucket movers by deck once (perf pass 2): the per-door scan only
-    // walks its own deck's movers instead of all ~200 every time
-    const byDeck = (this._moversByDeck ??= [[], [], [], [], [], []]);
-    for (const b of byDeck) b.length = 0;
-    for (let i = 0; i < nMovers; i++) {
-      const m = movers[i];
-      (byDeck[m.deck] ?? (byDeck[m.deck] = [])).push(m);
-    }
+    const renderRate = slideSpeedMps / (CLEAR_H - 0.3);
     const flick = Math.sin(performance.now() * 0.013) * Math.sin(performance.now() * 0.0037);
     for (const d of this.doors) {
       // doors change lock state MID-GAME now (armory seal release, and the
@@ -1984,7 +1975,6 @@ export class World {
       // seam, but it is not a combat sightline. Sim pathing and LOS both
       // refuse the edge, the player capsule cannot fit, and isWalkable is
       // unchanged.
-      let want = 0;
       if (d.edge.busted) {
         // BUSTED OUTWARD (user: a dedicated flood charge breaks the door
         // permanently): panels blown apart, off their track, shoved out of
@@ -2002,20 +1992,14 @@ export class World {
           this.doorLamps.instanceColor.needsUpdate = true;
           this._stampDoor(d); anyStamp = true;
         }
-        want = 0.62;
-      } else if (d.edge.locked) {
-        want = DOORS.ajar01 ?? 0.22;
-      } else {
-        const list = byDeck[d.deck] ?? [];
-        for (let i = 0; i < list.length; i++) {
-          const m = list[i];
-          const ddx = m.x - d.x, ddz = m.z - d.z;
-          if (ddx * ddx + ddz * ddz < r2) { want = 1; break; }
-        }
       }
-      const rate = DOORS.slideSpeed / (CLEAR_H - 0.3);
       const was = d.open01;
-      d.open01 += Math.sign(want - d.open01) * Math.min(Math.abs(want - d.open01), rate * dt);
+      const target = d.edge.open01 ?? 0;
+      // The sim owns the target fraction. Presentation only interpolates
+      // toward it between 15 Hz ticks so the single source of truth remains
+      // deterministic without making the panel visibly step.
+      d.open01 += Math.sign(target - d.open01)
+        * Math.min(Math.abs(target - d.open01), renderRate * dt);
       // report open/close starts so the game can voice the hiss
       if (was <= 0.03 && d.open01 > 0.03) this.doorEvents.push({ x: d.x, z: d.z, deck: d.deck });
       if (d.open01 !== was) { this._stampDoor(d); anyStamp = true; }

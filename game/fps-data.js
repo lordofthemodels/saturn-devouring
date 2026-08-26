@@ -53,12 +53,3 @@ export const FRAG = {
   radiusM: 8,        // heavy blast — clears a room, not just a corner
   damage: 135,       // sim explodeAt payload (falls off to ~40% at the edge)
 };
-
-export const DOORS = {
-  openRadius: 2.6,   // any body this close slides the door open
-  slideSpeed: 4.5,   // m/s of panel travel
-  // a SEALED door is stuck ajar, not shut (user: red-painted broken doors
-  // killed the realism): the damaged seam is visible, but it is too narrow
-  // for reliable target acquisition or fire. 0.22 travel ≈ a 28 cm slot.
-  ajar01: 0.22,
-};

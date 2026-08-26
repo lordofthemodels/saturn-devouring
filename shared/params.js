@@ -120,6 +120,12 @@ export const PARAMS = {
   // form-seconds of battering (two forms halve it), blast doors hold longer.
   door: {
     lockedFraction: 0.25,
+    // Sliding panels are simulation state, not render dressing: LOS and rifle
+    // damage stay blocked until the same panel the player sees is clear.
+    openRadiusM: 2.6,
+    slideSpeedMps: 4.5,
+    ajarFraction: 0.22,
+    sightOpenFraction: 0.92,
     // the ship graph is nearly a tree (52 of 53 doors are sole-route), so
     // closures are almost always the short choke kind — a fatter latent
     // population keeps the ship visibly alive without ever caging anyone
