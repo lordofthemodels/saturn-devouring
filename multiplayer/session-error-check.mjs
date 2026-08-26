@@ -30,7 +30,11 @@ const fetched = await fetchRelayIceServers({
     return Response.json({ iceServers });
   },
 });
-assert.deepEqual(fetched, iceServers);
+assert.deepEqual(fetched, [iceServers[1]]);
+assert(fetched.every((server) => {
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+  return urls.every((url) => url.startsWith('turn'));
+}));
 await assert.rejects(
   fetchRelayIceServers({ fetcher: async () => Response.json({ iceServers: [] }) }),
   (error) => error instanceof RelayCredentialsError && error.code === 'TURN_UNAVAILABLE',

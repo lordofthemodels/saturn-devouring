@@ -65043,6 +65043,7 @@ var<${access}> ${name} : ${structName};`;
 // multiplayer/peerd-browser.js
 var peerd_browser_exports = {};
 __export(peerd_browser_exports, {
+  DEFAULT_ICE_SERVERS: () => DEFAULT_ICE_SERVERS2,
   createDirect: () => createDirect,
   createGossip: () => createGossip,
   createMemoryTopicStore: () => createMemoryTopicStore,
@@ -94793,12 +94794,14 @@ async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
   if (!response.ok) throw new RelayCredentialsError();
   const payload = await response.json().catch(() => null);
   const iceServers = payload?.iceServers;
-  const hasRelay = Array.isArray(iceServers) && iceServers.some((server) => {
+  const relayServers = Array.isArray(iceServers) ? iceServers.flatMap((server) => {
     const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
-    return urls.some((url) => typeof url === "string" && url.startsWith("turn")) && typeof server?.username === "string" && typeof server?.credential === "string";
-  });
-  if (!hasRelay) throw new RelayCredentialsError();
-  return iceServers;
+    const relayUrls = urls.filter((url) => typeof url === "string" && url.startsWith("turn"));
+    if (!relayUrls.length || typeof server?.username !== "string" || typeof server?.credential !== "string") return [];
+    return [{ ...server, urls: Array.isArray(server.urls) ? relayUrls : relayUrls[0] }];
+  }) : [];
+  if (!relayServers.length) throw new RelayCredentialsError();
+  return relayServers;
 }
 async function browserCapacity(room) {
   const samples = await Promise.all(room.peers().map(async (peer) => {
@@ -95137,6 +95140,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
     throw error2;
   }
   const {
+    DEFAULT_ICE_SERVERS: DEFAULT_ICE_SERVERS3,
     generateIdentity: generateIdentity2,
     joinRoom: joinRoom2,
     createGossip: createGossip2,
@@ -95153,22 +95157,23 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
   let direct;
   let session2;
   let transportFailure = null;
-  let iceServers;
+  let relayIceServers;
   const unsubscribers = [];
   try {
     try {
-      iceServers = await fetchRelayIceServers({ signal });
+      relayIceServers = await fetchRelayIceServers({ signal });
     } catch (error2) {
       if (signal?.aborted) throw cancelledJoinError();
     }
     try {
+      const iceServers = relayIceServers ? [...DEFAULT_ICE_SERVERS3, ...relayIceServers] : DEFAULT_ICE_SERVERS3;
       room = await joinRoom2({
         roomId,
         identity,
         kind: "website",
         iceServers,
         audit(event) {
-          const failure = peerConnectionFailure(event, { relayAvailable: !!iceServers });
+          const failure = peerConnectionFailure(event, { relayAvailable: !!relayIceServers });
           if (!failure) return;
           transportFailure = failure;
           session2?.emit("transport-status", { state: "failed", error: failure });
@@ -95195,7 +95200,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
       sync,
       presence,
       direct,
-      iceServers,
+      iceServers: [...DEFAULT_ICE_SERVERS3, ...relayIceServers ?? []],
       unsubscribers
     });
     unsubscribers.push(
