@@ -165,6 +165,13 @@ export function initRun(seed, rng, P, runOptions = {}) {
       ? (roll < 0.45 ? 3 : 2)
       : roll < 0.6 ? 0 : roll < 0.78 ? 1 : roll < 0.9 ? 2 : 3;
   }
+  // why: the player must be able to read the room on arrival. Preserve the
+  // seeded power failure, but turn a dead starting fixture into the matching
+  // powered/unpowered flicker state before the renderer consumes the graph.
+  const playerSpawn = graph.byId.get(runOptions.playerSpawnId);
+  if (playerSpawn !== undefined && graph.lightMode[playerSpawn] === 3) {
+    graph.lightMode[playerSpawn] = graph.unpowered[playerSpawn] ? 2 : 1;
+  }
   // no marine starts on the crash site OR in a room right next to it (user
   // rule) — the danger set is the breach plus its immediate walkable neighbours
   const breachDanger = new Set([breach]);

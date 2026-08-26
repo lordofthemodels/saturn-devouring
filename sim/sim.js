@@ -38,6 +38,7 @@ export class Sim {
 
     const { graph, agents, squads } = initRun(this.seed, this.rng, this.P, {
       playerCount: runOptions?.playerCount ?? 1,
+      playerSpawnId: runOptions?.playerSpawnId,
       initialInfectionFormsExplicit,
     });
     this.graph = graph;
