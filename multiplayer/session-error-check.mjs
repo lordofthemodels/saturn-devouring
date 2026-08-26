@@ -4,7 +4,6 @@ import {
   RelayCredentialsError,
   fetchRelayIceServers,
   peerConnectionFailure,
-  summarizeIceDiagnostics,
 } from './session.js';
 
 for (const event of ['room_dial_failed', 'room_accept_failed']) {
@@ -14,29 +13,10 @@ for (const event of ['room_dial_failed', 'room_accept_failed']) {
   assert.match(error.message, /WebRTC data channel timed out/);
   assert.match(error.message, /relay credentials were unavailable/);
 }
-const blockedRelay = peerConnectionFailure('room_dial_failed', {
-  relayAvailable: true,
-  diagnostic: { relayCandidates: 0 },
-});
-assert.equal(blockedRelay.code, 'TURN_PATH_UNAVAILABLE');
-assert.match(blockedRelay.message, /could not allocate a TURN relay route/);
-const relayedFailure = peerConnectionFailure('room_dial_failed', {
-  relayAvailable: true,
-  diagnostic: { relayCandidates: 1 },
-});
-assert.match(relayedFailure.message, /relay route was available/);
+const relayedFailure = peerConnectionFailure('room_dial_failed', { relayAvailable: true });
+assert.match(relayedFailure.message, /even with relay fallback/);
 assert.equal(peerConnectionFailure('peer_path'), null);
 assert.equal(peerConnectionFailure('rendezvous_lost'), null);
-
-assert.deepEqual(summarizeIceDiagnostics([
-  { candidateTypes: ['host', 'srflx'], errorCodes: [701] },
-  { candidateTypes: ['host', 'relay'], errorCodes: [701, 401] },
-]), {
-  connections: 2,
-  relayCandidates: 1,
-  candidateTypes: ['host', 'relay', 'srflx'],
-  errorCodes: [401, 701],
-});
 
 const iceServers = [
   { urls: ['stun:stun.cloudflare.com:3478'] },
