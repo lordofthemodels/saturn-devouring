@@ -2733,6 +2733,30 @@ export class Sim {
   // _separate's job. Move legs LAND here too, so arrivals never converge
   // on the room's center point.
   _parkSlot(a, nd) {
+    if (a.task?.kind === TASK.GUARD && a.task.protect !== undefined
+      && a.task.threatNode !== undefined && a.task.threatNode >= 0) {
+      const path = this.graph.path(nd.idx, a.task.threatNode, ['std'], (link) => !link.locked);
+      const step = path?.[0];
+      if (step) {
+        const link = step.link;
+        const mouth = link.door ?? (link.a === nd.idx ? link.padA : link.padB);
+        if (mouth) {
+          let ix = nd.x - mouth.x, iy = nd.y - mouth.y;
+          const length = Math.hypot(ix, iy) || 1;
+          ix /= length; iy /= length;
+          const hash = ((a.id * 2654435761) >>> 0) / 4294967296;
+          const depth = 1.35 + (a.id % 3) * 0.55;
+          const lateral = (hash - 0.5)
+            * Math.min(4, Math.max(1.4, Math.min(nd.w, nd.d) * 0.45));
+          const radius = this._bodyRadius(a);
+          const hw = Math.max(0, nd.w / 2 - radius), hd = Math.max(0, nd.d / 2 - radius);
+          const x = mouth.x + ix * depth - iy * lateral;
+          const y = mouth.y + iy * depth + ix * lateral;
+          return [Math.max(nd.x - hw, Math.min(nd.x + hw, x)),
+            Math.max(nd.y - hd, Math.min(nd.y + hd, y))];
+        }
+      }
+    }
     const h1 = ((a.id * 2654435761) >>> 0) / 4294967296;
     const h2 = (((a.id + 7907) * 1597334677) >>> 0) / 4294967296;
     const hw = Math.max(0.7, nd.w / 2 - 1.0), hd = Math.max(0.7, nd.d / 2 - 1.0);
