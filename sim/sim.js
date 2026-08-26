@@ -220,7 +220,11 @@ export class Sim {
     assignFirstSweep(this);
     this._refreshOccupancy();
     this._computeInfluence();
-    this.log('init', `seed "${this.seed}" — breach at ${graph.node(graph.breachNode).name}, ${agents.filter(isLivingHuman).length} souls aboard · flood ${this.P.flood.initialInfectionForms}i/${this.P.flood.initialCombatForms}c/${this.P.flood.initialCarriers}k · marines ${this.P.marines.squads}×${this.P.marines.squadSize} + ${this.P.marines.patrols} patrols + ${this.P.marines.garrison} garrison · ${this.P.crew.civilians} civ / ${this.P.crew.armedCrew} armed · ${this.P.bodies.eventCorpses} bodies`);
+    const marineCount = agents.filter((a) => a.faction === FACTION.MARINE).length;
+    const civilianCount = agents.filter((a) => a.faction === FACTION.CIVILIAN).length;
+    const armedCount = agents.filter((a) => a.faction === FACTION.ARMED).length;
+    const bodyCount = agents.filter((a) => a.faction === FACTION.CORPSE).length;
+    this.log('init', `seed "${this.seed}" — breach at ${graph.node(graph.breachNode).name}, ${agents.filter(isLivingHuman).length} souls aboard · flood ${this.P.flood.initialInfectionForms}i/${this.P.flood.initialCombatForms}c/${this.P.flood.initialCarriers}k · ${marineCount} marines in ${this.P.marines.squads} line squads + ${this.P.marines.patrols} patrols · ${civilianCount} civilians / ${armedCount} armed crew · ${bodyCount} bodies`);
     this.writeBuffer();
   }
 

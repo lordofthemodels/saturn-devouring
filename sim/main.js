@@ -2,7 +2,7 @@
 // render (§2.3), seed replay, live master dials (§10).
 
 import { Sim } from './sim.js';
-import { Viz, renderStats, renderLog } from './viz.js';
+import { Viz, renderStats, renderLog, squadTag } from './viz.js';
 import { CMD } from './commands.js';
 import { PARAMS } from '../shared/params.js';
 
@@ -12,26 +12,24 @@ const logEl = document.getElementById('log');
 
 // Scenario defaults come from the same source as the game. The controls then
 // provide explicit overrides, so tuning cannot silently drift.
-const SCENARIO_IDS = ['startInf', 'startCf', 'startCar', 'inSquads', 'inSquadSize',
-  'inPatrols', 'inGarrison', 'inCivilians', 'inArmed', 'inMaint', 'inBodies',
-  'inBreachMin', 'inBreachMax'];
+const SCENARIO_IDS = ['startInf', 'startCf', 'startCar', 'inMarines', 'inCivilians',
+  'inArmed', 'inMaint', 'inBodies', 'inBreach'];
 const CONTROL_DEFAULTS = {
   startInf: PARAMS.flood.initialInfectionForms,
   startCf: PARAMS.flood.initialCombatForms,
   startCar: PARAMS.flood.initialCarriers,
-  inSquads: PARAMS.marines.squads,
-  inSquadSize: PARAMS.marines.squadSize,
-  inPatrols: PARAMS.marines.patrols,
-  inGarrison: PARAMS.marines.garrison,
-  inCivilians: PARAMS.crew.civilians,
-  inArmed: PARAMS.crew.armedCrew,
+  inMarines: PARAMS.marines.squads * PARAMS.marines.squadSize
+    + PARAMS.marines.patrols * PARAMS.marines.patrolSize
+    + PARAMS.marines.garrison + PARAMS.armory.odstSquadSize,
+  inCivilians: PARAMS.crew.civilians + PARAMS.crew.lowerMaintenance
+    + PARAMS.crew.brigPrisoners + PARAMS.crew.medbayWounded,
+  inArmed: PARAMS.crew.armedCrew + PARAMS.marineDoctrine.officers + PARAMS.marineDoctrine.bridgeOfficers,
   inMaint: PARAMS.crew.lowerMaintenance,
-  inBodies: PARAMS.bodies.eventCorpses,
-  inBreachMin: PARAMS.bodies.breachMin,
-  inBreachMax: PARAMS.bodies.breachMax,
-  dialLambda: PARAMS.belief.decayRatePerSec,
-  dialQ: PARAMS.belief.predictionQuality,
-  dialRadio: PARAMS.radio.marineCallReliability,
+  inBodies: PARAMS.bodies.eventCorpses + Math.round((PARAMS.bodies.breachMin + PARAMS.bodies.breachMax) / 2),
+  inBreach: Math.round((PARAMS.bodies.breachMin + PARAMS.bodies.breachMax) / 2),
+  dialLambda: Math.round(Math.log(2) / PARAMS.belief.decayRatePerSec),
+  dialQ: Math.round(PARAMS.belief.predictionQuality * 100),
+  dialRadio: Math.round(PARAMS.radio.marineCallReliability * 100),
 };
 for (const [id, value] of Object.entries(CONTROL_DEFAULTS)) {
   document.getElementById(id).value = value;
@@ -47,8 +45,27 @@ function swarmOverrides() {
       ? Math.max(min, Math.min(max, Math.round(value)))
       : CONTROL_DEFAULTS[id];
   };
-  const breachA = num('inBreachMin');
-  const breachB = num('inBreachMax');
+  const marineTotal = num('inMarines');
+  const odst = Math.min(PARAMS.armory.odstSquadSize, marineTotal);
+  const fieldMarines = marineTotal - odst;
+  const garrison = Math.min(fieldMarines, Math.round(fieldMarines * 3 / 14));
+  const patrols = Math.min(Math.floor((fieldMarines - garrison) / 2), Math.round(fieldMarines * 3 / 28));
+  const lineCount = fieldMarines - garrison - patrols * PARAMS.marines.patrolSize;
+  const lineSquads = lineCount ? Math.ceil(lineCount / PARAMS.marines.squadSize) : 0;
+
+  const civilianTotal = num('inCivilians');
+  const maintenance = Math.min(num('inMaint'), civilianTotal);
+  let civilianRemainder = civilianTotal - maintenance;
+  const wounded = Math.min(PARAMS.crew.medbayWounded, civilianRemainder);
+  civilianRemainder -= wounded;
+  const prisoners = Math.min(PARAMS.crew.brigPrisoners, civilianRemainder);
+  civilianRemainder -= prisoners;
+
+  const armedTotal = num('inArmed');
+  const bridgeOfficers = Math.min(PARAMS.marineDoctrine.bridgeOfficers, armedTotal);
+  const officers = Math.min(PARAMS.marineDoctrine.officers, armedTotal - bridgeOfficers);
+  const bodyTotal = num('inBodies');
+  const breachBodies = Math.min(num('inBreach'), bodyTotal);
   return {
     flood: {
       initialInfectionForms: num('startInf'),
@@ -56,21 +73,26 @@ function swarmOverrides() {
       initialCarriers: num('startCar'),
     },
     marines: {
-      squads: num('inSquads'),
-      squadSize: num('inSquadSize'),
-      patrols: num('inPatrols'),
-      garrison: num('inGarrison'),
+      squads: lineSquads,
+      squadSize: PARAMS.marines.squadSize,
+      lineCount,
+      patrols,
+      garrison,
     },
     crew: {
-      civilians: num('inCivilians'),
-      armedCrew: num('inArmed'),
-      lowerMaintenance: num('inMaint'),
+      civilians: civilianRemainder,
+      armedCrew: armedTotal - bridgeOfficers - officers,
+      lowerMaintenance: maintenance,
+      brigPrisoners: prisoners,
+      medbayWounded: wounded,
     },
     bodies: {
-      eventCorpses: num('inBodies'),
-      breachMin: Math.min(breachA, breachB),
-      breachMax: Math.max(breachA, breachB),
+      eventCorpses: bodyTotal - breachBodies,
+      breachMin: breachBodies,
+      breachMax: breachBodies,
     },
+    armory: { odstSquadSize: odst },
+    marineDoctrine: { officers, bridgeOfficers },
   };
 }
 
@@ -82,21 +104,19 @@ let acc = 0;
 let last = performance.now();
 
 function applyDials() {
-  const lambda = Number(document.getElementById('dialLambda').value);
-  const q = Number(document.getElementById('dialQ').value);
-  const radio = Number(document.getElementById('dialRadio').value);
-  sim.P.belief.decayRatePerSec = lambda;
-  sim.P.belief.predictionQuality = q;
-  sim.P.radio.marineCallReliability = radio;
-  document.getElementById('dialLambdaV').textContent = lambda.toFixed(2);
-  document.getElementById('dialQV').textContent = q.toFixed(2);
-  document.getElementById('dialRadioV').textContent = radio.toFixed(2);
+  const memorySec = Math.max(1, Number(document.getElementById('dialLambda').value));
+  const predictionPercent = Number(document.getElementById('dialQ').value);
+  const radioPercent = Number(document.getElementById('dialRadio').value);
+  sim.P.belief.decayRatePerSec = Math.log(2) / memorySec;
+  sim.P.belief.predictionQuality = predictionPercent / 100;
+  sim.P.radio.marineCallReliability = radioPercent / 100;
 }
 
 function restart() {
   sim = new Sim(document.getElementById('seed').value.trim() || 'charon-1', swarmOverrides());
   applyDials();
   viz.setSim(sim);
+  syncDeckUI();
   acc = 0;
   populateCommandUI();
 }
@@ -105,12 +125,29 @@ function restart() {
 function populateCommandUI() {
   const nodeSel = document.getElementById('cmdNode');
   const doorSel = document.getElementById('cmdDoor');
-  const squadSel = document.getElementById('cmdSquad');
   nodeSel.innerHTML = sim.graph.nodes.map((n) => `<option value="${n.idx}">${n.name}</option>`).join('');
   doorSel.innerHTML = sim.graph.edges
     .map((e, i) => e.lockable ? `<option value="${i}">${sim.graph.node(e.a).name}↔${sim.graph.node(e.b).name}</option>` : '')
     .join('');
-  squadSel.innerHTML = sim.squads.map((s) => `<option value="${s.id}">squad ${s.id + 1}</option>`).join('');
+  updateSquadSelector(true);
+}
+
+let squadSelectorStamp = '';
+function updateSquadSelector(force = false) {
+  const squadSel = document.getElementById('cmdSquad');
+  const selected = squadSel.value;
+  const rows = sim.squads.map((s) => {
+    const living = s.members.map((id) => sim.byId.get(id)).filter((a) => a && !a.dead && a.hp > 0);
+    const room = living.length ? sim.graph.node(living[0].node).name : 'wiped out';
+    return { s, living, room };
+  });
+  const stamp = rows.flatMap(({ s, living, room }) => [s.id, living.length, room]).join(':');
+  if (!force && stamp === squadSelectorStamp) return;
+  squadSelectorStamp = stamp;
+  squadSel.innerHTML = rows.map(({ s, living, room }) => {
+    return `<option value="${s.id}">${squadTag(s)} · ${living.length}/${s.members.length} · ${room}</option>`;
+  }).join('');
+  if ([...squadSel.options].some((option) => option.value === selected)) squadSel.value = selected;
 }
 
 function wireCommandUI() {
@@ -198,8 +235,14 @@ for (const d of document.querySelectorAll('#deckBtns button')) {
     document.querySelectorAll('#deckBtns button').forEach((b) => b.classList.remove('active'));
     d.classList.add('active');
     viz.deckFilter = Number(d.dataset.deck);
+    if (viz.deckFilter === 0) viz.fitShip();
   });
 }
+function syncDeckUI() {
+  document.querySelectorAll('#deckBtns button').forEach((button) =>
+    button.classList.toggle('active', Number(button.dataset.deck) === viz.deckFilter));
+}
+syncDeckUI();
 const ov = (id, key) => document.getElementById(id).addEventListener('change', (e) => { viz.overlays[key] = e.target.checked; });
 ov('ovInfluence', 'influence'); ov('ovShafts', 'shafts'); ov('ovVents', 'vents');
 ov('ovCalls', 'calls'); ov('ovTracker', 'tracker'); ov('ovBeliefs', 'beliefs'); ov('ovLabels', 'labels'); ov('ovConns', 'conns');
@@ -210,6 +253,12 @@ for (const id of ['dialLambda', 'dialQ', 'dialRadio']) {
 applyDials();
 populateCommandUI();
 wireCommandUI();
+statsEl.addEventListener('click', (event) => {
+  const row = event.target.closest('[data-squad]');
+  if (!row) return;
+  document.getElementById('cmdSquad').value = row.dataset.squad;
+  document.getElementById('cmdSquad').focus();
+});
 
 // debug/test hooks (harmless in normal use)
 window.__viz = () => viz;
@@ -231,6 +280,7 @@ function frame(now) {
   // pass real frame time; the viz smooths agent positions by id (see Viz)
   viz.draw(dtReal * (paused ? 0.4 : Math.max(1, speed)));
   renderStats(sim, statsEl);
+  updateSquadSelector();
   renderLog(sim, logEl);
   requestAnimationFrame(frame);
 }

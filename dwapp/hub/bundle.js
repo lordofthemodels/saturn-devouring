@@ -71090,12 +71090,16 @@ function initRun(seed2, rng, P2) {
       // reserve inside; see the sealed-reserve block below)
     ];
     const marinePosts = marinePostIds.map((id) => graph.byId.get(id));
+    const lineCount = Number.isFinite(M2.lineCount) ? M2.lineCount : M2.squads * M2.squadSize;
+    const baseSquadSize = M2.squads ? Math.floor(lineCount / M2.squads) : 0;
+    const largerSquads = M2.squads ? lineCount % M2.squads : 0;
     for (let si = 0; si < M2.squads; si++) {
       let pi = si % marinePosts.length;
       for (let g2 = 0; g2 < marinePosts.length && breachDanger.has(marinePosts[pi]); g2++) pi = (pi + 1) % marinePosts.length;
       const node = marinePosts[pi];
       const squad = { id: si, members: [], objective: null, morale: 1, respondingTo: null, phase1: false };
-      for (let m2 = 0; m2 < M2.squadSize; m2++) {
+      const squadSize = baseSquadSize + (si < largerSquads ? 1 : 0);
+      for (let m2 = 0; m2 < squadSize; m2++) {
         const a2 = makeAgent(FACTION.MARINE, node, graph);
         a2.hp = a2.maxHp = P2.combat.marine.hp;
         a2.hasRadio = rng.chance(P2.crew.radio.marine);
@@ -75219,7 +75223,11 @@ var init_sim = __esm({
         assignFirstSweep(this);
         this._refreshOccupancy();
         this._computeInfluence();
-        this.log("init", `seed "${this.seed}" — breach at ${graph.node(graph.breachNode).name}, ${agents2.filter(isLivingHuman).length} souls aboard · flood ${this.P.flood.initialInfectionForms}i/${this.P.flood.initialCombatForms}c/${this.P.flood.initialCarriers}k · marines ${this.P.marines.squads}×${this.P.marines.squadSize} + ${this.P.marines.patrols} patrols + ${this.P.marines.garrison} garrison · ${this.P.crew.civilians} civ / ${this.P.crew.armedCrew} armed · ${this.P.bodies.eventCorpses} bodies`);
+        const marineCount = agents2.filter((a2) => a2.faction === FACTION.MARINE).length;
+        const civilianCount = agents2.filter((a2) => a2.faction === FACTION.CIVILIAN).length;
+        const armedCount = agents2.filter((a2) => a2.faction === FACTION.ARMED).length;
+        const bodyCount = agents2.filter((a2) => a2.faction === FACTION.CORPSE).length;
+        this.log("init", `seed "${this.seed}" — breach at ${graph.node(graph.breachNode).name}, ${agents2.filter(isLivingHuman).length} souls aboard · flood ${this.P.flood.initialInfectionForms}i/${this.P.flood.initialCombatForms}c/${this.P.flood.initialCarriers}k · ${marineCount} marines in ${this.P.marines.squads} line squads + ${this.P.marines.patrols} patrols · ${civilianCount} civilians / ${armedCount} armed crew · ${bodyCount} bodies`);
         this.writeBuffer();
       }
       // --- sensing precomputation: rebuilt via _doorMutated whenever a lock
