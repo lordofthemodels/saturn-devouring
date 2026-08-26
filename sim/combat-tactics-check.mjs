@@ -58,6 +58,67 @@ assert.equal(attacker.task.kind, TASK.ATTACK, 'a cornered form must attack');
 assert.equal(attacker.task.force, true, 'the cornered attack must bypass the odds gate');
 for (const [edge, locked] of originalLocks) edge.locked = locked;
 
+// Room topology is not enough to call a ladder an escape. If reaching its
+// mouth means running through a visible shooter, the form must find another
+// first leg or accept that it is cornered and attack.
+const blockedRetreatSim = new Sim('blocked-retreat-approach-check');
+for (const agent of blockedRetreatSim.agents) agent.dead = true;
+let blockedLadder = null;
+for (const edge of blockedRetreatSim.graph.edges) {
+  if (edge.kind !== 'std' || edge.type !== 'ladder' || edge.locked) continue;
+  for (const [from, to, mouth] of [[edge.a, edge.b, edge.padA], [edge.b, edge.a, edge.padB]]) {
+    const room = blockedRetreatSim.graph.node(from);
+    const distance = mouth ? Math.hypot(mouth.x - room.x, mouth.y - room.y) : 0;
+    if (distance > 6 && distance * 0.55 < blockedRetreatSim.P.combat.sightM) {
+      blockedLadder = { edge, from, to, mouth, room };
+      break;
+    }
+  }
+  if (blockedLadder) break;
+}
+assert.ok(blockedLadder, 'blocked retreat fixture needs a ladder mouth well inside a room');
+const trappedForm = makeAgent(FACTION.COMBAT, blockedLadder.from, blockedRetreatSim.graph);
+const blockingPlayer = makeAgent(FACTION.ARMED, blockedLadder.from, blockedRetreatSim.graph);
+trappedForm.x = blockedLadder.room.x;
+trappedForm.y = blockedLadder.room.y;
+blockingPlayer.isPlayer = true;
+blockingPlayer.x = trappedForm.x + (blockedLadder.mouth.x - trappedForm.x) * 0.45;
+blockingPlayer.y = trappedForm.y + (blockedLadder.mouth.y - trappedForm.y) * 0.45;
+blockedRetreatSim.spawn(trappedForm);
+blockedRetreatSim.spawn(blockingPlayer);
+blockedRetreatSim.tickCount = 1;
+blockedRetreatSim.t = blockedRetreatSim.dt;
+blockedRetreatSim._refreshOccupancy();
+const blockedStep = { to: blockedLadder.to, link: blockedLadder.edge, layer: 'std' };
+assert.equal(blockedRetreatSim.hive.retreatApproachSafe(trappedForm, blockedStep), false,
+  'a ladder behind the player must not count as a safe retreat approach');
+
+const blockedLocks = new Map(blockedRetreatSim.graph.edges.map((edge) => [edge, edge.locked]));
+for (const edge of blockedRetreatSim.graph.edges) {
+  if ((edge.a === blockedLadder.from || edge.b === blockedLadder.from)
+    && edge !== blockedLadder.edge) edge.locked = true;
+}
+trappedForm.task = { kind: TASK.MOVE, node: blockedLadder.to, retreat: true,
+  threatNode: blockedLadder.from };
+trappedForm.state = STATE.MOVE;
+trappedForm.move = {
+  from: blockedLadder.from,
+  to: blockedLadder.to,
+  link: blockedLadder.edge,
+  layer: 'std',
+  t: 0,
+  appT: 0.5,
+  hidden: false,
+};
+blockedLadder.edge.occupiedBy = trappedForm.id;
+blockedRetreatSim._spatialSteer(trappedForm, blockedRetreatSim.dt);
+assert.equal(trappedForm.move, null, 'a newly blocked ladder approach must be cancelled');
+assert.equal(trappedForm.task.kind, TASK.ATTACK, 'a form with no clean retreat must attack the blocker');
+assert.equal(trappedForm.task.targetId, blockingPlayer.id,
+  'the cornered attack must target the player blocking the escape');
+assert.equal(trappedForm.task.cornered, true, 'the attack must carry the cornered override');
+for (const [edge, locked] of blockedLocks) edge.locked = locked;
+
 // Life-sense must carry exact room makeup through enclosed vertical trunks.
 // A lone form should withdraw before climbing into a firing squad, while a
 // pack that satisfies the same shared odds rule may commit. The fixture finds

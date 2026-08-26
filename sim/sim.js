@@ -1978,12 +1978,6 @@ export class Sim {
       if (a.downed || a.hp <= 0 || a.dragging !== -1) return false;
       const k = a.task?.kind;
       const shotAt = this.tickCount - (a.lastHurtTick ?? -999) < 45;
-      // A chosen retreat is one uninterrupted action. It does not turn around
-      // because the leading marine briefly crosses the threshold, and it does
-      // not stop to pounce him; a blocked route converts it to cornered attack
-      // in the movement pass instead. Incoming fire is the one reason to ask
-      // the hive again: reinforcements may have joined and changed the odds.
-      if (this.hive.isRetreating(a) && !shotAt) return false;
       // Rooted forms stay rooted. Scripted bait keeps its role until somebody
       // actually hits it; incoming fire promotes every other posture to the
       // same surge decision below.
@@ -1999,6 +1993,23 @@ export class Sim {
       // The shared task carries that revelation to packmates following behind.
       if (!best && source && !source.dead && source.hp > 0) best = source;
       if (!best && ordered && !ordered.dead && ordered.hp > 0) best = ordered;
+      if (this.hive.isRetreating(a)) {
+        // Keep a clean escape uninterrupted, but never preserve one whose
+        // physical approach has become a run past a visible shooter. Re-plan
+        // from the body's live position; no other clean first leg means it is
+        // cornered and the hive flips it to a forced attack.
+        const committed = a.move && (a.move.hidden
+          || (a.move.appT !== undefined && a.move.t >= a.move.appT)
+          || (a.move.appT === undefined && a.node !== a.move.from));
+        const step = committed ? null : a.move
+          ? { to: a.move.to, link: a.move.link }
+          : a.path[0];
+        if (best && step && !this.hive.retreatApproachSafe(a, step)) {
+          this.hive.retreatOrFight(a, best.pnode ?? best.node, true, best.id);
+          return false;
+        }
+        if (!shotAt) return false;
+      }
       if (!best) {
         a.chargeTargetId = -1;
         if (a.state === STATE.FIGHT) { a.state = STATE.IDLE; a.charging = false; }

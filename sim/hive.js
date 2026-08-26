@@ -624,6 +624,49 @@ export class Hive {
     return form.task?.kind === TASK.ATTACK && !form.task.retreat;
   }
 
+  // A retreat is only real if its FIRST physical leg moves away from every
+  // visible gun. Graph distance alone cannot express a shooter standing
+  // between a form and a ladder/door: topologically the hatch is an escape,
+  // but in the room it requires running straight past the threat.
+  retreatApproachSafe(form, step, threats = null) {
+    if (!step?.link) return false;
+    const sim = this.sim, g = sim.graph;
+    const from = form.pnode ?? form.node;
+    const room = g.node(from);
+    const link = step.link;
+    let mouth = link.door ?? (link.a === from ? link.padA : link.padB);
+    if (!mouth && link.type === 'stairwell') {
+      const to = g.node(step.to);
+      const upper = room.deck < to.deck ? room : to;
+      const points = sim._stairWaypoints(upper);
+      const point = room === upper ? points.top : points.foot;
+      mouth = { x: point.x, y: point.y + sim._bandC(room.deck) - sim._bandC(upper.deck) };
+    }
+    mouth ??= { x: g.node(step.to).x, y: g.node(step.to).y };
+
+    const armed = threats ?? sim.lineOfSightAgents(form,
+      (human) => isLivingHuman(human)
+        && (human.faction === FACTION.ARMED || human.faction === FACTION.MARINE));
+    const vx = mouth.x - form.x, vy = mouth.y - form.y;
+    const lengthSq = vx * vx + vy * vy;
+    for (const human of armed) {
+      if (human.deck !== form.deck) continue;
+      const hx = human.x - form.x, hy = human.y - form.y;
+      const startDistance = Math.hypot(hx, hy);
+      const endDistance = Math.hypot(human.x - mouth.x, human.y - mouth.y);
+      // Even without a near miss, an exit behind the shooter is not an escape:
+      // the whole approach closes distance under fire.
+      if (endDistance < startDistance - 0.25) return false;
+      if (lengthSq <= 1e-6) continue;
+      const t = Math.max(0, Math.min(1, (hx * vx + hy * vy) / lengthSq));
+      if (t <= 0.02 || t >= 0.98) continue;
+      const closest = Math.hypot(hx - vx * t, hy - vy * t);
+      if (closest < Math.max(3, sim.P.combat.meleeRangeM * 1.25)
+        && closest < startDistance - 0.25) return false;
+    }
+    return true;
+  }
+
   // Losing doorway odds have only two outcomes: withdraw or, if every open
   // route is cut off, fight. The retreat is ground-truth pathing because a
   // form deciding under visible guns cannot afford a stale-belief shortcut
@@ -648,6 +691,7 @@ export class Hive {
       if (node.idx === from) continue;
       const path = g.path(from, node.idx, ['std'], openEscape);
       if (!path?.length) continue;
+      if (!this.retreatApproachSafe(form, path[0])) continue;
       const away = g.hops(threatNode, node.idx, ['std'], () => true);
       const exits = [...g.neighbors(node.idx, ['std'], (link) => !link.locked)].length;
       const score = (away === -1 ? g.n : away) * 100
@@ -670,11 +714,12 @@ export class Hive {
   }
 
   // Returns true only when escape is impossible and the form must attack.
-  retreatOrFight(form, threatNode) {
-    if (form.task?.retreat && form.task.threatNode === threatNode
+  retreatOrFight(form, threatNode, replan = false, targetId = undefined) {
+    if (!replan && form.task?.retreat && form.task.threatNode === threatNode
       && (form.move || form.path.length)) return false;
     if (this.retreatCombatForm(form, threatNode)) return false;
-    this.assign(form, { kind: TASK.ATTACK, node: threatNode, force: true, cornered: true });
+    this.assign(form, { kind: TASK.ATTACK, node: threatNode, targetId,
+      force: true, cornered: true });
     return true;
   }
 
