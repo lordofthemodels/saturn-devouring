@@ -26,6 +26,7 @@ export const TASK = {
 
 const W_HUMAN = { [FACTION.CIVILIAN]: 0.1, [FACTION.ARMED]: 0.6, [FACTION.MARINE]: 1.0 };
 const W_FLOOD = { [FACTION.INFECTION]: 0.25, [FACTION.COMBAT]: 1.0, [FACTION.CARRIER]: 0.5 };
+const RETREAT_REASSESS_STRENGTH = 0.75;
 
 export class Hive {
   constructor(sim) {
@@ -529,12 +530,26 @@ export class Hive {
   // Returns whether the crossing may proceed.
   respondToSensedRoom(form, node) {
     const situation = this.sensedRoomCombat(form, node);
-    if (!situation || situation.defense === 0 || form.task?.force
-      || situation.strength >= situation.defense * this.sim.P.swarm.killRatio) return true;
+    if (!situation || situation.defense === 0 || this.allIn || form.task?.force) return true;
+    const surging = situation.pack.some((member) => member.task?.surge
+      || member.state === STATE.FIGHT
+      || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
+    const forced = situation.pack.some((member) => member.task?.force);
+    const formCommitted = form.task?.kind === TASK.ATTACK
+      && (form.task.surge || form.task.force || form.state === STATE.FIGHT);
+    // A guard or carrier seed sharing sight with an engaged pack may not drag
+    // the whole charge into retreat merely because its unrelated route meets
+    // the same doorway. Block only that crossing; the shared fight continues.
+    if ((surging || forced) && !formCommitted) return false;
+    if (forced || situation.strength >= situation.defense
+      * (surging ? 1 : this.sim.P.swarm.killRatio)) return true;
     const responseKey = situation.pack[0]?.id ?? form.id;
     if (this._combatResponseCache.has(responseKey)) return false;
+    if (this.retreatCommitmentHolds(situation.pack, situation.strength)) return false;
     for (const member of situation.pack) {
-      if (!this.isRetreating(member)) this.retreatOrFight(member, node);
+      if (!this.isRetreating(member)) {
+        this.retreatOrFight(member, node, false, undefined, situation.strength);
+      }
     }
     this._combatResponseCache.add(responseKey);
     return false;
@@ -573,6 +588,20 @@ export class Hive {
     return !!(form.task?.retreat && (form.move || form.path.length));
   }
 
+  retreatCommitmentHolds(pack, strength) {
+    let baseline = -Infinity;
+    for (const member of pack) {
+      if (!this.isRetreating(member)) continue;
+      baseline = Math.max(baseline, member.task.retreatStrength ?? strength);
+    }
+    return baseline > -Infinity && strength < baseline + RETREAT_REASSESS_STRENGTH;
+  }
+
+  isCombatCommitted(form) {
+    return form.state === STATE.FIGHT || (form.task?.kind === TASK.ATTACK
+      && (form.task.surge || form.task.force));
+  }
+
   // A planned assault keeps the conservative doctrine. Being fired on starts
   // a surge at even odds, but it cannot reverse a retreat already in motion.
   canPressCombatContact(form, provoked = false, forced = false) {
@@ -601,10 +630,29 @@ export class Hive {
     }
     const fallbackNode = typeof target === 'number' ? target
       : (stimulus?.pnode ?? stimulus?.node ?? situation.threatNode);
+    // Use the same adjacent-room life-sense here that the doorway veto uses.
+    // Otherwise a pack attacks the one silhouette visible in an opening, then
+    // learns about the rest of that room a frame later and reverses course.
+    const sensed = fallbackNode >= 0 ? this.sensedRoomCombat(form, fallbackNode) : null;
+    if (sensed) for (const human of sensed.humans) {
+      if (!knownHumans.some((known) => known.id === human.id)) knownHumans.push(human);
+    }
+    const decisionStrength = Math.max(situation.strength, sensed?.strength ?? 0);
+    const decisionDefense = knownHumans.reduce((sum, human) =>
+      sum + (W_HUMAN[human.faction] ?? 0), 0);
     const surge = provoked || pack.some((member) => member.task?.surge
       || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
     const forced = pack.some((member) => member.task?.force);
-    if (this.canPressCombatContact(form, surge, forced)) {
+    // Once the hive has chosen a viable escape, ordinary incoming fire does
+    // not make it reconsider every tick. A newly connected combat form does:
+    // that is a real change in the shared odds, not doorway jitter.
+    if (!forced && this.retreatCommitmentHolds(pack, decisionStrength)) {
+      this._combatResponseCache.add(responseKey);
+      return false;
+    }
+    const canPress = forced || this.allIn || decisionDefense === 0
+      || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.killRatio);
+    if (canPress) {
       for (const member of pack) {
         const prey = this.nearestCombatTarget(member, knownHumans) ?? stimulus;
         const node = prey ? (prey.pnode ?? prey.node) : fallbackNode;
@@ -618,7 +666,9 @@ export class Hive {
     const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
     if (threatNode === undefined || threatNode < 0) return false;
     for (const member of pack) {
-      if (!this.isRetreating(member)) this.retreatOrFight(member, threatNode);
+      if (!this.isRetreating(member)) {
+        this.retreatOrFight(member, threatNode, false, undefined, decisionStrength);
+      }
     }
     this._combatResponseCache.add(responseKey);
     return form.task?.kind === TASK.ATTACK && !form.task.retreat;
@@ -774,8 +824,11 @@ export class Hive {
   // form deciding under visible guns cannot afford a stale-belief shortcut
   // through the very room it is escaping. Distance from the threat dominates
   // the score; remembered danger and dead-end rooms break ties.
-  retreatCombatForm(form, threatNode) {
+  retreatCombatForm(form, threatNode, observedStrength = undefined) {
     const sim = this.sim, g = sim.graph;
+    const retreatStrength = form.task?.retreatStrength
+      ?? observedStrength
+      ?? this.combatLineOfSight(form).strength;
     // A retreat replaces the current leg, not merely the queued steps after
     // it. Keeping an old doorway leg while installing a route from its origin
     // lets that leg finish on the far side, where the new first edge is no
@@ -823,7 +876,7 @@ export class Hive {
       if (refuge?.cornered) return false;
       if (refuge) {
         this.assign(form, { kind: TASK.GUARD, node: refuge.plan.screen,
-          protect: refuge.carrier.id, threatNode, retreat: true });
+          protect: refuge.carrier.id, threatNode, retreat: true, retreatStrength });
         sim.setPath(form, refuge.path);
         sim._setCharging(form, false);
         form.state = STATE.MOVE;
@@ -850,7 +903,8 @@ export class Hive {
       }
     }
     if (!best) return false;
-    this.assign(form, { kind: TASK.MOVE, node: best.node, retreat: true, threatNode });
+    this.assign(form, { kind: TASK.MOVE, node: best.node, retreat: true,
+      threatNode, retreatStrength });
     sim.setPath(form, best.path);
     sim._setCharging(form, false);
     form.state = STATE.MOVE;
@@ -858,10 +912,11 @@ export class Hive {
   }
 
   // Returns true only when escape is impossible and the form must attack.
-  retreatOrFight(form, threatNode, replan = false, targetId = undefined) {
+  retreatOrFight(form, threatNode, replan = false, targetId = undefined,
+    retreatStrength = undefined) {
     if (!replan && form.task?.retreat && form.task.threatNode === threatNode
       && (form.move || form.path.length)) return false;
-    if (this.retreatCombatForm(form, threatNode)) return false;
+    if (this.retreatCombatForm(form, threatNode, retreatStrength)) return false;
     this.assign(form, { kind: TASK.ATTACK, node: threatNode, targetId,
       force: true, cornered: true });
     return true;
@@ -1246,7 +1301,7 @@ export class Hive {
     const desiredRoots = Math.min(2, wantK, Math.max(1, Math.floor(C / 3)));
     const candidates = combat.filter((c) => !c.fromPlayer && !c.downed
       && c.task?.kind !== TASK.TRANSFORM && c.taskProgress === 0 && !c.move
-      && sim.humansAt(c.pnode ?? c.node) === 0)
+      && sim.humansAt(c.pnode ?? c.node) === 0 && !this.isCombatCommitted(c))
       .sort((a, b) => {
         const visibleA = sim.lineOfSightAgents(a, (h) => h.faction === FACTION.MARINE
           || h.faction === FACTION.ARMED).length;
@@ -1563,7 +1618,9 @@ export class Hive {
         // it is trying to raise put the hive in a loop of eating its own
         // soldiers (raise the dead → draft to carrier → rupture → raise…)
         const spares = combat.filter((c) => !c.fromPlayer
-          && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined) || c.task.kind === TASK.ATTACK));
+          && !this.isCombatCommitted(c)
+          && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined)
+            || c.task.kind === TASK.ATTACK));
         const c = this.nearest(spares, target, ['std'], this.bigPass);
         if (c) {
           if (c.node === target && !c.move && this.localThreat(target) < 0.5) this.assign(c, { kind: TASK.TRANSFORM });
