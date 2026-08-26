@@ -8,8 +8,24 @@ const request = () => new Request(`${origin}/api/turn-credentials`, {
   body: '{}',
 });
 const iceServers = [
+  { urls: ['stun:stun.cloudflare.com:53', 'stun:stun.cloudflare.com:3478'] },
+  {
+    urls: [
+      'turn:turn.cloudflare.com:53?transport=udp',
+      'turn:turn.cloudflare.com:3478?transport=udp',
+      'turns:turn.cloudflare.com:443?transport=tcp',
+    ],
+    username: 'short-lived-user',
+    credential: 'short-lived-secret',
+  },
+];
+const browserIceServers = [
   { urls: ['stun:stun.cloudflare.com:3478'] },
-  { urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'short-lived-user', credential: 'short-lived-secret' },
+  {
+    urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'],
+    username: 'short-lived-user',
+    credential: 'short-lived-secret',
+  },
 ];
 let upstreamRequest;
 const response = await turnCredentials(request(), {
@@ -24,7 +40,7 @@ const response = await turnCredentials(request(), {
 });
 assert.equal(response.status, 200);
 assert.equal(response.headers.get('cache-control'), 'no-store');
-assert.deepEqual(await response.json(), { iceServers });
+assert.deepEqual(await response.json(), { iceServers: browserIceServers });
 assert.match(upstreamRequest.url, /turn-key-id\/credentials\/generate-ice-servers$/);
 assert.equal(upstreamRequest.options.headers.authorization, 'Bearer turn-key-token');
 assert.deepEqual(JSON.parse(upstreamRequest.options.body), { ttl: 21_600, customIdentifier: 'charon-test-client' });

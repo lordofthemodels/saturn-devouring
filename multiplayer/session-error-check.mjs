@@ -20,7 +20,15 @@ assert.equal(peerConnectionFailure('rendezvous_lost'), null);
 
 const iceServers = [
   { urls: ['stun:stun.cloudflare.com:3478'] },
-  { urls: ['turns:turn.cloudflare.com:443?transport=tcp'], username: 'user', credential: 'secret' },
+  {
+    urls: [
+      'turn:turn.cloudflare.com:53?transport=udp',
+      'turns:turn.cloudflare.com:443?transport=tcp',
+      'turns:turn.cloudflare.com:443?transport=tcp',
+    ],
+    username: 'user',
+    credential: 'secret',
+  },
 ];
 const fetched = await fetchRelayIceServers({
   fetcher: async (url, options) => {
@@ -30,7 +38,10 @@ const fetched = await fetchRelayIceServers({
     return Response.json({ iceServers });
   },
 });
-assert.deepEqual(fetched, [iceServers[1]]);
+assert.deepEqual(fetched, [{
+  ...iceServers[1],
+  urls: ['turns:turn.cloudflare.com:443?transport=tcp'],
+}]);
 assert(fetched.every((server) => {
   const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
   return urls.every((url) => url.startsWith('turn'));

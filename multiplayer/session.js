@@ -4,6 +4,8 @@ import { createRoomVoice, isRoomVoiceSignal } from './voice.js';
 const scopedTopic = (scope, topic) => `charon/${scope || 'lobby'}/${topic}`;
 const PEER_FAILURE_EVENTS = new Set(['room_dial_failed', 'room_accept_failed']);
 const TURN_CREDENTIALS_PATH = '/api/turn-credentials';
+const isBrowserRelayUrl = (url) => typeof url === 'string' && url.startsWith('turn')
+  && !/^turns?:[^/?#]+:53(?:[/?#]|$)/i.test(url);
 
 function cancelledJoinError() {
   const error = new Error('multiplayer join cancelled');
@@ -63,7 +65,7 @@ export async function fetchRelayIceServers({ fetcher = fetch, signal } = {}) {
   const iceServers = payload?.iceServers;
   const relayServers = Array.isArray(iceServers) ? iceServers.flatMap((server) => {
     const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
-    const relayUrls = urls.filter((url) => typeof url === 'string' && url.startsWith('turn'));
+    const relayUrls = [...new Set(urls.filter(isBrowserRelayUrl))];
     if (!relayUrls.length || typeof server?.username !== 'string' || typeof server?.credential !== 'string') return [];
     return [{ ...server, urls: Array.isArray(server.urls) ? relayUrls : relayUrls[0] }];
   }) : [];
@@ -446,7 +448,7 @@ async function browserSession({ roomId, name, identity: suppliedIdentity, signal
   const {
     DEFAULT_ICE_SERVERS, generateIdentity, joinRoom, createGossip, createPresence, createDirect,
     createTopicSync, createMemoryTopicStore,
-  } = await import('./peerd-browser.js?v=2');
+  } = await import('./peerd-browser.js?v=3');
   const identity = suppliedIdentity ?? await generateIdentity();
   let room;
   let gossip;
