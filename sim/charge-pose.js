@@ -7,3 +7,10 @@ export function combatChargeArmsHigh(id, chargeSequence) {
   hash = (hash ^ (hash >>> 16)) >>> 0;
   return hash % 3 === 0;
 }
+
+// The raised rush is a wide Y, not two limbs crossing over the head. This
+// lift is written against the combat models' A-pose; the small oscillation
+// keeps the shoulders alive without collapsing the hands back together.
+export function combatChargeArmLift(side, phase) {
+  return -side * (1.88 + Math.sin(phase * 0.73 + side) * 0.08);
+}

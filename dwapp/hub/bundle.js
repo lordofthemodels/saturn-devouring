@@ -69934,7 +69934,7 @@ var init_agentBuffer = __esm({
       MALE_PLAYER: 1 << 19,
       // player-selected male ODST uses the helmeted marine rig
       ARMS_HIGH: 1 << 20
-      // this combat-form charge uses the Halo CE arms-overhead rush
+      // this combat-form charge uses the Halo CE wide-Y rush
     };
     CLIP = { IDLE: 0, WALK: 1, RUN: 2, ATTACK: 3, DEATH: 4, WRITHE: 5 };
     AgentBuffer = class {
@@ -75304,6 +75304,9 @@ function combatChargeArmsHigh(id, chargeSequence) {
   hash3 = Math.imul(hash3 ^ hash3 >>> 15, 2221713035) >>> 0;
   hash3 = (hash3 ^ hash3 >>> 16) >>> 0;
   return hash3 % 3 === 0;
+}
+function combatChargeArmLift(side, phase) {
+  return -side * (1.88 + Math.sin(phase * 0.73 + side) * 0.08);
 }
 var init_charge_pose = __esm({
   "sim/charge-pose.js"() {
@@ -81850,6 +81853,7 @@ var init_agents3d = __esm({
     init_carrier_model();
     init_ragdoll();
     init_hive();
+    init_charge_pose();
     CAP = 512;
     RIFLE_YAW = 0.4;
     CARRY = {
@@ -82406,7 +82410,7 @@ var init_agents3d = __esm({
               const side = part === "armR" ? 1 : -1;
               const phase = gaitPhase(clip, animT, id);
               (this._eHold ??= new Euler()).set(
-                -side * (2.3 + Math.sin(phase * 0.73 + side) * 0.1),
+                combatChargeArmLift(side, phase),
                 side * Math.sin(phase * 1.31 + id) * 0.1,
                 Math.sin(phase * 1.07 + side * 0.8) * 0.16
               );
