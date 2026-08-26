@@ -48,7 +48,7 @@ export const FRAG = {
   throwSpeed: 24,    // m/s out of the hand — a real hard throw, reaches across a bay
   upBoost: 4.2,      // lofted arc so it carries down a long corridor
   gravity: 20,
-  fuseS: 2.4,        // cooked from release — flies far before it goes
+  fuseS: 2.04,       // 15% shorter fuse; still long enough for the full throw arc
   bounce: 0.42,      // velocity kept on impact
   radiusM: 8,        // heavy blast — clears a room, not just a corner
   damage: 135,       // sim explodeAt payload (falls off to ~40% at the edge)

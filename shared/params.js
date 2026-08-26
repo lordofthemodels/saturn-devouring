@@ -206,7 +206,7 @@ export const PARAMS = {
     minSafeM: 6.0,         // never throw closer than this to yourself or a friendly
     cooldownSec: 14,       // per marine
     chancePerSec: 0.55,    // "occasionally", once the shot is actually there
-    fuseSec: 1.5,
+    fuseSec: 1.275,      // same 15% fuse reduction as the player's frag
     damage: 120,
     radiusM: 6.5,
   },
