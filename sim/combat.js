@@ -575,6 +575,15 @@ export function humanDeathToCorpse(sim, a) {
   // picked up as a live flamer by the shooter scan above. This is inert data
   // that only the player's scavenge (game/player.js) reads.
   if (a.flamer && a.fuel > 0) { corpse.hadFlamer = true; corpse.flamerFuel = a.fuel; }
+  // A marine's unused frags leave his belt as a real world pickup. Keep the
+  // drop independent of the corpse so conversion, dragging, or body cleanup
+  // cannot silently eat ammunition lying on the deck.
+  if (a.faction === FACTION.MARINE && a.frags > 0) {
+    sim.grenadeDrops.push({
+      id: corpse.id, node: corpse.node, deck: corpse.deck,
+      x: corpse.x, y: corpse.y, count: a.frags,
+    });
+  }
   sim.spawn(corpse);
   if (a.isPlayer) {
     corpse.playerSourceId = a.id;

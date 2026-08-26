@@ -57,6 +57,8 @@ export class Sim {
     this.events = [];
     this.calls = [];   // distress calls {id, node, t, faction, rolled:Set}
     this.callSeq = 0;
+    this.grenades = []; // live NPC throws awaiting detonation
+    this.grenadeDrops = []; // remaining marine frags, persistent after the body is consumed
     this.floodKnown = false;
     this.firstSweepCleared = false;
     this.burnOrderNode = -1; // last DESIGNATE_BURN target (companion §2.2)
@@ -183,7 +185,7 @@ export class Sim {
     this._medkitPlayers = 0;
 
     // ARMOR PACK POOL (user: armor replaces shields — no regen, packs only;
-    // 3 per player racked in the armory, 4 per player scattered). Identical
+    // 3 per player racked in the armory, 5 per player scattered). Identical
     // machinery to the med packs above: dedicated seed-keyed stream, pools
     // sized for the 4-player cap, issued by slot as players attach.
     {
@@ -206,7 +208,7 @@ export class Sim {
       }
       arng.shuffle(rooms);
       this._armorPoolScatter = [];
-      for (let i = 0; i < Math.min(16, rooms.length); i++) {
+      for (let i = 0; i < Math.min(20, rooms.length); i++) {
         const [x, y] = inRoom(rooms[i]);
         this._armorPoolScatter.push({ node: rooms[i].idx, deck: rooms[i].deck, x, y });
       }
@@ -480,6 +482,26 @@ export class Sim {
     a.armor = this.P.player.armor;
     this.log('combat', 'you strap on fresh armor plates (you)', k.node, k.x, k.y);
     return true;
+  }
+
+  grenadeDropNear(a, preferredId = null) {
+    if (!a || a.dead || a.hp <= 0) return null;
+    const radius = this.P.grenade.pickupRadiusM;
+    for (const drop of this.grenadeDrops) {
+      if (drop.count <= 0 || drop.deck !== a.deck) continue;
+      if (preferredId !== null && drop.id !== preferredId) continue;
+      if (Math.hypot(drop.x - a.x, drop.y - a.y) <= radius) return drop;
+    }
+    return null;
+  }
+
+  claimGrenadeDrop(a, dropId, maxCount) {
+    if (!Number.isSafeInteger(dropId) || !Number.isSafeInteger(maxCount) || maxCount <= 0) return 0;
+    const drop = this.grenadeDropNear(a, dropId);
+    if (!drop) return 0;
+    const taken = Math.min(drop.count, maxCount, this.P.grenade.playerMax);
+    drop.count -= taken;
+    return taken;
   }
 
   // the unused kit within arm's reach of this agent, or null

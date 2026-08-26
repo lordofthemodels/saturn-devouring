@@ -785,7 +785,7 @@ function getTextureTypeByteLength(type) {
   }
   throw new Error(`THREE.TextureUtils: Unknown texture type ${type}.`);
 }
-var REVISION, CullFaceNone, CullFaceBack, CullFaceFront, BasicShadowMap, PCFShadowMap, PCFSoftShadowMap, VSMShadowMap, FrontSide, BackSide, DoubleSide, NoBlending, NormalBlending, AdditiveBlending, SubtractiveBlending, MultiplyBlending, CustomBlending, MaterialBlending, AddEquation, SubtractEquation, ReverseSubtractEquation, MinEquation, MaxEquation, ZeroFactor, OneFactor, SrcColorFactor, OneMinusSrcColorFactor, SrcAlphaFactor, OneMinusSrcAlphaFactor, DstAlphaFactor, OneMinusDstAlphaFactor, DstColorFactor, OneMinusDstColorFactor, SrcAlphaSaturateFactor, NeverDepth, AlwaysDepth, LessDepth, LessEqualDepth, EqualDepth, GreaterEqualDepth, GreaterDepth, NotEqualDepth, MultiplyOperation, MixOperation, AddOperation, NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping, UVMapping, CubeReflectionMapping, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, CubeUVReflectionMapping, RepeatWrapping, ClampToEdgeWrapping, MirroredRepeatWrapping, NearestFilter, NearestMipmapNearestFilter, NearestMipmapLinearFilter, LinearFilter, LinearMipmapNearestFilter, LinearMipmapLinearFilter, LinearMipMapLinearFilter, UnsignedByteType, ByteType, ShortType, UnsignedShortType, IntType, UnsignedIntType, FloatType, HalfFloatType, UnsignedShort4444Type, UnsignedShort5551Type, UnsignedInt248Type, UnsignedInt5999Type, UnsignedInt101111Type, AlphaFormat, RGBFormat, RGBAFormat, DepthFormat, DepthStencilFormat, RedFormat, RedIntegerFormat, RGFormat, RGIntegerFormat, RGBIntegerFormat, RGBAIntegerFormat, RGB_S3TC_DXT1_Format, RGBA_S3TC_DXT1_Format, RGBA_S3TC_DXT3_Format, RGBA_S3TC_DXT5_Format, RGB_PVRTC_4BPPV1_Format, RGB_PVRTC_2BPPV1_Format, RGBA_PVRTC_4BPPV1_Format, RGBA_PVRTC_2BPPV1_Format, RGB_ETC1_Format, RGB_ETC2_Format, RGBA_ETC2_EAC_Format, R11_EAC_Format, SIGNED_R11_EAC_Format, RG11_EAC_Format, SIGNED_RG11_EAC_Format, RGBA_ASTC_4x4_Format, RGBA_ASTC_5x4_Format, RGBA_ASTC_5x5_Format, RGBA_ASTC_6x5_Format, RGBA_ASTC_6x6_Format, RGBA_ASTC_8x5_Format, RGBA_ASTC_8x6_Format, RGBA_ASTC_8x8_Format, RGBA_ASTC_10x5_Format, RGBA_ASTC_10x6_Format, RGBA_ASTC_10x8_Format, RGBA_ASTC_10x10_Format, RGBA_ASTC_12x10_Format, RGBA_ASTC_12x12_Format, RGBA_BPTC_Format, RGB_BPTC_SIGNED_Format, RGB_BPTC_UNSIGNED_Format, RED_RGTC1_Format, SIGNED_RED_RGTC1_Format, RED_GREEN_RGTC2_Format, SIGNED_RED_GREEN_RGTC2_Format, InterpolateDiscrete, InterpolateLinear, InterpolateSmooth, InterpolateBezier, ZeroCurvatureEnding, ZeroSlopeEnding, WrapAroundEnding, TangentSpaceNormalMap, ObjectSpaceNormalMap, NoColorSpace, SRGBColorSpace, LinearSRGBColorSpace, LinearTransfer, SRGBTransfer, NoNormalPacking, NormalRGPacking, NormalGAPacking, ZeroStencilOp, KeepStencilOp, ReplaceStencilOp, IncrementStencilOp, DecrementStencilOp, IncrementWrapStencilOp, DecrementWrapStencilOp, InvertStencilOp, NeverStencilFunc, LessStencilFunc, EqualStencilFunc, LessEqualStencilFunc, GreaterStencilFunc, NotEqualStencilFunc, GreaterEqualStencilFunc, AlwaysStencilFunc, NeverCompare, LessCompare, EqualCompare, LessEqualCompare, GreaterCompare, NotEqualCompare, GreaterEqualCompare, AlwaysCompare, StaticDrawUsage, DynamicDrawUsage, WebGLCoordinateSystem, WebGPUCoordinateSystem, TimestampQuery, Compatibility, _cache, _setConsoleFunction, ReversedDepthFuncs, EventDispatcher, _lut, _seed, DEG2RAD, RAD2DEG, MathUtils, Vector2, Quaternion, Vector3, _vector$c, _quaternion$5, Matrix3, _m3, LINEAR_REC709_TO_XYZ, XYZ_TO_LINEAR_REC709, ColorManagement, _canvas, ImageUtils, _sourceId, Source, _textureId, _tempVec3, Texture, Vector4, RenderTarget, DataArrayTexture, Matrix4, _v1$7, _m1$2, _zero, _one, _x, _y, _z, _matrix$2, _quaternion$4, Euler, Layers, _object3DId, _v1$6, _q1, _m1$1, _target, _position$4, _scale$3, _quaternion$3, _xAxis, _yAxis, _zAxis, _addedEvent, _removedEvent, _childaddedEvent, _childremovedEvent, Object3D, Group, _moveEvent, WebXRController, _colorKeywords, _hslA, _hslB, Color, _color, Fog, Scene, _v0$2, _v1$5, _v2$4, _v3$2, _vab, _vac, _vbc, _vap, _vbp, _vcp, _v40, _v41, _v42, Triangle, Box3, _points, _vector$b, _box$4, _v0$1, _v1$4, _v2$3, _f0, _f1, _f2, _center, _extents, _triangleNormal, _testAxis, _tables, _vector$a, _vector2$1, _id$2, BufferAttribute, Uint16BufferAttribute, Uint32BufferAttribute, Float16BufferAttribute, Float32BufferAttribute, _box$3, _v1$3, _v2$2, Sphere, _id$1, _m1, _obj, _offset, _box$2, _boxMorphTargets, _vector$9, BufferGeometry, InterleavedBuffer, _vector$8, InterleavedBufferAttribute, _materialId, Material, SpriteMaterial, _geometry, _intersectPoint, _worldScale, _mvPosition, _alignedPosition, _rotatedPosition, _viewWorldMatrix, _vA$1, _vB$1, _vC$1, _uvA, _uvB, _uvC, Sprite, _vector$7, _segCenter, _segDir, _diff, _edge1, _edge2, _normal$1, Ray, MeshBasicMaterial, _inverseMatrix$3, _ray$3, _sphere$6, _sphereHitAt, _vA, _vB, _vC, _tempA, _morphA, _intersectionPoint, _intersectionPointWorld, Mesh, DataTexture, InstancedBufferAttribute, _instanceLocalMatrix, _instanceWorldMatrix, _instanceIntersects, _box3, _identity, _mesh$1, _sphere$4, InstancedMesh, _vector1, _vector2, _normalMatrix, Plane, _sphere$3, _defaultSpriteCenter, _vector$6, Frustum, _projScreenMatrix$1, FrustumArray, LineBasicMaterial, _vStart, _vEnd, _inverseMatrix$1, _ray$1, _sphere$1, _intersectPointOnRay, _intersectPointOnSegment, Line, _start, _end, LineSegments, PointsMaterial, FramebufferTexture, CubeTexture, CanvasTexture, DepthTexture, CubeDepthTexture, BoxGeometry, CylinderGeometry, ConeGeometry, Curve, EllipseCurve, ArcCurve, tmp, tmp2, px, py, pz, CatmullRomCurve3, CubicBezierCurve, CubicBezierCurve3, LineCurve, LineCurve3, QuadraticBezierCurve, QuadraticBezierCurve3, SplineCurve, Curves, PlaneGeometry, SphereGeometry, TorusGeometry, TubeGeometry, ShadowMaterial, MeshStandardMaterial, MeshPhysicalMaterial, MeshPhongMaterial, MeshToonMaterial, MeshNormalMaterial, MeshLambertMaterial, MeshMatcapMaterial, LineDashedMaterial, Interpolant, CubicInterpolant, LinearInterpolant, DiscreteInterpolant, BezierInterpolant, KeyframeTrack, BooleanKeyframeTrack, ColorKeyframeTrack, NumberKeyframeTrack, QuaternionLinearInterpolant, QuaternionKeyframeTrack, StringKeyframeTrack, VectorKeyframeTrack, Cache, LoadingManager, DefaultLoadingManager, Loader, _loading, ImageLoader, TextureLoader, Light, HemisphereLight, _projScreenMatrix, _lightPositionWorld, _lookTarget, LightShadow, _position$2, _quaternion$2, _scale$2, Camera, _v3$1, _minTarget, _maxTarget, PerspectiveCamera, SpotLightShadow, SpotLight, PointLightShadow, PointLight, OrthographicCamera, DirectionalLightShadow, DirectionalLight, AmbientLight, RectAreaLight, SphericalHarmonics3, LightProbe, fov, aspect, CubeCamera, ArrayCamera, _RESERVED_CHARS_RE, _reservedRe, _wordChar, _wordCharOrDot, _directoryRe, _nodeRe, _objectRe, _propertyRe, _trackRe, _supportedObjectNames, Composite, PropertyBinding, _controlInterpolantsResultBuffer, InstancedInterleavedBuffer, _matrix, Raycaster, Matrix2;
+var REVISION, CullFaceNone, CullFaceBack, CullFaceFront, BasicShadowMap, PCFShadowMap, PCFSoftShadowMap, VSMShadowMap, FrontSide, BackSide, DoubleSide, NoBlending, NormalBlending, AdditiveBlending, SubtractiveBlending, MultiplyBlending, CustomBlending, MaterialBlending, AddEquation, SubtractEquation, ReverseSubtractEquation, MinEquation, MaxEquation, ZeroFactor, OneFactor, SrcColorFactor, OneMinusSrcColorFactor, SrcAlphaFactor, OneMinusSrcAlphaFactor, DstAlphaFactor, OneMinusDstAlphaFactor, DstColorFactor, OneMinusDstColorFactor, SrcAlphaSaturateFactor, NeverDepth, AlwaysDepth, LessDepth, LessEqualDepth, EqualDepth, GreaterEqualDepth, GreaterDepth, NotEqualDepth, MultiplyOperation, MixOperation, AddOperation, NoToneMapping, LinearToneMapping, ReinhardToneMapping, CineonToneMapping, ACESFilmicToneMapping, AgXToneMapping, NeutralToneMapping, UVMapping, CubeReflectionMapping, CubeRefractionMapping, EquirectangularReflectionMapping, EquirectangularRefractionMapping, CubeUVReflectionMapping, RepeatWrapping, ClampToEdgeWrapping, MirroredRepeatWrapping, NearestFilter, NearestMipmapNearestFilter, NearestMipmapLinearFilter, LinearFilter, LinearMipmapNearestFilter, LinearMipmapLinearFilter, LinearMipMapLinearFilter, UnsignedByteType, ByteType, ShortType, UnsignedShortType, IntType, UnsignedIntType, FloatType, HalfFloatType, UnsignedShort4444Type, UnsignedShort5551Type, UnsignedInt248Type, UnsignedInt5999Type, UnsignedInt101111Type, AlphaFormat, RGBFormat, RGBAFormat, DepthFormat, DepthStencilFormat, RedFormat, RedIntegerFormat, RGFormat, RGIntegerFormat, RGBIntegerFormat, RGBAIntegerFormat, RGB_S3TC_DXT1_Format, RGBA_S3TC_DXT1_Format, RGBA_S3TC_DXT3_Format, RGBA_S3TC_DXT5_Format, RGB_PVRTC_4BPPV1_Format, RGB_PVRTC_2BPPV1_Format, RGBA_PVRTC_4BPPV1_Format, RGBA_PVRTC_2BPPV1_Format, RGB_ETC1_Format, RGB_ETC2_Format, RGBA_ETC2_EAC_Format, R11_EAC_Format, SIGNED_R11_EAC_Format, RG11_EAC_Format, SIGNED_RG11_EAC_Format, RGBA_ASTC_4x4_Format, RGBA_ASTC_5x4_Format, RGBA_ASTC_5x5_Format, RGBA_ASTC_6x5_Format, RGBA_ASTC_6x6_Format, RGBA_ASTC_8x5_Format, RGBA_ASTC_8x6_Format, RGBA_ASTC_8x8_Format, RGBA_ASTC_10x5_Format, RGBA_ASTC_10x6_Format, RGBA_ASTC_10x8_Format, RGBA_ASTC_10x10_Format, RGBA_ASTC_12x10_Format, RGBA_ASTC_12x12_Format, RGBA_BPTC_Format, RGB_BPTC_SIGNED_Format, RGB_BPTC_UNSIGNED_Format, RED_RGTC1_Format, SIGNED_RED_RGTC1_Format, RED_GREEN_RGTC2_Format, SIGNED_RED_GREEN_RGTC2_Format, InterpolateDiscrete, InterpolateLinear, InterpolateSmooth, InterpolateBezier, ZeroCurvatureEnding, ZeroSlopeEnding, WrapAroundEnding, TangentSpaceNormalMap, ObjectSpaceNormalMap, NoColorSpace, SRGBColorSpace, LinearSRGBColorSpace, LinearTransfer, SRGBTransfer, NoNormalPacking, NormalRGPacking, NormalGAPacking, ZeroStencilOp, KeepStencilOp, ReplaceStencilOp, IncrementStencilOp, DecrementStencilOp, IncrementWrapStencilOp, DecrementWrapStencilOp, InvertStencilOp, NeverStencilFunc, LessStencilFunc, EqualStencilFunc, LessEqualStencilFunc, GreaterStencilFunc, NotEqualStencilFunc, GreaterEqualStencilFunc, AlwaysStencilFunc, NeverCompare, LessCompare, EqualCompare, LessEqualCompare, GreaterCompare, NotEqualCompare, GreaterEqualCompare, AlwaysCompare, StaticDrawUsage, DynamicDrawUsage, WebGLCoordinateSystem, WebGPUCoordinateSystem, TimestampQuery, Compatibility, _cache, _setConsoleFunction, ReversedDepthFuncs, EventDispatcher, _lut, _seed, DEG2RAD, RAD2DEG, MathUtils, Vector2, Quaternion, Vector3, _vector$c, _quaternion$5, Matrix3, _m3, LINEAR_REC709_TO_XYZ, XYZ_TO_LINEAR_REC709, ColorManagement, _canvas, ImageUtils, _sourceId, Source, _textureId, _tempVec3, Texture, Vector4, RenderTarget, DataArrayTexture, Matrix4, _v1$7, _m1$2, _zero, _one, _x, _y, _z, _matrix$2, _quaternion$4, Euler, Layers, _object3DId, _v1$6, _q1, _m1$1, _target, _position$4, _scale$3, _quaternion$3, _xAxis, _yAxis, _zAxis, _addedEvent, _removedEvent, _childaddedEvent, _childremovedEvent, Object3D, Group, _moveEvent, WebXRController, _colorKeywords, _hslA, _hslB, Color, _color, Fog, Scene, _v0$2, _v1$5, _v2$4, _v3$2, _vab, _vac, _vbc, _vap, _vbp, _vcp, _v40, _v41, _v42, Triangle, Box3, _points, _vector$b, _box$4, _v0$1, _v1$4, _v2$3, _f0, _f1, _f2, _center, _extents, _triangleNormal, _testAxis, _tables, _vector$a, _vector2$1, _id$2, BufferAttribute, Uint16BufferAttribute, Uint32BufferAttribute, Float16BufferAttribute, Float32BufferAttribute, _box$3, _v1$3, _v2$2, Sphere, _id$1, _m1, _obj, _offset, _box$2, _boxMorphTargets, _vector$9, BufferGeometry, InterleavedBuffer, _vector$8, InterleavedBufferAttribute, _materialId, Material, SpriteMaterial, _geometry, _intersectPoint, _worldScale, _mvPosition, _alignedPosition, _rotatedPosition, _viewWorldMatrix, _vA$1, _vB$1, _vC$1, _uvA, _uvB, _uvC, Sprite, _vector$7, _segCenter, _segDir, _diff, _edge1, _edge2, _normal$1, Ray, MeshBasicMaterial, _inverseMatrix$3, _ray$3, _sphere$6, _sphereHitAt, _vA, _vB, _vC, _tempA, _morphA, _intersectionPoint, _intersectionPointWorld, Mesh, DataTexture, InstancedBufferAttribute, _instanceLocalMatrix, _instanceWorldMatrix, _instanceIntersects, _box3, _identity, _mesh$1, _sphere$4, InstancedMesh, _vector1, _vector2, _normalMatrix, Plane, _sphere$3, _defaultSpriteCenter, _vector$6, Frustum, _projScreenMatrix$1, FrustumArray, LineBasicMaterial, _vStart, _vEnd, _inverseMatrix$1, _ray$1, _sphere$1, _intersectPointOnRay, _intersectPointOnSegment, Line, _start, _end, LineSegments, PointsMaterial, FramebufferTexture, CubeTexture, CanvasTexture, DepthTexture, CubeDepthTexture, BoxGeometry, CylinderGeometry, ConeGeometry, PolyhedronGeometry, DodecahedronGeometry, Curve, EllipseCurve, ArcCurve, tmp, tmp2, px, py, pz, CatmullRomCurve3, CubicBezierCurve, CubicBezierCurve3, LineCurve, LineCurve3, QuadraticBezierCurve, QuadraticBezierCurve3, SplineCurve, Curves, PlaneGeometry, SphereGeometry, TorusGeometry, TubeGeometry, ShadowMaterial, MeshStandardMaterial, MeshPhysicalMaterial, MeshPhongMaterial, MeshToonMaterial, MeshNormalMaterial, MeshLambertMaterial, MeshMatcapMaterial, LineDashedMaterial, Interpolant, CubicInterpolant, LinearInterpolant, DiscreteInterpolant, BezierInterpolant, KeyframeTrack, BooleanKeyframeTrack, ColorKeyframeTrack, NumberKeyframeTrack, QuaternionLinearInterpolant, QuaternionKeyframeTrack, StringKeyframeTrack, VectorKeyframeTrack, Cache, LoadingManager, DefaultLoadingManager, Loader, _loading, ImageLoader, TextureLoader, Light, HemisphereLight, _projScreenMatrix, _lightPositionWorld, _lookTarget, LightShadow, _position$2, _quaternion$2, _scale$2, Camera, _v3$1, _minTarget, _maxTarget, PerspectiveCamera, SpotLightShadow, SpotLight, PointLightShadow, PointLight, OrthographicCamera, DirectionalLightShadow, DirectionalLight, AmbientLight, RectAreaLight, SphericalHarmonics3, LightProbe, fov, aspect, CubeCamera, ArrayCamera, _RESERVED_CHARS_RE, _reservedRe, _wordChar, _wordCharOrDot, _directoryRe, _nodeRe, _objectRe, _propertyRe, _trackRe, _supportedObjectNames, Composite, PropertyBinding, _controlInterpolantsResultBuffer, InstancedInterleavedBuffer, _matrix, Raycaster, Matrix2;
 var init_three_core = __esm({
   "engine/vendor/three.core.js"() {
     /**
@@ -14734,6 +14734,384 @@ var init_three_core = __esm({
        */
       static fromJSON(data) {
         return new _ConeGeometry(data.radius, data.height, data.radialSegments, data.heightSegments, data.openEnded, data.thetaStart, data.thetaLength);
+      }
+    };
+    PolyhedronGeometry = class _PolyhedronGeometry extends BufferGeometry {
+      /**
+       * Constructs a new polyhedron geometry.
+       *
+       * @param {Array<number>} [vertices] - A flat array of vertices describing the base shape.
+       * @param {Array<number>} [indices] - A flat array of indices describing the base shape.
+       * @param {number} [radius=1] - The radius of the shape.
+       * @param {number} [detail=0] - How many levels to subdivide the geometry. The more detail, the smoother the shape.
+       */
+      constructor(vertices = [], indices = [], radius = 1, detail = 0) {
+        super();
+        this.type = "PolyhedronGeometry";
+        this.parameters = {
+          vertices,
+          indices,
+          radius,
+          detail
+        };
+        const vertexBuffer = [];
+        const uvBuffer = [];
+        subdivide(detail);
+        applyRadius(radius);
+        generateUVs();
+        this.setAttribute("position", new Float32BufferAttribute(vertexBuffer, 3));
+        this.setAttribute("normal", new Float32BufferAttribute(vertexBuffer.slice(), 3));
+        this.setAttribute("uv", new Float32BufferAttribute(uvBuffer, 2));
+        if (detail === 0) {
+          this.computeVertexNormals();
+        } else {
+          this.normalizeNormals();
+        }
+        function subdivide(detail2) {
+          const a2 = new Vector3();
+          const b2 = new Vector3();
+          const c2 = new Vector3();
+          for (let i2 = 0; i2 < indices.length; i2 += 3) {
+            getVertexByIndex(indices[i2 + 0], a2);
+            getVertexByIndex(indices[i2 + 1], b2);
+            getVertexByIndex(indices[i2 + 2], c2);
+            subdivideFace(a2, b2, c2, detail2);
+          }
+        }
+        function subdivideFace(a2, b2, c2, detail2) {
+          const cols = detail2 + 1;
+          const v2 = [];
+          for (let i2 = 0; i2 <= cols; i2++) {
+            v2[i2] = [];
+            const aj = a2.clone().lerp(c2, i2 / cols);
+            const bj = b2.clone().lerp(c2, i2 / cols);
+            const rows = cols - i2;
+            for (let j2 = 0; j2 <= rows; j2++) {
+              if (j2 === 0 && i2 === cols) {
+                v2[i2][j2] = aj;
+              } else {
+                v2[i2][j2] = aj.clone().lerp(bj, j2 / rows);
+              }
+            }
+          }
+          for (let i2 = 0; i2 < cols; i2++) {
+            for (let j2 = 0; j2 < 2 * (cols - i2) - 1; j2++) {
+              const k2 = Math.floor(j2 / 2);
+              if (j2 % 2 === 0) {
+                pushVertex(v2[i2][k2 + 1]);
+                pushVertex(v2[i2 + 1][k2]);
+                pushVertex(v2[i2][k2]);
+              } else {
+                pushVertex(v2[i2][k2 + 1]);
+                pushVertex(v2[i2 + 1][k2 + 1]);
+                pushVertex(v2[i2 + 1][k2]);
+              }
+            }
+          }
+        }
+        function applyRadius(radius2) {
+          const vertex = new Vector3();
+          for (let i2 = 0; i2 < vertexBuffer.length; i2 += 3) {
+            vertex.x = vertexBuffer[i2 + 0];
+            vertex.y = vertexBuffer[i2 + 1];
+            vertex.z = vertexBuffer[i2 + 2];
+            vertex.normalize().multiplyScalar(radius2);
+            vertexBuffer[i2 + 0] = vertex.x;
+            vertexBuffer[i2 + 1] = vertex.y;
+            vertexBuffer[i2 + 2] = vertex.z;
+          }
+        }
+        function generateUVs() {
+          const vertex = new Vector3();
+          for (let i2 = 0; i2 < vertexBuffer.length; i2 += 3) {
+            vertex.x = vertexBuffer[i2 + 0];
+            vertex.y = vertexBuffer[i2 + 1];
+            vertex.z = vertexBuffer[i2 + 2];
+            const u2 = azimuth(vertex) / 2 / Math.PI + 0.5;
+            const v2 = inclination(vertex) / Math.PI + 0.5;
+            uvBuffer.push(u2, 1 - v2);
+          }
+          correctUVs();
+          correctSeam();
+        }
+        function correctSeam() {
+          for (let i2 = 0; i2 < uvBuffer.length; i2 += 6) {
+            const x0 = uvBuffer[i2 + 0];
+            const x1 = uvBuffer[i2 + 2];
+            const x2 = uvBuffer[i2 + 4];
+            const max3 = Math.max(x0, x1, x2);
+            const min3 = Math.min(x0, x1, x2);
+            if (max3 > 0.9 && min3 < 0.1) {
+              if (x0 < 0.2) uvBuffer[i2 + 0] += 1;
+              if (x1 < 0.2) uvBuffer[i2 + 2] += 1;
+              if (x2 < 0.2) uvBuffer[i2 + 4] += 1;
+            }
+          }
+        }
+        function pushVertex(vertex) {
+          vertexBuffer.push(vertex.x, vertex.y, vertex.z);
+        }
+        function getVertexByIndex(index, vertex) {
+          const stride = index * 3;
+          vertex.x = vertices[stride + 0];
+          vertex.y = vertices[stride + 1];
+          vertex.z = vertices[stride + 2];
+        }
+        function correctUVs() {
+          const a2 = new Vector3();
+          const b2 = new Vector3();
+          const c2 = new Vector3();
+          const centroid = new Vector3();
+          const uvA = new Vector2();
+          const uvB = new Vector2();
+          const uvC = new Vector2();
+          for (let i2 = 0, j2 = 0; i2 < vertexBuffer.length; i2 += 9, j2 += 6) {
+            a2.set(vertexBuffer[i2 + 0], vertexBuffer[i2 + 1], vertexBuffer[i2 + 2]);
+            b2.set(vertexBuffer[i2 + 3], vertexBuffer[i2 + 4], vertexBuffer[i2 + 5]);
+            c2.set(vertexBuffer[i2 + 6], vertexBuffer[i2 + 7], vertexBuffer[i2 + 8]);
+            uvA.set(uvBuffer[j2 + 0], uvBuffer[j2 + 1]);
+            uvB.set(uvBuffer[j2 + 2], uvBuffer[j2 + 3]);
+            uvC.set(uvBuffer[j2 + 4], uvBuffer[j2 + 5]);
+            centroid.copy(a2).add(b2).add(c2).divideScalar(3);
+            const azi = azimuth(centroid);
+            correctUV(uvA, j2 + 0, a2, azi);
+            correctUV(uvB, j2 + 2, b2, azi);
+            correctUV(uvC, j2 + 4, c2, azi);
+          }
+        }
+        function correctUV(uv3, stride, vector, azimuth2) {
+          if (azimuth2 < 0 && uv3.x === 1) {
+            uvBuffer[stride] = uv3.x - 1;
+          }
+          if (vector.x === 0 && vector.z === 0) {
+            uvBuffer[stride] = azimuth2 / 2 / Math.PI + 0.5;
+          }
+        }
+        function azimuth(vector) {
+          return Math.atan2(vector.z, -vector.x);
+        }
+        function inclination(vector) {
+          return Math.atan2(-vector.y, Math.sqrt(vector.x * vector.x + vector.z * vector.z));
+        }
+      }
+      copy(source) {
+        super.copy(source);
+        this.parameters = Object.assign({}, source.parameters);
+        return this;
+      }
+      /**
+       * Factory method for creating an instance of this class from the given
+       * JSON object.
+       *
+       * @param {Object} data - A JSON object representing the serialized geometry.
+       * @return {PolyhedronGeometry} A new instance.
+       */
+      static fromJSON(data) {
+        return new _PolyhedronGeometry(data.vertices, data.indices, data.radius, data.detail);
+      }
+    };
+    DodecahedronGeometry = class _DodecahedronGeometry extends PolyhedronGeometry {
+      /**
+       * Constructs a new dodecahedron geometry.
+       *
+       * @param {number} [radius=1] - Radius of the dodecahedron.
+       * @param {number} [detail=0] - Setting this to a value greater than `0` adds vertices making it no longer a dodecahedron.
+       */
+      constructor(radius = 1, detail = 0) {
+        const t2 = (1 + Math.sqrt(5)) / 2;
+        const r2 = 1 / t2;
+        const vertices = [
+          // (±1, ±1, ±1)
+          -1,
+          -1,
+          -1,
+          -1,
+          -1,
+          1,
+          -1,
+          1,
+          -1,
+          -1,
+          1,
+          1,
+          1,
+          -1,
+          -1,
+          1,
+          -1,
+          1,
+          1,
+          1,
+          -1,
+          1,
+          1,
+          1,
+          // (0, ±1/φ, ±φ)
+          0,
+          -r2,
+          -t2,
+          0,
+          -r2,
+          t2,
+          0,
+          r2,
+          -t2,
+          0,
+          r2,
+          t2,
+          // (±1/φ, ±φ, 0)
+          -r2,
+          -t2,
+          0,
+          -r2,
+          t2,
+          0,
+          r2,
+          -t2,
+          0,
+          r2,
+          t2,
+          0,
+          // (±φ, 0, ±1/φ)
+          -t2,
+          0,
+          -r2,
+          t2,
+          0,
+          -r2,
+          -t2,
+          0,
+          r2,
+          t2,
+          0,
+          r2
+        ];
+        const indices = [
+          3,
+          11,
+          7,
+          3,
+          7,
+          15,
+          3,
+          15,
+          13,
+          7,
+          19,
+          17,
+          7,
+          17,
+          6,
+          7,
+          6,
+          15,
+          17,
+          4,
+          8,
+          17,
+          8,
+          10,
+          17,
+          10,
+          6,
+          8,
+          0,
+          16,
+          8,
+          16,
+          2,
+          8,
+          2,
+          10,
+          0,
+          12,
+          1,
+          0,
+          1,
+          18,
+          0,
+          18,
+          16,
+          6,
+          10,
+          2,
+          6,
+          2,
+          13,
+          6,
+          13,
+          15,
+          2,
+          16,
+          18,
+          2,
+          18,
+          3,
+          2,
+          3,
+          13,
+          18,
+          1,
+          9,
+          18,
+          9,
+          11,
+          18,
+          11,
+          3,
+          4,
+          14,
+          12,
+          4,
+          12,
+          0,
+          4,
+          0,
+          8,
+          11,
+          9,
+          5,
+          11,
+          5,
+          19,
+          11,
+          19,
+          7,
+          19,
+          5,
+          14,
+          19,
+          14,
+          4,
+          19,
+          4,
+          17,
+          1,
+          12,
+          14,
+          1,
+          14,
+          5,
+          1,
+          5,
+          9
+        ];
+        super(vertices, indices, radius, detail);
+        this.type = "DodecahedronGeometry";
+        this.parameters = {
+          radius,
+          detail
+        };
+      }
+      /**
+       * Factory method for creating an instance of this class from the given
+       * JSON object.
+       *
+       * @param {Object} data - A JSON object representing the serialized geometry.
+       * @return {DodecahedronGeometry} A new instance.
+       */
+      static fromJSON(data) {
+        return new _DodecahedronGeometry(data.radius, data.detail);
       }
     };
     Curve = class {
@@ -68529,13 +68907,13 @@ function validGamePacket(packet) {
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 13;
+    PROTOCOL_VERSION = 14;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
     SAFE_CODE = /^[a-z0-9][a-z0-9-]{5,47}$/;
     PUBLIC_LOBBY = /^lobby-[a-z0-9]{12,48}$/;
-    GAME_KINDS = /* @__PURE__ */ new Set(["election", "state", "hit", "explosion", "shot", "snapshot", "medkit", "armorpack"]);
+    GAME_KINDS = /* @__PURE__ */ new Set(["election", "state", "hit", "explosion", "shot", "snapshot", "medkit", "armorpack", "grenadepickup"]);
     bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     hexToBytes = (hex) => Uint8Array.from(hex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
   }
@@ -68848,7 +69226,7 @@ var init_params = __esm({
       // used on the spot with E, restores armor to full.
       armorpacks: {
         perPlayerArmory: 3,
-        perPlayerScatter: 4,
+        perPlayerScatter: 5,
         useRadiusM: 2
       },
       morale: {
@@ -68866,6 +69244,8 @@ var init_params = __esm({
       // feet, and never where a friendly is standing.
       grenade: {
         perMarine: 2,
+        pickupRadiusM: 2.2,
+        playerMax: 12,
         minTargets: 3,
         // not worth a frag for one form
         rangeM: 20,
@@ -74179,6 +74559,16 @@ function humanDeathToCorpse(sim2, a2) {
     corpse.hadFlamer = true;
     corpse.flamerFuel = a2.fuel;
   }
+  if (a2.faction === FACTION.MARINE && a2.frags > 0) {
+    sim2.grenadeDrops.push({
+      id: corpse.id,
+      node: corpse.node,
+      deck: corpse.deck,
+      x: corpse.x,
+      y: corpse.y,
+      count: a2.frags
+    });
+  }
   sim2.spawn(corpse);
   if (a2.isPlayer) {
     corpse.playerSourceId = a2.id;
@@ -74555,6 +74945,8 @@ var init_sim = __esm({
         this.events = [];
         this.calls = [];
         this.callSeq = 0;
+        this.grenades = [];
+        this.grenadeDrops = [];
         this.floodKnown = false;
         this.firstSweepCleared = false;
         this.burnOrderNode = -1;
@@ -74679,7 +75071,7 @@ var init_sim = __esm({
           }
           arng.shuffle(rooms);
           this._armorPoolScatter = [];
-          for (let i2 = 0; i2 < Math.min(16, rooms.length); i2++) {
+          for (let i2 = 0; i2 < Math.min(20, rooms.length); i2++) {
             const [x2, y2] = inRoom(rooms[i2]);
             this._armorPoolScatter.push({ node: rooms[i2].idx, deck: rooms[i2].deck, x: x2, y: y2 });
           }
@@ -74942,6 +75334,24 @@ var init_sim = __esm({
         a2.armor = this.P.player.armor;
         this.log("combat", "you strap on fresh armor plates (you)", k2.node, k2.x, k2.y);
         return true;
+      }
+      grenadeDropNear(a2, preferredId = null) {
+        if (!a2 || a2.dead || a2.hp <= 0) return null;
+        const radius = this.P.grenade.pickupRadiusM;
+        for (const drop of this.grenadeDrops) {
+          if (drop.count <= 0 || drop.deck !== a2.deck) continue;
+          if (preferredId !== null && drop.id !== preferredId) continue;
+          if (Math.hypot(drop.x - a2.x, drop.y - a2.y) <= radius) return drop;
+        }
+        return null;
+      }
+      claimGrenadeDrop(a2, dropId, maxCount) {
+        if (!Number.isSafeInteger(dropId) || !Number.isSafeInteger(maxCount) || maxCount <= 0) return 0;
+        const drop = this.grenadeDropNear(a2, dropId);
+        if (!drop) return 0;
+        const taken = Math.min(drop.count, maxCount, this.P.grenade.playerMax);
+        drop.count -= taken;
+        return taken;
       }
       // the unused kit within arm's reach of this agent, or null
       medkitNear(a2) {
@@ -82801,7 +83211,7 @@ var init_player = __esm({
         let interactionConsumed = false;
         if (wantInteract && !this._eLatch) {
           this._eLatch = true;
-          interactionConsumed = !!this.onFlamerTaken?.() || !!this.onMedkitUsed?.() || !!this.onArmorUsed?.();
+          interactionConsumed = !!this.onFlamerTaken?.() || !!this.onMedkitUsed?.() || !!this.onArmorUsed?.() || !!this.onGrenadesTaken?.();
           if (!interactionConsumed) {
             const src = this.ammoSource();
             if (src && this.onAmmoTaken) {
@@ -83038,6 +83448,10 @@ var init_player = __esm({
       armorSource() {
         if (this.dead || (this.agent.armor ?? 0) >= this.sim.P.player.armor) return null;
         return this.sim.armorPackNear(this.agent);
+      }
+      grenadeSource(have, capacity) {
+        if (this.dead || have >= capacity) return null;
+        return this.sim.grenadeDropNear(this.agent);
       }
       // THE FLAMETHROWER, separately (user). Kept apart from ammoSource so the two
       // never mask each other: a body lying on the armory deck holds a rifle AND
@@ -91268,6 +91682,14 @@ function createGameSync({
         const used = new Set(packet.world.armorpacks.filter((id) => Number.isSafeInteger(id)));
         for (const pack2 of sim2.armorPacks) pack2.used = used.has(pack2.id);
       }
+      if (Array.isArray(packet.world.grenadedrops) && packet.world.grenadedrops.length <= 256) {
+        sim2.grenadeDrops = packet.world.grenadedrops.flatMap((row) => {
+          if (!Array.isArray(row) || row.length !== 6 || !packedIntegers(row)) return [];
+          const [id, node, deck, x2, y2, count] = row;
+          if (id <= 0 || node < 0 || node >= sim2.graph.n || deck < 1 || deck > 5 || Math.abs(x2) > SIM_BOUND * WIRE_SCALE || Math.abs(y2) > SIM_BOUND * WIRE_SCALE || count <= 0 || count > sim2.P.grenade.playerMax) return [];
+          return [{ id, node, deck, x: unpack(x2), y: unpack(y2), count }];
+        });
+      }
       if (packet.world.stats && typeof packet.world.stats === "object") {
         for (const key of Object.keys(sim2.stats)) {
           if (Number.isFinite(packet.world.stats[key])) sim2.stats[key] = packet.world.stats[key];
@@ -91351,6 +91773,10 @@ function createGameSync({
     } else if (packet.kind === "armorpack") {
       const sender = playerAgents.get(packet.from);
       if (sender) sim2.playerUseArmorPack(sender);
+    } else if (packet.kind === "grenadepickup") {
+      const sender = playerAgents.get(packet.from);
+      if (!sender || !Number.isSafeInteger(packet.dropId) || packet.dropId <= 0 || !Number.isSafeInteger(packet.count) || packet.count <= 0 || packet.count > sim2.P.grenade.playerMax) return;
+      sim2.claimGrenadeDrop(sender, packet.dropId, packet.count);
     } else if (packet.kind === "explosion") {
       const values = [packet.deck, packet.x, packet.y, packet.radius, packet.damage];
       if (!packedIntegers(values) || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5 || Math.abs(packet.x) > SIM_BOUND * WIRE_SCALE || Math.abs(packet.y) > SIM_BOUND * WIRE_SCALE) return;
@@ -91383,6 +91809,9 @@ function createGameSync({
     },
     armorpack() {
       send("armorpack", {});
+    },
+    grenadePickup(dropId, count) {
+      send("grenadepickup", { dropId, count });
     },
     explosion(deck, x2, y2, radius, damage) {
       send("explosion", { deck, x: pack(x2), y: pack(y2), radius: pack(radius), damage: pack(damage) });
@@ -91457,6 +91886,7 @@ function createGameSync({
               // use is confirmed (or reverted) by the next full snapshot
               medkits: sim2.medkits.filter((kit) => kit.used).map((kit) => kit.id),
               armorpacks: sim2.armorPacks.filter((pack2) => pack2.used).map((pack2) => pack2.id),
+              grenadedrops: sim2.grenadeDrops.filter((drop) => drop.count > 0).map((drop) => [drop.id, drop.node, drop.deck, pack(drop.x), pack(drop.y), drop.count]),
               stats: { ...sim2.stats }
             } } : {}
           });
@@ -91494,7 +91924,7 @@ var init_game_sync = __esm({
     LAG_SLACK_M = 2.2;
     MELEE_SLACK_M = 3.5;
     WIRE_SCALE = 1e3;
-    ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4 });
+    ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4, grenadepickup: 8 });
     pack = (value) => Math.round(Number(value) * WIRE_SCALE);
     unpack = (value) => value / WIRE_SCALE;
     packedIntegers = (values) => values.every(Number.isSafeInteger);
@@ -91837,6 +92267,36 @@ function updateFlameJets(dtReal) {
     audio.play("flame", null, 1, "flame-player", 900);
   }
   jets.update(dtReal, camera.position.x, camera.position.y, camera.position.z);
+}
+function syncGrenadeDropMeshes() {
+  const live = /* @__PURE__ */ new Set();
+  for (const drop of sim.grenadeDrops) {
+    live.add(drop.id);
+    let group = grenadeDropMeshes.get(drop.id);
+    if (!group) {
+      group = new Group();
+      for (const offset of [-0.08, 0.08]) {
+        const grenade = new Mesh(grenadeDropGeo, grenadeDropMat);
+        grenade.position.set(offset, 0.11, Math.abs(offset) * 0.45);
+        grenade.scale.set(0.8, 1.25, 0.8);
+        group.add(grenade);
+      }
+      scene.add(group);
+      grenadeDropMeshes.set(drop.id, group);
+    }
+    const [wx, wz] = world.simToWorld(drop.x, drop.y, drop.deck);
+    group.position.set(wx, elevOf(drop.deck), wz);
+    group.rotation.y = drop.id * 2.399963 % (Math.PI * 2);
+    group.visible = drop.count > 0;
+    for (let index = 0; index < group.children.length; index++) {
+      group.children[index].visible = index < drop.count;
+    }
+  }
+  for (const [id, group] of grenadeDropMeshes) {
+    if (live.has(id)) continue;
+    scene.remove(group);
+    grenadeDropMeshes.delete(id);
+  }
 }
 function buttStroke01(meleeT, duration) {
   if (meleeT <= 0) return 0;
@@ -92371,7 +92831,7 @@ function giveMagazine() {
 }
 function contextualActionAvailable() {
   if (player.dead) return false;
-  return !!(player.flamerSource(hasFlamer, flamer.frac) || player.medkitSource() || player.armorSource() || player.ammoSource() || world.trunkAt(player.deck, player.x, player.z));
+  return !!(player.flamerSource(hasFlamer, flamer.frac) || player.medkitSource() || player.armorSource() || player.grenadeSource(frags, FRAG.max) || player.ammoSource() || world.trunkAt(player.deck, player.x, player.z));
 }
 function moveOverlayFocus(direction) {
   const controls = [...overlay.querySelectorAll("#victoryCard button")];
@@ -92811,7 +93271,6 @@ function stepFrags(dt) {
       audio.play("boom", { x: p2.x, z: p2.z }, 1.2);
       scene.remove(f2.mesh);
       liveFrags.splice(i2, 1);
-      el("frags").textContent = `${frags} FRAG`;
     }
   }
 }
@@ -93259,7 +93718,6 @@ function frame(now) {
   if (fragPressed) {
     throwFrag();
     fragPressed = false;
-    el("frags").textContent = `${frags} FRAG`;
   }
   stepFrags(dtReal);
   drainNpcBlasts();
@@ -93472,6 +93930,7 @@ function frame(now) {
   }
   for (const m2 of medkitMeshes) m2.mesh.visible = !m2.kit.used;
   for (const m2 of armorPackMeshes) m2.mesh.visible = !m2.pack.used;
+  syncGrenadeDropMeshes();
   shake = Math.max(0, shake - dtReal * 3);
   let nMovers = 0;
   const takeMover = () => doorMovers[nMovers] ?? (doorMovers[nMovers] = { deck: 0, x: 0, z: 0 });
@@ -93524,6 +93983,7 @@ function frame(now) {
   setStyle("armorBar", "width", `${spectating ? 0 : player.armor / 50 * 100}%`);
   setText("hpText", spectating ? "" : `${Math.ceil(player.armor)} | ${hp}`);
   setText("ammo", spectating ? "" : heldIsFlamer ? flamer.empty ? "TANK DRY" : `FUEL ${Math.ceil(flamer.frac * 100)}%` : weapon.reloading ? "RELOADING" : `${weapon.mag} / ${weapon.reserve}`);
+  setText("frags", spectating ? "" : `FRAGS ${frags}`);
   setText("weaponName", spectating ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? inputPrompt(" · Q / WHEEL SWAP", " · Y SWAP") : ""}`);
   {
     const wn = el("weaponName");
@@ -93548,7 +94008,8 @@ function frame(now) {
   }
   rifleMesh.userData.setAmmoDigits?.(weapon.mag);
   const fsrc = player.dead ? null : player.flamerSource(hasFlamer, flamer.frac);
-  const src = fsrc ? null : player.dead ? null : player.ammoSource();
+  const gsrc = fsrc ? null : player.grenadeSource(frags, FRAG.max);
+  const src = fsrc || gsrc ? null : player.dead ? null : player.ammoSource();
   if (swapHintAt && (now - swapHintAt > SWAP_HINT_MS || _swapAt > swapHintAt)) swapHintAt = 0;
   if (!player.dead && swapHintAt) {
     setText("hint", inputPrompt(
@@ -93565,6 +94026,9 @@ function frame(now) {
     setStyle("hint", "display", "block");
   } else if (!player.dead && player.armorSource()) {
     setText("hint", `${inputPrompt("E", "RB")} — strap on armor plates`);
+    setStyle("hint", "display", "block");
+  } else if (gsrc) {
+    setText("hint", `${inputPrompt("E", "RB")} — pick up ${gsrc.count} frag${gsrc.count === 1 ? "" : "s"}`);
     setStyle("hint", "display", "block");
   } else if (src) {
     const use = inputPrompt("E", "RB");
@@ -93720,7 +94184,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, LAUNCH, BASE_POD_COUNT, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, seedFromUrl, seed, coopPlayers, sim, world, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, INTRO_BODY, INTRO_MISSION, INTRO_TOTAL, intro, introText, introMission, introHint, introScroll, introChars, introDone, introGone, INTRO_CPS, _introT0, _introShown, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, doorMovers, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -94235,6 +94699,16 @@ var init_main = __esm({
         sim.log("combat", "you take the mags off the dead");
       }
     };
+    player.onGrenadesTaken = () => {
+      const drop = player.grenadeSource(frags, FRAG.max);
+      if (!drop) return false;
+      const taken = sim.claimGrenadeDrop(player.agent, drop.id, FRAG.max - frags);
+      if (!taken) return false;
+      frags += taken;
+      if (!isSimAuthority()) gameSync?.grenadePickup(drop.id, taken);
+      sim.log("combat", `you recover ${taken} frag${taken === 1 ? "" : "s"} from the fallen (you)`, drop.node, drop.x, drop.y);
+      return true;
+    };
     player.onFlamerTaken = () => {
       const src = player.flamerSource(hasFlamer, flamer.frac);
       if (!src) return false;
@@ -94345,6 +94819,15 @@ var init_main = __esm({
         armorPackMeshes.push({ pack: pack2, mesh: g2 });
       }
     }
+    grenadeDropMeshes = /* @__PURE__ */ new Map();
+    grenadeDropGeo = new DodecahedronGeometry(0.11, 0);
+    grenadeDropMat = new MeshStandardMaterial({
+      color: 6648653,
+      roughness: 0.48,
+      metalness: 0.55,
+      emissive: 2371608,
+      emissiveIntensity: 0.8
+    });
     rifleMesh = buildRifleViewmodel();
     viewmodel = new Group();
     viewmodel.add(rifleMesh);
