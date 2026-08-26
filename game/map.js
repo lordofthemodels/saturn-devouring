@@ -41,6 +41,7 @@ export class MarineMap {
     // long stretches, and while it is down that deck reports nothing at all.
     this._link = new Map();      // deck -> { up, until }
     this._pd = -1;               // player's deck, stamped each draw
+    this._viewDeck = null;       // null follows the player; 1–5 is a manual map selection
     this._panelAt = 0;
     this.marines0 = sim.agents.filter((a) => a.faction === FACTION.MARINE).length;
     this.s = 1;
@@ -77,6 +78,11 @@ export class MarineMap {
   linkUp(deck) { return deck === this._pd || (this._link.get(deck)?.up ?? true); }
   // seconds until the current state flips — drives the countdown on the band
   linkFor(deck) { return Math.max(0, (this._link.get(deck)?.until ?? 0) - this.sim.t); }
+  followPlayer() { this._viewDeck = null; }
+  selectedDeck() { return this._viewDeck ?? this._pd; }
+  selectDeck(deck) {
+    this._viewDeck = Math.max(1, Math.min(5, deck));
+  }
 
   observe() {
     const { sim } = this;
@@ -169,13 +175,32 @@ export class MarineMap {
     if (canvas.width !== Math.round(cw * dpr)) canvas.width = Math.round(cw * dpr);
     if (canvas.height !== Math.round(ch * dpr)) canvas.height = Math.round(ch * dpr);
     const W = canvas.width, H = canvas.height;
-    // the roster panel owns a left gutter — the plan centers in what's left
-    const gutter = 280 * dpr;
-    const s = Math.min((W - gutter) / (g.width + 6), H / (g.height + 6)) * 0.98;
+    // The roster owns a gutter only when there is genuinely room for it. In a
+    // narrow/in-app viewport the old fixed 280 px gutter plus the activity
+    // log reservation left a postage-stamp plan; CSS hides the roster at the
+    // same breakpoint and the schematic receives the whole screen.
+    const compact = cw < 900;
+    const gutter = compact ? 0 : 280 * dpr;
+    const top = 28 * dpr, bottom = 32 * dpr;
+    const plotW = W - gutter, plotH = H - top - bottom;
+    // One readable deck beats five illegible thumbnails. The map follows the
+    // player when opened; number keys can inspect any other deck without
+    // shrinking room names or contacts back into noise.
+    this._shownDeck = this._viewDeck ?? this._pd;
+    this.canvas.dataset.deck = String(this._shownDeck);
+    const deckNodes = g.nodes.filter((n) => n.deck === this._shownDeck);
+    const x0 = Math.min(...deckNodes.map((n) => n.x - n.w / 2)) - 3;
+    const x1 = Math.max(...deckNodes.map((n) => n.x + n.w / 2)) + 3;
+    const y0 = Math.min(...deckNodes.map((n) => n.y - n.d / 2)) - 4;
+    const y1 = Math.max(...deckNodes.map((n) => n.y + n.d / 2)) + 3;
+    this._view = { x0, x1, y0, y1 };
+    const s = Math.min(plotW / (x1 - x0), plotH / (y1 - y0)) * 0.98;
     this.s = s;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, W, H);
-    ctx.setTransform(s, 0, 0, s, gutter + (W - gutter) / 2 - (g.width / 2) * s, H / 2 - (g.height / 2) * s);
+    ctx.setTransform(s, 0, 0, s,
+      gutter + plotW / 2 - ((x0 + x1) / 2) * s,
+      top + plotH / 2 - ((y0 + y1) / 2) * s);
 
     this._deckBands(g);
     this._rooms(g);
@@ -192,8 +217,10 @@ export class MarineMap {
     const { ctx } = this;
     ctx.font = this._font(11);
     for (let d = 1; d <= 5; d++) {
+      if (d !== this._shownDeck) continue;
       const band = g.deckBands[d - 1];
-      ctx.fillStyle = d % 2 ? '#0d1117' : '#0b0e14';
+      const current = d === this._pd;
+      ctx.fillStyle = current ? '#111a27' : d % 2 ? '#0d1117' : '#0b0e14';
       ctx.fillRect(0, band.y0, g.width, band.y1 - band.y0);
       const deckNodes = g.nodes.filter((n) => n.deck === d);
       if (deckNodes.length) {
@@ -201,9 +228,9 @@ export class MarineMap {
         const x1 = Math.max(...deckNodes.map((n) => n.x + n.w / 2)) + 1.6;
         const y0 = Math.min(...deckNodes.map((n) => n.y - n.d / 2)) - 1.6;
         const y1 = Math.max(...deckNodes.map((n) => n.y + n.d / 2)) + 1.6;
-        ctx.fillStyle = '#11161f';
-        ctx.strokeStyle = '#232d40';
-        ctx.lineWidth = this._lw(1.4);
+        ctx.fillStyle = current ? '#151f2d' : '#11161f';
+        ctx.strokeStyle = current ? '#526b8e' : '#2c3850';
+        ctx.lineWidth = this._lw(current ? 2 : 1.4);
         ctx.beginPath();
         ctx.roundRect(x0, y0, x1 - x0, y1 - y0, 3);
         ctx.fill(); ctx.stroke();
@@ -227,8 +254,10 @@ export class MarineMap {
         }
         ctx.restore();
       }
-      ctx.fillStyle = down ? '#7a5a2c' : '#38445a';
-      ctx.fillText(`DECK ${d} — ${['COMMAND', 'HABITATION', 'OPERATIONS', 'ENGINEERING', 'FLIGHT'][d - 1]}`, 3, band.y0 + this._lw(13));
+      ctx.fillStyle = down ? '#9a7135' : current ? '#b9cce8' : '#60708a';
+      ctx.font = this._font(current ? 12 : 11);
+      const labelX = this._view.x0 + 1;
+      ctx.fillText(`DECK ${d} — ${['COMMAND', 'HABITATION', 'OPERATIONS', 'ENGINEERING', 'FLIGHT'][d - 1]}`, labelX, band.y0 + this._lw(13));
       if (down) {
         // no countdown (user: a timer on a lost link makes no sense) — the
         // uncertainty IS the message; the retry clock still runs underneath
@@ -236,18 +265,23 @@ export class MarineMap {
         ctx.fillText('◆ LINK LOST — RETRYING', g.width - this._lw(150), band.y0 + this._lw(13));
       }
     }
-    ctx.fillStyle = '#232b38';
-    ctx.fillText('BOW ◄', 3, g.deckBands[0].y0 - this._lw(4));
-    ctx.fillText('► STERN', g.width - this._lw(58), g.deckBands[0].y0 - this._lw(4));
+    ctx.fillStyle = '#526178';
+    const firstBand = g.deckBands[this._shownDeck - 1];
+    const bowX = this._view.x0 + 1;
+    const sternX = this._view.x1 - this._lw(58);
+    ctx.fillText('BOW ◄', bowX, firstBand.y0 - this._lw(4));
+    ctx.fillText('► STERN', sternX, firstBand.y0 - this._lw(4));
   }
 
   _rooms(g) {
     const { ctx, sim } = this;
     for (const n of g.nodes) {
+      if (n.deck !== this._shownDeck) continue;
       const seen = this.lastSeenT[n.idx] >= 0;
       const live = this.liveObs[n.idx] === 1;
       const age = seen ? sim.t - this.lastSeenT[n.idx] : Infinity;
       const conf = live ? 1 : Math.max(0.3, 1 - age / STALE_FADE_SEC);
+      const current = n.deck === this._pd;
       const x0 = n.x - n.w / 2, y0 = n.y - n.d / 2;
       // schematic base: unexplored rooms are just blueprint outlines
       ctx.fillStyle = !seen ? '#0a0d12' : live ? '#1a2231' : '#12161f';
@@ -269,19 +303,22 @@ export class MarineMap {
           ctx.fillRect(x0, y0, n.w, n.d);
         }
       }
-      ctx.strokeStyle = live ? '#4d6f9f' : seen ? '#2a3547' : '#1b2330';
-      ctx.lineWidth = this._lw(live ? 1.6 : 1);
+      ctx.strokeStyle = live ? '#78a7e0' : seen ? '#42536d' : current ? '#34445d' : '#263247';
+      ctx.lineWidth = this._lw(live ? 1.8 : current ? 1.35 : 1);
       ctx.strokeRect(x0, y0, n.w, n.d);
-      // labels: big spaces always (it's the ship's plan); small rooms once
-      // there's anything worth reading there
-      if (n.w >= 15 || live || (seen && (this.seenFlood[n.idx] > 0.05 || this.seenDark[n.idx]))) {
-        ctx.fillStyle = seen ? '#7e90aa' : '#3a4557';
-        ctx.font = this._font(10);
-        ctx.textAlign = 'center';
-        const above = n.type === 'corridor' ? n.y + this._lw(3) : y0 - this._lw(3);
-        ctx.fillText(n.name, n.x, above);
-        ctx.textAlign = 'left';
-      }
+      // Every compartment on the selected deck is named: this is first and
+      // foremost a navigation instrument. A dark keyline keeps text legible
+      // over contacts, darkness and spore overlays.
+      ctx.fillStyle = current ? '#dce9fa' : seen ? '#a6b7cf' : '#64748b';
+      ctx.font = this._font(current ? 10.5 : 10);
+      ctx.textAlign = 'center';
+      const above = n.type === 'corridor' ? n.y + this._lw(3) : y0 - this._lw(3);
+      ctx.strokeStyle = 'rgba(2, 4, 8, 0.96)';
+      ctx.lineWidth = this._lw(3);
+      ctx.lineJoin = 'round';
+      ctx.strokeText(n.name, n.x, above);
+      ctx.fillText(n.name, n.x, above);
+      ctx.textAlign = 'left';
       // bodies reported in the room
       const corpses = live ? this._corpseScratch[n.idx] : seen ? this.seenCorpses[n.idx] : 0;
       if (corpses > 0) {
