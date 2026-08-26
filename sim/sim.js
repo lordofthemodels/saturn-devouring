@@ -7,7 +7,7 @@ import { cloneParams } from '../shared/params.js';
 import { AgentBuffer, FACTION, FLAG, CLIP } from '../shared/agentBuffer.js';
 import { clearHeightOf, CLEAR_H } from '../shared/geometry.js';
 import { initRun, STATE, makeAgent } from './init.js';
-import { updateHumansTick, strategicSquads, assignFirstSweep } from './humans.js';
+import { updateHumansTick, strategicSquads, assignFirstSweep, marineThrowFragAt } from './humans.js';
 import { Hive, TASK, W_FLOOD, W_HUMAN, isActiveFloodForm, isLivingHuman } from './hive.js';
 import { updateFloodTick } from './floodExec.js';
 import { resolveCombat, humanDeathToCorpse, hurtFloodForm } from './combat.js';
@@ -98,6 +98,12 @@ export class Sim {
     this.screamTick = new Int32Array(graph.n).fill(-9999);
     this.sweptAt = new Float64Array(graph.n).fill(-9999); // last time a marine cleared a room
     this._panicked = new Uint8Array(graph.n);
+    // MARINE MOTION RADAR: one aggregate pass over active Flood per sim tick,
+    // then every squad reads these fixed-size room arrays. This is deliberately
+    // not a marine×enemy proximity query; late-game swarm size barely matters.
+    this.marineMotionCount = new Uint16Array(graph.n);
+    this.marineMotionLastCount = new Uint16Array(graph.n);
+    this.marineMotionTick = new Int32Array(graph.n).fill(-9999);
 
     // FIRES (user rule): the breach burns, and the ship's BROKEN (jammed)
     // doors are the other fire sites — a broken door IS the damage showing.
@@ -219,6 +225,7 @@ export class Sim {
     this.hive = new Hive(this);
     assignFirstSweep(this);
     this._refreshOccupancy();
+    this._refreshMarineMotion();
     this._computeInfluence();
     const marineCount = agents.filter((a) => a.faction === FACTION.MARINE).length;
     const civilianCount = agents.filter((a) => a.faction === FACTION.CIVILIAN).length;
@@ -266,6 +273,42 @@ export class Sim {
       if (!this.senseCache[s.upper].includes(s.lower)) this.senseCache[s.upper].push(s.lower);
       if (!this.senseCache[s.lower].includes(s.upper)) this.senseCache[s.lower].push(s.upper);
     }
+  }
+
+  // Same purposeful-motion definition as AgentBuffer.MOVING, evaluated once
+  // at room granularity. The one-tick steer grace bridges the ordering seam:
+  // Flood steering happens after marine planning, but its movement was real
+  // and remains a valid radar paint on the next 15 Hz tick.
+  _refreshMarineMotion() {
+    const count = this.marineMotionCount;
+    count.fill(0);
+    for (const a of this.agents) {
+      if (a.dead || a.hp <= 0 || a.downed) continue;
+      if (a.faction !== FACTION.INFECTION && a.faction !== FACTION.COMBAT
+        && a.faction !== FACTION.CARRIER) continue;
+      const moving = a.move || a.leaping || (a.steeredTick ?? -9999) >= this.tickCount - 1
+        || a.transformingUntil !== undefined
+        || (a.state === STATE.GRABBING && a.grabTimer > 0);
+      if (!moving) continue;
+      const node = a.pnode ?? a.node;
+      count[node]++;
+    }
+    for (let node = 0; node < this.graph.n; node++) {
+      if (count[node] === 0) continue;
+      this.marineMotionLastCount[node] = count[node];
+      this.marineMotionTick[node] = this.tickCount;
+    }
+  }
+
+  marineMotionAt(node) {
+    const memoryTicks = Math.ceil(this.P.marineDoctrine.radarMemorySec * this.P.sim.tickHz);
+    const tick = this.marineMotionTick[node];
+    return {
+      fresh: this.tickCount - tick <= memoryTicks,
+      current: this.marineMotionCount[node],
+      count: this.marineMotionLastCount[node],
+      tick,
+    };
   }
 
   visibleNodes(node) { return this.visCache[node]; }
@@ -908,6 +951,7 @@ export class Sim {
     this.graph.sweepBurns(this.t);
 
     this._refreshOccupancy();
+    this._refreshMarineMotion();
 
     // apply commander commands scheduled for this tick, BEFORE any AI runs
     // (companion spec §0). Deterministic order; single producer in the POC.
@@ -1530,6 +1574,7 @@ export class Sim {
         }
       }
       if (a.move) {
+        if (this._holdMarineAtRadarDoor(a, dt) || this._holdMarineAtHotLadder(a, dt)) continue;
         a.move.t += dt / a.move.travelSec;
         const from = g.node(a.move.from), to = g.node(a.move.to);
         const k = Math.min(1, a.move.t);
@@ -2006,6 +2051,82 @@ export class Sim {
         this._parkDrift(a, dt);
       }
     }
+  }
+
+  // A radar check approaches an ordinary doorway but does not blindly cross
+  // it while the paint is live. Stopping just inside the origin room puts the
+  // marine on the real sightline, where the normal LOS/fire logic takes over;
+  // if nothing appears and the paint fades, the same leg continues through.
+  _holdMarineAtRadarDoor(a, dt) {
+    if (a.faction !== FACTION.MARINE || !a.move || a.move.layer !== 'std') return false;
+    const link = a.move.link;
+    const from = this.graph.node(a.move.from), to = this.graph.node(a.move.to);
+    if (!link.door || from.deck !== to.deck) return false;
+    const squad = this.squads[a.squad];
+    if (squad?.objective?.kind !== 'motion' || squad.objective.hold
+      || squad.objective.contactNode !== to.idx) return false;
+    if (!this.marineMotionAt(to.idx).fresh) return false;
+
+    const fwd = a.move.from === link.a;
+    const flipT = a.move.flipT2 ?? (fwd ? link.flipT : 1 - link.flipT);
+    const sx = a.move.sx ?? from.x, sy = a.move.sy ?? from.y;
+    const approachM = Math.hypot(link.door.x - sx, link.door.y - sy);
+    const stopT = flipT * Math.max(0, 1 - 0.45 / Math.max(0.45, approachM));
+    if (a.move.t + dt / a.move.travelSec < stopT) return false;
+
+    a.move.t = stopT;
+    const k = flipT > 1e-6 ? stopT / flipT : 1;
+    a.x = sx + (link.door.x - sx) * k;
+    a.y = sy + (link.door.y - sy) * k;
+    a.move.hidden = false;
+    a.followSpeed = 0;
+    a.heading = Math.atan2(link.door.y - sy, link.door.x - sx);
+    a.animTime += dt;
+    return true;
+  }
+
+  // Stop a marine AT the ladder mouth, not back at an abstract room centre.
+  // Downward crossings can be opened with one deliberate frag when the paint
+  // is dense enough; upward crossings and uncertain/sparse contacts wait.
+  // The reservation makes the whole squad queue behind the same decision.
+  _holdMarineAtHotLadder(a, dt) {
+    if (a.faction !== FACTION.MARINE || !a.move || a.move.layer !== 'std') return false;
+    const link = a.move.link;
+    const from = this.graph.node(a.move.from), to = this.graph.node(a.move.to);
+    if (link.type !== 'ladder' || from.deck === to.deck) return false;
+    const appT = a.move.appT ?? 0;
+    if (a.move.t + dt / a.move.travelSec < appT) return false;
+
+    const squad = this.squads[a.squad];
+    const linkKey = link.i;
+    const blastHold = squad?.ladderFragLink === linkKey
+      && squad.ladderFragNode === to.idx
+      && this.t < (squad.ladderFragUntil ?? -1);
+    const contact = this.marineMotionAt(to.idx);
+    const risky = contact.fresh && contact.count >= this.P.grenade.minTargets;
+    if (!blastHold && !risky) return false;
+
+    // Smaller deck numbers are physically higher. Grenades can be dropped
+    // into a lower landing; an upward throw is not invented for convenience.
+    const descending = to.deck > from.deck;
+    if (!blastHold && descending && contact.current >= this.P.grenade.minTargets) {
+      const farPad = (link.a === to.idx ? link.padA : link.padB) ?? { x: to.x, y: to.y };
+      if (marineThrowFragAt(this, a, to.idx, farPad.x, farPad.y, 1, true) && squad) {
+        squad.ladderFragLink = linkKey;
+        squad.ladderFragNode = to.idx;
+        squad.ladderFragUntil = this.t + this.P.grenade.fuseSec
+          + this.P.marineDoctrine.ladderBlastSettleSec;
+      }
+    }
+
+    a.move.t = appT;
+    const pad = (link.a === from.idx ? link.padA : link.padB) ?? { x: from.x, y: from.y };
+    a.x = pad.x; a.y = pad.y;
+    a.move.hidden = false;
+    a.followSpeed = 0;
+    a.heading = Math.atan2(to.y - from.y, to.x - from.x);
+    a.animTime += dt;
+    return true;
   }
 
   // Nearest LIVE body sharing this room, inside `range` metres. This is the

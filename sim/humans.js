@@ -290,11 +290,39 @@ function updateArmed(sim, a, dt) {
 // where a friendly is standing. The throw is a sim event with a real fuse;
 // sim._grenadeTick detonates it through the same explodeAt the player's frag
 // uses, so the blast damages Flood, crew and corpses by the same rules.
+export function marineThrowFragAt(sim, a, node, x, y, chance = 1, targetRoomOnly = false) {
+  const G = sim.P.grenade;
+  if (a.frags <= 0 || a.state === STATE.DEAD || a.hp <= 0) return false;
+  if (sim.t < (a.nextFragAt ?? 0)) return false;
+  const target = sim.graph.node(node);
+  // Blasts are room-contained, so only friendlies physically in the target
+  // compartment can be endangered. This also makes a downward ladder throw
+  // safe for the squad waiting one deck above without special-case geometry.
+  for (const other of sim.agents) {
+    if (other.dead || other.hp <= 0) continue;
+    if (other.faction !== FACTION.CIVILIAN && other.faction !== FACTION.ARMED
+      && other.faction !== FACTION.MARINE) continue;
+    if (targetRoomOnly) {
+      if ((other.pnode ?? other.node) !== node) continue;
+    } else if (other.deck !== target.deck && other.id !== a.id) continue;
+    if (Math.hypot(other.x - x, other.y - y) < G.minSafeM) return false;
+  }
+  if (chance < 1 && !sim.rng.chance(chance)) return false;
+  a.frags--;
+  a.nextFragAt = sim.t + G.cooldownSec;
+  (sim.grenades ??= []).push({
+    at: sim.t + G.fuseSec, deck: target.deck, x, y, by: a.id,
+  });
+  // callsign is a {rank, name} RECORD, not a string — interpolating it raw
+  // printed "[object Object] throws a frag" in the radio log (playtest)
+  sim.log('combat', `${a.callsign ? `${a.callsign.rank} ${a.callsign.name}` : 'a marine'} throws a frag into ${target.name}`, node, x, y);
+  return true;
+}
+
 function maybeThrowFrag(sim, a, dt) {
-  const P = sim.P;
+  const G = sim.P.grenade;
   if (a.frags <= 0 || a.state === STATE.DEAD || a.hp <= 0) return;
   if (sim.t < (a.nextFragAt ?? 0)) return;
-  const G = P.grenade;
   const visible = sim.lineOfSightAgents(a, (o) => !o.downed
     && (o.faction === FACTION.INFECTION || o.faction === FACTION.COMBAT || o.faction === FACTION.CARRIER), G.rangeM);
   let best = null, bestN = G.minTargets - 1;
@@ -308,23 +336,9 @@ function maybeThrowFrag(sim, a, dt) {
   if (!best) return;
   const bx = best.x, by = best.y;
   const bestNode = best.pnode ?? best.node;
-  // never frag yourself or a squadmate: the blast point must clear every
-  // living human by minSafeM (the thrower included)
-  for (const o of sim.agents) {
-    if (o.dead || o.hp <= 0) continue;
-    if (o.faction !== FACTION.CIVILIAN && o.faction !== FACTION.ARMED && o.faction !== FACTION.MARINE) continue;
-    if (o.deck !== best.deck && o.id !== a.id) continue;
-    if (Math.hypot(o.x - bx, o.y - by) < G.minSafeM) return;
-  }
-  if (!sim.rng.chance(G.chancePerSec * dt)) return;
-  a.frags--;
-  a.nextFragAt = sim.t + G.cooldownSec;
-  (sim.grenades ??= []).push({
-    at: sim.t + G.fuseSec, deck: best.deck, x: bx, y: by, by: a.id,
-  });
-  // callsign is a {rank, name} RECORD, not a string — interpolating it raw
-  // printed "[object Object] throws a frag" in the radio log (playtest)
-  sim.log('combat', `${a.callsign ? `${a.callsign.rank} ${a.callsign.name}` : 'a marine'} throws a frag into ${sim.graph.node(bestNode).name}`, bestNode, bx, by);
+  // Safety is checked before the roll inside the helper, preserving both the
+  // original decision order and the deterministic RNG stream.
+  if (dt > 0) marineThrowFragAt(sim, a, bestNode, bx, by, G.chancePerSec * dt);
 }
 
 // --- marines (§5.3) ---
@@ -635,6 +649,11 @@ export function strategicSquads(sim) {
       }
     }
 
+    // Every marine reads the same cheap room paint. It can interrupt routine
+    // sweeping, but not a player order, the crash response, a distress call,
+    // or the last stand. The interrupted task resumes after the check.
+    if (applyMotionRadar(sim, squad, leader, members)) continue;
+
     // make the crash-response convergence visible in the log
     if (squad.objective?.kind === 'breach' && !squad.reachedBreach && leader.node === sim.graph.breachNode) {
       squad.reachedBreach = true;
@@ -720,6 +739,9 @@ function patrolPlan(sim, squad, leader) {
       sim.log('radio', `patrol ${squad.patrolNo} responding to distress in ${sim.graph.node(call.node).name}`);
     }
   }
+  const members = squad.members.map((id) => sim.byId.get(id))
+    .filter((member) => member && !member.dead && member.hp > 0);
+  if (applyMotionRadar(sim, squad, leader, members)) return;
   if (squad.objective?.kind === 'distress') {
     const objNode = squad.objective.node;
     const clear = sim.visibleNodes(objNode).every((n) => sim.floodStrengthAt(n) === 0);
@@ -731,6 +753,54 @@ function patrolPlan(sim, squad, leader) {
     squad.leg = (squad.leg + 1) % squad.route.length;
   }
   squad.objective = { kind: 'patrol', node: squad.route[squad.leg] };
+}
+
+// Marine radar is a SQUAD decision over the Sim's once-per-tick room summary,
+// never a per-marine scan. It therefore adds a few graph-neighbour reads per
+// strategic round, independent of how many Flood forms exist.
+function applyMotionRadar(sim, squad, leader, members) {
+  if (squad.objective?.kind === 'motion') {
+    const contact = sim.marineMotionAt(squad.objective.contactNode);
+    const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
+    if (contact.fresh && (!arrived || squad.objective.hold)) return true;
+    squad.objective = squad.radarResume ?? null;
+    squad.radarResume = null;
+    squad.radarSeenTick = undefined;
+    squad.radarCooldownUntil = sim.t + sim.P.marineDoctrine.radarCooldownSec;
+    return false;
+  }
+  const kind = squad.objective?.kind;
+  if (kind && kind !== 'hold' && kind !== 'sweep' && kind !== 'patrol') return false;
+  if (sim.t < (squad.radarCooldownUntil ?? -1)) return false;
+
+  let best = null;
+  for (const { to } of sim.graph.neighbors(leader.pnode ?? leader.node, ['std'], humanPass)) {
+    const contact = sim.marineMotionAt(to);
+    if (!contact.fresh) continue;
+    // Prefer the stronger paint; keep the current target on a tie so two
+    // equally busy doorways cannot make a squad flip-flop every round.
+    const score = contact.count;
+    if (!best || score > best.score || (score === best.score && to < best.node)) {
+      best = { node: to, score, tick: contact.tick };
+    }
+  }
+  if (best) {
+    squad.radarResume = squad.objective;
+    const hold = best.score > members.length;
+    squad.objective = {
+      kind: 'motion', node: hold ? (leader.pnode ?? leader.node) : best.node,
+      contactNode: best.node, hold,
+    };
+    // Finish the doorway already underfoot, but discard every stale leg
+    // after it so the squad turns toward the contact immediately on arrival.
+    for (const member of members) member.path = [];
+    sim.log('radio', hold
+      ? `squad ${squad.id + 1} picks up heavy movement in ${sim.graph.node(best.node).name} — holding the threshold`
+      : `squad ${squad.id + 1} picks up movement in ${sim.graph.node(best.node).name} — checking it out`, best.node);
+    squad.radarSeenTick = best.tick;
+    return true;
+  }
+  return false;
 }
 
 // Thinned-out squads stick together (user note): survivors of a broken or
