@@ -213,7 +213,8 @@ export function updateFloodTick(sim, dt) {
         // The movement layer owns the shared surge/retreat decision later in
         // this tick, so execution only keeps the objective current.
         if (a.node === t.node && !a.move) {
-          const prey = hive.visibleHumanTarget(a, t.surge ? a.lastHurtBy : -1);
+          const prey = hive.lockedCombatTarget(a)
+            ?? hive.visibleHumanTarget(a, t.surge ? a.lastHurtBy : -1);
           if (!prey) a.task = null;
           else t.node = prey.pnode ?? prey.node;
         }

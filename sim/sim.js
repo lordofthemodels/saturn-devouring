@@ -2339,14 +2339,12 @@ export class Sim {
         || (!shotAt && (k === TASK.DECOY || k === TASK.BAIT || k === TASK.DART))) return false;
 
       const source = shotAt ? this.byId.get(a.lastHurtBy) : null;
-      const ordered = a.task?.surge && a.task.targetId !== undefined
-        ? this.byId.get(a.task.targetId) : null;
-      let best = this.hive.nearestCombatTarget(a);
+      const locked = this.hive.lockedCombatTarget(a);
+      let best = locked ?? this.hive.nearestCombatTarget(a);
       // A landed round reveals its source for the short aggression window even
       // if the shooter has just side-stepped behind the edge of the opening.
       // The shared task carries that revelation to packmates following behind.
       if (!best && source && !source.dead && source.hp > 0) best = source;
-      if (!best && ordered && !ordered.dead && ordered.hp > 0) best = ordered;
       if (this.hive.isRetreating(a)) {
         // Keep a clean escape uninterrupted, but never preserve one whose
         // physical approach has become a run past a visible shooter. Re-plan
@@ -2370,9 +2368,11 @@ export class Sim {
         return false;
       }
 
-      const provoked = shotAt || !!a.task?.surge;
-      if (!this.hive.respondToCombat(a, best, provoked)) return false;
-      best = this.byId.get(a.task?.targetId) ?? best;
+      if (!locked) {
+        const provoked = shotAt || !!a.task?.surge;
+        if (!this.hive.respondToCombat(a, best, provoked)) return false;
+        best = this.hive.lockedCombatTarget(a);
+      }
       if (!best || best.dead || best.hp <= 0) return false;
       const bestD = this.agentDistance(a, best);
       const targetNode = best.pnode ?? best.node;
