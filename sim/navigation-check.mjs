@@ -126,4 +126,49 @@ for (let tick = 0; tick < 1_000 && ladderForm.move; tick++) {
 }
 assert.ok(emerged, 'the flood form must emerge from the destination ladder hatch');
 
+// A combat wave that has already committed to a shared surge must not stop
+// for the full climb behind its lead form. Ordinary bodies still use the
+// one-at-a-time reservation; this only lets the same hive response scramble
+// onto the rungs as a continuous attack.
+const surgeLadderSim = new Sim('ladder-surge-check');
+for (const agent of surgeLadderSim.agents) agent.dead = true;
+surgeLadderSim.tickCount = 1;
+surgeLadderSim.t = surgeLadderSim.dt;
+const surgeLadder = surgeLadderSim.graph.edges.find((edge) => edge.kind === 'std'
+  && edge.type === 'ladder' && surgeLadderSim.graph.node(edge.a).deck
+    !== surgeLadderSim.graph.node(edge.b).deck && !edge.locked);
+assert.ok(surgeLadder, 'ladder surge fixture needs an open cross-deck ladder');
+surgeLadder.occupiedBy = undefined;
+surgeLadder.reservedBy = undefined;
+const lead = makeAgent(FACTION.COMBAT, surgeLadder.a, surgeLadderSim.graph);
+const wing = makeAgent(FACTION.COMBAT, surgeLadder.a, surgeLadderSim.graph);
+surgeLadderSim.spawn(lead);
+surgeLadderSim.spawn(wing);
+for (const form of [lead, wing]) {
+  form.task = { kind: TASK.ATTACK, node: surgeLadder.b, surge: true };
+}
+surgeLadderSim.setPath(lead, [{ to: surgeLadder.b, link: surgeLadder, layer: 'std' }]);
+surgeLadderSim._refreshOccupancy();
+surgeLadderSim._advanceMovement(surgeLadderSim.dt);
+for (let tick = 0; tick < 1_000 && !lead.move?.hidden; tick++) {
+  surgeLadderSim._advanceMovement(surgeLadderSim.dt);
+}
+assert.equal(lead.move?.hidden, true, 'the lead surge form must be on the ladder');
+surgeLadderSim.setPath(wing, [{ to: surgeLadder.b, link: surgeLadder, layer: 'std' }]);
+surgeLadderSim._advanceMovement(surgeLadderSim.dt);
+assert.ok(wing.move, 'a packmate in the same surge must join the occupied ladder without an idle wait');
+assert.equal(wing.charging, true, 'the joined ladder leg must preserve the shared charge');
+const reservedWing = makeAgent(FACTION.COMBAT, surgeLadder.a, surgeLadderSim.graph);
+const playerClimber = makeAgent(FACTION.MARINE, surgeLadder.a, surgeLadderSim.graph);
+playerClimber.isPlayer = true;
+surgeLadderSim.spawn(reservedWing);
+surgeLadderSim.spawn(playerClimber);
+surgeLadder.reservedBy = playerClimber.id;
+reservedWing.task = { kind: TASK.ATTACK, node: surgeLadder.b, surge: true };
+surgeLadderSim.setPath(reservedWing,
+  [{ to: surgeLadder.b, link: surgeLadder, layer: 'std' }]);
+surgeLadderSim._refreshOccupancy();
+surgeLadderSim._advanceMovement(surgeLadderSim.dt);
+assert.equal(reservedWing.move, null, 'a hive surge must still yield a player-reserved ladder slot');
+
 console.log('infection navigation ✓');

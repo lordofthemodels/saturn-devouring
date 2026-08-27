@@ -76868,13 +76868,15 @@ var init_sim = __esm({
               a2.doorHold = 0;
             }
             const ladder = link.kind === "std" && link.type === "ladder" && this.graph.node(step3.to).deck !== this.graph.node(a2.node).deck;
+            const surging = a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.ATTACK && a2.task.surge && a2.dragging === -1 && link.kind === "std";
             const queues = ladder && a2.faction !== FACTION.INFECTION;
-            if (queues && (this.vertBusy(link, a2.id) || this.vertReserved(link, a2.id))) continue;
+            const holder = ladder ? this.byId.get(link.occupiedBy) : null;
+            const joinsSurge = surging && holder?.faction === FACTION.COMBAT && holder.move?.link === link && holder.task?.kind === TASK.ATTACK && holder.task.surge;
+            if (queues && (this.vertReserved(link, a2.id) || this.vertBusy(link, a2.id) && !joinsSurge)) continue;
             a2.doorBalks = 0;
             a2.path.shift();
             let mult = this._speedMult(a2);
             this._setCharging(a2, false);
-            const surging = a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.ATTACK && a2.task.surge && a2.dragging === -1 && link.kind === "std";
             if (a2.faction === FACTION.COMBAT && a2.dragging === -1 && link.kind === "std" && (surging || this._occ[step3.to].some((h2) => isLivingHuman(h2)))) {
               mult *= this.P.speed.chargeMult;
               this._setCharging(a2, true);
