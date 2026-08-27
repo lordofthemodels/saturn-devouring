@@ -146,8 +146,9 @@ right stick look, `A` jump, `RT` fire, `LT` frag, `RB` action/reload, `B`
 melee, and `Y` swap weapons. The contextual `RB` action handles every pickup
 (ammunition, health, armor, and weapons) plus ladders; it reloads only when no
 contextual action is available. `L3` sprints, `View` opens the tactical map,
-and the D-pad issues fireteam orders. The launcher, lobby, briefing, tactical
-map, end screens, and contextual prompts are controller-aware.
+and the D-pad issues fireteam orders. Supported controllers pulse lightly when
+the player takes damage. The launcher, lobby, briefing, tactical map, end
+screens, and contextual prompts are controller-aware.
 
 The launcher and developer docs are keyboard and controller navigable. Voice
 can be muted in the lobby or from the in-game network HUD.

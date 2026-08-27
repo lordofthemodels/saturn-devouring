@@ -93,13 +93,41 @@ function usablePad(pad) {
 }
 
 export class StandardGamepad {
-  constructor({ getGamepads, deadzone = 0.18, outerThreshold = 0.95 } = {}) {
+  constructor({ getGamepads, deadzone = 0.18, outerThreshold = 0.95, now } = {}) {
     this.getGamepads = getGamepads ?? (() => globalThis.navigator?.getGamepads?.() ?? []);
+    this.now = now ?? (() => globalThis.performance?.now?.() ?? Date.now());
     this.deadzone = deadzone;
     this.outerThreshold = outerThreshold;
     this.index = null;
     this.previousByIndex = new Map();
     this.suppressedByIndex = new Map();
+    this.lastRumbleAt = -Infinity;
+  }
+
+  rumble({ duration = 80, strongMagnitude = 0.16, weakMagnitude = 0.08,
+    minInterval = 180 } = {}) {
+    const now = this.now();
+    if (now - this.lastRumbleAt < minInterval) return false;
+    const pad = [...(this.getGamepads() ?? [])]
+      .find((candidate) => usablePad(candidate) && candidate.index === this.index);
+    const actuator = pad?.vibrationActuator;
+    if (!actuator?.playEffect) return false;
+    if (actuator.effects?.length && !actuator.effects.includes('dual-rumble')) return false;
+    if (actuator.type && actuator.type !== 'dual-rumble') return false;
+    try {
+      const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+      const result = actuator.playEffect('dual-rumble', {
+        startDelay: 0,
+        duration: Math.max(0, Math.min(5000, Number(duration) || 0)),
+        strongMagnitude: clamp(strongMagnitude),
+        weakMagnitude: clamp(weakMagnitude),
+      });
+      Promise.resolve(result).catch(() => {});
+      this.lastRumbleAt = now;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   poll() {
