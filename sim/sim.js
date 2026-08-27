@@ -894,7 +894,7 @@ export class Sim {
         const witnessed = !floodKill && this.agents.some((f) => !f.dead && f.hp > 0
           && (f.faction === FACTION.INFECTION || f.faction === FACTION.COMBAT)
           && this.hasLineOfSight(f, a));
-        if (floodKill || witnessed) this.hive?.noteMarineKill();
+        if (floodKill || witnessed) this.hive?.noteMarineKill(a);
       }
       this.screamTick[a.node] = this.tickCount;
       humanDeathToCorpse(this, a);

@@ -72169,7 +72169,7 @@ var init_hive = __esm({
       constructor(sim2) {
         this.sim = sim2;
         this.knownLocked = /* @__PURE__ */ new Set();
-        this.marinesBelieved = sim2.agents.filter((a2) => a2.faction === FACTION.MARINE && !a2.dead).length;
+        this.marinesBelieved = sim2.agents.filter((a2) => a2.faction === FACTION.MARINE && !a2.dead && !(a2.garrison && a2.deck === 1)).length;
         this.beliefs = /* @__PURE__ */ new Map();
         this.believedHumanStr = new Float32Array(sim2.graph.n);
         this.believedHardness = new Float32Array(sim2.graph.n);
@@ -72228,7 +72228,8 @@ var init_hive = __esm({
         }
       }
       // the hive killed (or took) a marine — the counter is ground truth it earned
-      noteMarineKill() {
+      noteMarineKill(marine) {
+        if (marine?.garrison && marine.deck === 1) return;
         this.marinesBelieved = Math.max(0, this.marinesBelieved - 1);
       }
       combatDominates(combatForms) {
@@ -74583,7 +74584,7 @@ function convertHuman(sim2, form, target) {
     if (sim2.rng.chance(0.5)) sim2.emitCall(target);
   }
   target.dead = true;
-  if (target.faction === FACTION.MARINE) sim2.hive.noteMarineKill();
+  if (target.faction === FACTION.MARINE) sim2.hive.noteMarineKill(target);
   const cf = spawnCombatForm(sim2, target.node, target);
   cf.hostArmed = target.faction === FACTION.ARMED || target.faction === FACTION.MARINE;
   cf.transformingUntil = sim2.t + sim2.P.combat.thrashSec;
@@ -76195,7 +76196,7 @@ var init_sim = __esm({
             const killer = by >= 0 ? this.byId.get(by) : null;
             const floodKill = killer && (killer.faction === FACTION.INFECTION || killer.faction === FACTION.COMBAT || killer.faction === FACTION.CARRIER);
             const witnessed = !floodKill && this.agents.some((f2) => !f2.dead && f2.hp > 0 && (f2.faction === FACTION.INFECTION || f2.faction === FACTION.COMBAT) && this.hasLineOfSight(f2, a2));
-            if (floodKill || witnessed) this.hive?.noteMarineKill();
+            if (floodKill || witnessed) this.hive?.noteMarineKill(a2);
           }
           this.screamTick[a2.node] = this.tickCount;
           humanDeathToCorpse(this, a2);
