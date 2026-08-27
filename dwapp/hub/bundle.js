@@ -69075,6 +69075,8 @@ var init_params = __esm({
         // solo base when the breach is above the lower two decks
         lowerDeckInitialInfectionForms: 10,
         initialInfectionFormsPerAdditionalPlayer: 3,
+        dormantVentReserves: 2,
+        // final extinction wakes at most two isolated pods already hidden in the duct network
         initialCombatForms: 0,
         // a pure infection swarm; combat forms + carriers
         initialCarriers: 0
@@ -69431,6 +69433,8 @@ var init_params = __esm({
           // spawn hp varies ±18%
           crowdRadiusScale: 1.15,
           // slightly looser combat-form rushes; pair separation only
+          attackersPerTarget: 3,
+          // spread a charge across the human line instead of dogpiling one body
           leapCooldownSec: 5,
           // begins on landing; ordinary charge movement continues
           swing: {
@@ -70962,6 +70966,9 @@ function makeAgent(kind, node, graph) {
     desperateSince: void 0,
     steeredTick: void 0,
     // last tick _spatialSteer/held-spin displaced the body (MOVING flag)
+    walkStartX: 0,
+    walkStartY: 0,
+    // real per-tick travel vector for human render facing
     busting: null,
     // std link a combat form is battering open (door bust)
     givingGround: false,
@@ -72673,11 +72680,26 @@ var init_hive = __esm({
         }
         return best;
       }
-      nearestCombatTarget(form, candidates = null) {
+      lockedCombatTarget(form) {
+        if (form.task?.kind !== TASK.ATTACK || form.task.targetId === void 0) return null;
+        const target = this.sim.byId.get(form.task.targetId);
+        return target && isLivingHuman(target) ? target : null;
+      }
+      combatTargetLoad(targetId, excludeId = -1) {
+        let load = 0;
+        for (const attacker of this.sim.agents) {
+          if (attacker.id === excludeId || attacker.dead || attacker.downed || attacker.hp <= 0 || attacker.faction !== FACTION.COMBAT) continue;
+          if (this.lockedCombatTarget(attacker)?.id === targetId) load++;
+        }
+        return load;
+      }
+      nearestCombatTarget(form, candidates = null, targetLoads = null) {
         const humans = candidates ?? this.sim.lineOfSightAgents(form, isLivingHuman);
+        const cap = this.sim.P.combat.combatForm.attackersPerTarget;
         let best = null, bestDistance = Infinity;
         for (const human of humans) {
           if (!isLivingHuman(human)) continue;
+          if (targetLoads && (targetLoads.get(human.id) ?? 0) >= cap) continue;
           const distance3 = this.sim.agentDistance(form, human);
           if (distance3 < bestDistance - 1e-9 || Math.abs(distance3 - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity)) {
             best = human;
@@ -72738,8 +72760,16 @@ var init_hive = __esm({
         }
         const canPress = forced || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.killRatio);
         if (canPress) {
+          const targetLoads = /* @__PURE__ */ new Map();
+          for (const attacker of this.sim.agents) {
+            if (attacker.dead || attacker.downed || attacker.hp <= 0 || attacker.faction !== FACTION.COMBAT) continue;
+            const locked = this.lockedCombatTarget(attacker);
+            if (locked) targetLoads.set(locked.id, (targetLoads.get(locked.id) ?? 0) + 1);
+          }
           for (const member of pack2) {
-            const prey = this.nearestCombatTarget(member, knownHumans) ?? stimulus;
+            const locked = this.lockedCombatTarget(member);
+            const prey = locked ?? this.nearestCombatTarget(member, knownHumans, targetLoads);
+            if (!locked && prey) targetLoads.set(prey.id, (targetLoads.get(prey.id) ?? 0) + 1);
             const node = prey ? prey.pnode ?? prey.node : fallbackNode;
             if (node === void 0 || node < 0) continue;
             this.assign(member, {
@@ -72984,6 +73014,7 @@ var init_hive = __esm({
       retreatOrFight(form, threatNode, replan = false, targetId = void 0, retreatStrength = void 0) {
         if (!replan && form.task?.retreat && form.task.threatNode === threatNode && (form.move || form.path.length)) return false;
         if (this.retreatCombatForm(form, threatNode, retreatStrength)) return false;
+        if (targetId !== void 0 && this.combatTargetLoad(targetId, form.id) >= this.sim.P.combat.combatForm.attackersPerTarget) targetId = void 0;
         this.assign(form, {
           kind: TASK.ATTACK,
           node: threatNode,
@@ -73608,17 +73639,18 @@ var init_hive = __esm({
             f2.task = null;
           }
           if (f2.task?.kind === TASK.ATTACK) {
+            if (this.lockedCombatTarget(f2)) continue;
             if (!this.searchingAll) continue;
             if (f2.move) sim2._interruptMove(f2);
             f2.path = [];
             f2.task = null;
           }
           if (f2.task?.kind === TASK.TRANSFORM) continue;
-          if (f2.task?.kind === TASK.SCOUT && f2.task.sweep && (f2.move || f2.path.length || f2.node !== f2.task.node)) continue;
           if (!this.combatDominant && (f2.task?.seed || f2.task?.screen !== void 0 || f2.task?.protect !== void 0)) continue;
           const target = this.allIn ? this.nearestAllInHuman(f2.node) : this.nearestBelievedHuman(f2.node);
           if (target === -1) {
             if (this.allIn) {
+              if (f2.task?.kind === TASK.SCOUT && f2.task.sweep && (f2.move || f2.path.length || f2.node !== f2.task.node)) continue;
               const sweep = this.sweepTarget(f2, sweepTargets, "combat");
               if (sweep !== -1) this.assign(f2, { kind: TASK.SCOUT, node: sweep, sweep: true });
             }
@@ -74154,6 +74186,8 @@ var init_hive = __esm({
           const alive = ct.kind === TASK.TRANSFORM ? !form.downed && form.hp > 0 : body && !body.dead && body.damage < 100;
           if (alive) return;
         }
+        const lockedTarget = form.faction === FACTION.COMBAT ? this.lockedCombatTarget(form) : null;
+        if (lockedTarget && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
         const t2 = form.task;
         const same = t2 && t2.kind === task.kind && t2.node === task.node && t2.targetId === task.targetId && t2.corpseId === task.corpseId && t2.muster === task.muster;
         if (!same && t2) {
@@ -74333,7 +74367,7 @@ function updateFloodTick(sim2, dt) {
       case TASK.ATTACK:
         moveToward(sim2, a2, t2.node, (from, to) => t2.force || hive.allIn ? sim2.graph.path(from, to, ["std"], hive.bigPass) : hive.safeAssaultPath(from, to));
         if (a2.node === t2.node && !a2.move) {
-          const prey = hive.visibleHumanTarget(a2, t2.surge ? a2.lastHurtBy : -1);
+          const prey = hive.lockedCombatTarget(a2) ?? hive.visibleHumanTarget(a2, t2.surge ? a2.lastHurtBy : -1);
           if (!prey) a2.task = null;
           else t2.node = prey.pnode ?? prey.node;
         }
@@ -74942,14 +74976,19 @@ function resolveCombat(sim2, dt) {
         if (f2.task?.retreat) continue;
         const victims = sim2.lineOfSightAgents(f2, (a2) => a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED || a2.faction === FACTION.CIVILIAN);
         if (victims.length) {
-          let best = null, bestScore = Infinity;
-          for (const v2 of victims) {
-            if (v2.hp <= 0 || v2.dead) continue;
-            const d2 = sim2.agentDistance(f2, v2);
-            const score = d2 + v2.id * 1e-6;
-            if (score < bestScore) {
-              bestScore = score;
-              best = v2;
+          const locked = sim2.hive.lockedCombatTarget(f2);
+          let best = locked && victims.some((victim) => victim.id === locked.id) ? locked : null;
+          if (f2.task?.kind === TASK.ATTACK && !best) continue;
+          let bestScore = Infinity;
+          if (!best) {
+            for (const v2 of victims) {
+              if (v2.hp <= 0 || v2.dead) continue;
+              const d2 = sim2.agentDistance(f2, v2);
+              const score = d2 + v2.id * 1e-6;
+              if (score < bestScore) {
+                bestScore = score;
+                best = v2;
+              }
             }
           }
           if (!best) break;
@@ -75091,6 +75130,7 @@ var init_combat = __esm({
   "sim/combat.js"() {
     init_agentBuffer();
     init_init();
+    init_hive();
     init_floodExec();
   }
 });
@@ -75502,6 +75542,8 @@ var init_sim = __esm({
         this.marinesKnowRevive = false;
         this.outcome = null;
         this.outcomeAt = null;
+        this.dormantVentReserves = this.P.flood.dormantVentReserves ?? 0;
+        this._dormantVentReleaseNodes = /* @__PURE__ */ new Set();
         this.stats = {
           conversions: 0,
           conversionsRound: 0,
@@ -76350,12 +76392,14 @@ var init_sim = __esm({
           strategicSquads(this);
         }
         this._doorFlipTick();
+        this._captureHumanWalkStart();
         updateHumansTick(this, dt);
         updateFloodTick(this, dt);
         this._grenadeTick();
         this._advanceMovement(dt);
         this._separate(dt);
         this._fireAvoid(dt);
+        this._faceWalkingHumans();
         this._fireDamage(dt);
         this._advanceDoors(dt);
         this._refreshOccupancy();
@@ -76727,6 +76771,63 @@ var init_sim = __esm({
         if (link.type === "ladder") return 1 + link.vertM / M2.ladderClimbMps;
         return run / mps + (M2.doorDelaySec[link.type] ?? 0);
       }
+      // A vent order still begins with a real walk to the grate. Route that short
+      // in-room leg around active fire instead of drawing a straight line through
+      // it—the crash blaze was silently deleting healthy opening pods before
+      // they ever reached the duct network.
+      _ventEntryPoints(from, to, room) {
+        const points = [{ x: from.x, y: from.y }];
+        const dx = to.x - from.x, dy = to.y - from.y;
+        const length3 = Math.hypot(dx, dy);
+        if (length3 > 1e-6) {
+          const ux = dx / length3, uy = dy / length3;
+          const px2 = -uy, py2 = ux;
+          const fires = this.fires.filter((fire2) => fire2.deck === room.deck && fire2.node === room.idx).map((fire2) => ({ fire: fire2, along: (fire2.x - from.x) * ux + (fire2.y - from.y) * uy })).filter(({ along }) => along > 0 && along < length3).sort((a2, b2) => a2.along - b2.along);
+          for (const { fire: fire2, along } of fires) {
+            const closestX = from.x + ux * along, closestY = from.y + uy * along;
+            const signed = (fire2.x - closestX) * px2 + (fire2.y - closestY) * py2;
+            const radius = this.P.fire.radiusM * fire2.scale + 0.65;
+            if (Math.abs(signed) >= radius) continue;
+            const side = signed >= 0 ? -1 : 1;
+            const offset = radius * side;
+            const before = Math.max(0, along - radius);
+            const after = Math.min(length3, along + radius);
+            points.push({ x: from.x + ux * before + px2 * offset, y: from.y + uy * before + py2 * offset });
+            points.push({ x: from.x + ux * after + px2 * offset, y: from.y + uy * after + py2 * offset });
+          }
+        }
+        points.push({ x: to.x, y: to.y });
+        const hw = Math.max(0.4, room.w / 2 - 0.4), hd = Math.max(0.4, room.d / 2 - 0.4);
+        for (const point of points) {
+          point.x = Math.max(room.x - hw, Math.min(room.x + hw, point.x));
+          point.y = Math.max(room.y - hd, Math.min(room.y + hd, point.y));
+        }
+        return points;
+      }
+      _polylinePoint(points, progress) {
+        let total = 0;
+        const lengths = [];
+        for (let index = 1; index < points.length; index++) {
+          const length3 = Math.hypot(
+            points[index].x - points[index - 1].x,
+            points[index].y - points[index - 1].y
+          );
+          lengths.push(length3);
+          total += length3;
+        }
+        let remaining = total * progress;
+        for (let index = 0; index < lengths.length; index++) {
+          if (remaining <= lengths[index] || index === lengths.length - 1) {
+            const part = lengths[index] > 1e-6 ? remaining / lengths[index] : 1;
+            return [
+              points[index].x + (points[index + 1].x - points[index].x) * part,
+              points[index].y + (points[index + 1].y - points[index].y) * part
+            ];
+          }
+          remaining -= lengths[index];
+        }
+        return [points.at(-1).x, points.at(-1).y];
+      }
       _speedMult(a2) {
         const S2 = this.P.speed;
         switch (a2.faction) {
@@ -76747,6 +76848,29 @@ var init_sim = __esm({
             return S2.carrier;
           default:
             return 1;
+        }
+      }
+      _captureHumanWalkStart() {
+        for (const a2 of this.agents) {
+          if (a2.dead || a2.isPlayer || a2.faction !== FACTION.CIVILIAN && a2.faction !== FACTION.ARMED && a2.faction !== FACTION.MARINE) continue;
+          a2.walkStartX = a2.x;
+          a2.walkStartY = a2.y;
+        }
+      }
+      // Human facing follows the displacement the player actually sees after
+      // doorway funnels, hatch approaches and crowd separation have all acted.
+      // Individual movement branches used their intended path bearing instead;
+      // at cross-deck hatches that could be nearly perpendicular to the real
+      // walk, producing a forward gait sliding sideways across the floor.
+      // ATTACK is deliberately excluded: a shooter keeps facing the target while
+      // giving ground or shifting along a firing line.
+      _faceWalkingHumans() {
+        for (const a2 of this.agents) {
+          if (a2.dead || a2.isPlayer || a2.move?.hidden || a2.faction !== FACTION.CIVILIAN && a2.faction !== FACTION.ARMED && a2.faction !== FACTION.MARINE) continue;
+          const clip = this._clipFor(a2);
+          if (clip !== CLIP.WALK && clip !== CLIP.RUN) continue;
+          const dx = a2.x - a2.walkStartX, dy = a2.y - a2.walkStartY;
+          if (dx * dx + dy * dy > 1e-6) a2.heading = Math.atan2(dy, dx);
         }
       }
       _advanceMovement(dt) {
@@ -76960,10 +77084,14 @@ var init_sim = __esm({
               const eToX = a2.move.eToX ?? to.x, eToY = a2.move.eToY ?? to.y;
               if (k2 < appT) {
                 const kk = appT > 1e-6 ? k2 / appT : 1;
-                const sx = a2.move.sx ?? from.x, sy = a2.move.sy ?? from.y;
-                a2.x = sx + (eFromX - sx) * kk;
-                a2.y = sy + (eFromY - sy) * kk;
-                a2.heading = Math.atan2(eFromY - sy, eFromX - sx);
+                const [x2, y2] = a2.move.entryPoints ? this._polylinePoint(a2.move.entryPoints, kk) : [
+                  (a2.move.sx ?? from.x) + (eFromX - (a2.move.sx ?? from.x)) * kk,
+                  (a2.move.sy ?? from.y) + (eFromY - (a2.move.sy ?? from.y)) * kk
+                ];
+                const oldX = a2.x, oldY = a2.y;
+                a2.x = x2;
+                a2.y = y2;
+                a2.heading = Math.atan2(a2.y - oldY, a2.x - oldX) || a2.heading;
                 a2.move.hidden = false;
               } else if (k2 > 1 - exitT) {
                 const kk = exitT > 1e-6 ? (k2 - (1 - exitT)) / exitT : 1;
@@ -77038,7 +77166,7 @@ var init_sim = __esm({
               const visibleFight = this.hive.combatLineOfSight(a2);
               const sensedCrossing = retreating || this.hive.respondToSensedRoom(a2, step3.to);
               const retreatBlocked = retreating && visibleFight.defense > 0 && visibleFight.threatNode === step3.to;
-              const attackOutmatched = !retreating && !this.hive.canPressCombatContact(a2, !!a2.task?.surge, a2.task?.force);
+              const attackOutmatched = !retreating && !this.hive.canPressCombatContact(a2, !!a2.task?.surge || this.hive.allIn, a2.task?.force);
               if (!sensedCrossing || retreatBlocked || attackOutmatched) {
                 a2.path = [];
                 this._setCharging(a2, false);
@@ -77075,10 +77203,10 @@ var init_sim = __esm({
               a2.doorHold = 0;
             }
             const ladder = link.kind === "std" && link.type === "ladder" && this.graph.node(step3.to).deck !== this.graph.node(a2.node).deck;
-            const surging = a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.ATTACK && a2.task.surge && a2.dragging === -1 && link.kind === "std";
+            const surging = a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.ATTACK && (a2.task.surge || this.hive.allIn) && a2.dragging === -1 && link.kind === "std";
             const queues = ladder && a2.faction !== FACTION.INFECTION;
             const holder = ladder ? this.byId.get(link.occupiedBy) : null;
-            const joinsSurge = surging && holder?.faction === FACTION.COMBAT && holder.move?.link === link && holder.task?.kind === TASK.ATTACK && holder.task.surge;
+            const joinsSurge = surging && holder?.faction === FACTION.COMBAT && holder.move?.link === link && holder.task?.kind === TASK.ATTACK && (holder.task.surge || this.hive.allIn);
             if (queues && (this.vertReserved(link, a2.id) || this.vertBusy(link, a2.id) && !joinsSurge)) continue;
             a2.doorBalks = 0;
             a2.path.shift();
@@ -77166,7 +77294,15 @@ var init_sim = __esm({
               const eTo = (a2.node === link.a ? link.doorB : link.doorA) ?? link.door ?? { x: toN.x, y: toN.y };
               const [tx, ty] = this._moveArrivalPoint(a2, toN);
               const mps = Math.max(0.5, this.P.movement.baseMps * mult);
-              const appSec = Math.hypot(eFrom.x - a2.x, eFrom.y - a2.y) / mps;
+              const entryPoints = this._ventEntryPoints(a2, eFrom, fromN);
+              let entryLength = 0;
+              for (let index = 1; index < entryPoints.length; index++) {
+                entryLength += Math.hypot(
+                  entryPoints[index].x - entryPoints[index - 1].x,
+                  entryPoints[index].y - entryPoints[index - 1].y
+                );
+              }
+              const appSec = entryLength / mps;
               const exitSec = Math.hypot(tx - eTo.x, ty - eTo.y) / mps;
               a2.move.eFromX = eFrom.x;
               a2.move.eFromY = eFrom.y;
@@ -77174,6 +77310,7 @@ var init_sim = __esm({
               a2.move.eToY = eTo.y;
               a2.move.tx = tx;
               a2.move.ty = ty;
+              a2.move.entryPoints = entryPoints;
               a2.move.travelSec += appSec + exitSec;
               a2.move.appT = appSec / a2.move.travelSec;
               a2.move.exitT = exitSec / a2.move.travelSec;
@@ -77288,10 +77425,9 @@ var init_sim = __esm({
           const shotAt = this.tickCount - (a2.lastHurtTick ?? -999) < 45;
           if (k2 === TASK.TRANSFORM || !shotAt && (k2 === TASK.DECOY || k2 === TASK.BAIT || k2 === TASK.DART)) return false;
           const source = shotAt ? this.byId.get(a2.lastHurtBy) : null;
-          const ordered = a2.task?.surge && a2.task.targetId !== void 0 ? this.byId.get(a2.task.targetId) : null;
-          let best = this.hive.nearestCombatTarget(a2);
+          const locked = this.hive.lockedCombatTarget(a2);
+          let best = locked ?? this.hive.nearestCombatTarget(a2);
           if (!best && source && !source.dead && source.hp > 0) best = source;
-          if (!best && ordered && !ordered.dead && ordered.hp > 0) best = ordered;
           if (this.hive.isRetreating(a2)) {
             const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
             const step3 = committed ? null : a2.move ? { to: a2.move.to, link: a2.move.link } : a2.path[0];
@@ -77309,9 +77445,11 @@ var init_sim = __esm({
             }
             return false;
           }
-          const provoked = shotAt || !!a2.task?.surge;
-          if (!this.hive.respondToCombat(a2, best, provoked)) return false;
-          best = this.byId.get(a2.task?.targetId) ?? best;
+          if (!locked) {
+            const provoked = shotAt || !!a2.task?.surge;
+            if (!this.hive.respondToCombat(a2, best, provoked)) return false;
+            best = this.hive.lockedCombatTarget(a2);
+          }
           if (!best || best.dead || best.hp <= 0) return false;
           const bestD = this.agentDistance(a2, best);
           const targetNode = best.pnode ?? best.node;
@@ -77948,6 +78086,7 @@ var init_sim = __esm({
         const anyFlood = this.agents.some((a2) => !a2.dead && (isActiveFloodForm(a2) || a2.faction === FACTION.CARRIER || a2.faction === FACTION.COMBAT && a2.downed && a2.damage < 100 && a2.reviveAt >= 0));
         const anyHuman = this.agents.some((a2) => !a2.dead && isLivingHuman(a2));
         if (!anyFlood) {
+          if (anyHuman && this._releaseDormantVentReserve()) return;
           this.outcome = "contained";
           this.outcomeAt = this.t;
           this.log("end", `OUTBREAK CONTAINED at ${fmtTime(this.t)} — the ship survives`);
@@ -77956,6 +78095,46 @@ var init_sim = __esm({
           this.outcomeAt = this.t;
           this.log("end", `SHIP LOST at ${fmtTime(this.t)} — the Flood owns the Saturn Devouring`);
         }
+      }
+      _releaseDormantVentReserve() {
+        if (this.dormantVentReserves <= 0) return false;
+        const guns = this.agents.filter((agent) => !agent.dead && agent.hp > 0 && (agent.faction === FACTION.MARINE || agent.faction === FACTION.ARMED));
+        let best = null;
+        let bestScore = -Infinity;
+        for (const room of this.graph.nodes) {
+          if (this.graph.burningUntil[room.idx] > this.t) continue;
+          if (this._dormantVentReleaseNodes.has(room.idx)) continue;
+          const corpses = this.agents.reduce((count, agent) => count + (!agent.dead && agent.faction === FACTION.CORPSE && agent.node === room.idx && agent.damage < 100 ? 1 : 0), 0);
+          if (corpses === 0) continue;
+          let nearestGun = this.graph.n;
+          for (const gun of guns) {
+            const hops = this.graph.hops(room.idx, gun.pnode ?? gun.node, ["std"], () => true);
+            if (hops !== -1) nearestGun = Math.min(nearestGun, hops);
+          }
+          const score = Math.min(nearestGun, 8) * 10 + Math.min(corpses, 3) * 2 + (room.roles.includes("corpse_cache") ? 2 : 0);
+          if (score > bestScore || score === bestScore && room.idx < best?.idx) {
+            best = room;
+            bestScore = score;
+          }
+        }
+        if (!best) return false;
+        const pod = makeAgent(FACTION.INFECTION, best.idx, this.graph);
+        const angle = pod.id * 2.399963 % (Math.PI * 2);
+        const radius = Math.min(best.w, best.d) * 0.12;
+        pod.x = best.x + Math.cos(angle) * radius;
+        pod.y = best.y + Math.sin(angle) * radius;
+        pod.hp = pod.maxHp = 1;
+        this.spawn(pod);
+        this.dormantVentReserves--;
+        this._dormantVentReleaseNodes.add(best.idx);
+        this.log(
+          "duct",
+          `the dying hive wakes a dormant infection form in the vents of ${best.name}`,
+          best.idx,
+          pod.x,
+          pod.y
+        );
+        return true;
       }
       // --- the one shared boundary (§2.2) ---
       writeBuffer() {
