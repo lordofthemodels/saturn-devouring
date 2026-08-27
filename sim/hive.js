@@ -1763,8 +1763,6 @@ export class Hive {
         f.task = null;
       }
       if (f.task?.kind === TASK.TRANSFORM) continue; // a rooting carrier is not a soldier
-      if (f.task?.kind === TASK.SCOUT && f.task.sweep
-        && (f.move || f.path.length || f.node !== f.task.node)) continue;
       if (!this.combatDominant
         && (f.task?.seed || f.task?.screen !== undefined || f.task?.protect !== undefined)) continue; // production detail is off-limits until dominance makes every fighter expendable
       // Once the counter calls all-in, a gun line is an objective rather than
@@ -1772,6 +1770,11 @@ export class Hive {
       const target = this.allIn ? this.nearestAllInHuman(f.node) : this.nearestBelievedHuman(f.node);
       if (target === -1) {
         if (this.allIn) {
+          // Keep a live topology sweep stable only while there is genuinely
+          // no prey to pursue. A newly refreshed human belief must interrupt
+          // scouting immediately instead of leaving the army walking past it.
+          if (f.task?.kind === TASK.SCOUT && f.task.sweep
+            && (f.move || f.path.length || f.node !== f.task.node)) continue;
           const sweep = this.sweepTarget(f, sweepTargets, 'combat');
           if (sweep !== -1) this.assign(f, { kind: TASK.SCOUT, node: sweep, sweep: true });
         }

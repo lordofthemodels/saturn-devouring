@@ -171,4 +171,84 @@ surgeLadderSim._refreshOccupancy();
 surgeLadderSim._advanceMovement(surgeLadderSim.dt);
 assert.equal(reservedWing.move, null, 'a hive surge must still yield a player-reserved ladder slot');
 
+const allInSim = new Sim('ladder-all-in-check');
+for (const agent of allInSim.agents) agent.dead = true;
+allInSim.tickCount = 1;
+allInSim.t = allInSim.dt;
+allInSim.hive.allIn = true;
+const allInLadder = allInSim.graph.edges.find((edge) => edge.kind === 'std'
+  && edge.type === 'ladder' && allInSim.graph.node(edge.a).deck
+    !== allInSim.graph.node(edge.b).deck && !edge.locked);
+assert.ok(allInLadder, 'all-in ladder fixture needs an open cross-deck ladder');
+const allInLead = makeAgent(FACTION.COMBAT, allInLadder.a, allInSim.graph);
+const allInWing = makeAgent(FACTION.COMBAT, allInLadder.a, allInSim.graph);
+for (const form of [allInLead, allInWing]) {
+  allInSim.spawn(form);
+  form.task = { kind: TASK.ATTACK, node: allInLadder.b };
+}
+allInSim.setPath(allInLead, [{ to: allInLadder.b, link: allInLadder, layer: 'std' }]);
+allInSim._refreshOccupancy();
+allInSim._advanceMovement(allInSim.dt);
+for (let tick = 0; tick < 1_000 && !allInLead.move?.hidden; tick++) {
+  allInSim._advanceMovement(allInSim.dt);
+}
+assert.equal(allInLead.move?.hidden, true, 'the all-in lead form must be on the ladder');
+allInSim.setPath(allInWing, [{ to: allInLadder.b, link: allInLadder, layer: 'std' }]);
+allInSim._refreshOccupancy();
+allInSim._advanceMovement(allInSim.dt);
+assert.ok(allInWing.move,
+  'an all-in attack must pour onto an occupied ladder even without a local surge flag');
+
+const ventFireSim = new Sim('vent-fire-detour-check');
+for (const agent of ventFireSim.agents) agent.dead = true;
+ventFireSim.tickCount = 1;
+ventFireSim.t = ventFireSim.dt;
+const ventRoom = ventFireSim.graph.nodes.find((node) => node.grate
+  && Math.hypot(node.grate.x - node.x, node.grate.y - node.y) > 6);
+const ventTarget = ventFireSim.graph.nodes.find((node) => node.idx !== ventRoom?.idx);
+assert.ok(ventRoom && ventTarget, 'vent fire fixture needs two rooms and a long grate approach');
+const ventPod = makeAgent(FACTION.INFECTION, ventRoom.idx, ventFireSim.graph);
+ventPod.x = ventRoom.x;
+ventPod.y = ventRoom.y;
+ventFireSim.spawn(ventPod);
+ventFireSim.fires = [{
+  deck: ventRoom.deck,
+  node: ventRoom.idx,
+  x: (ventPod.x + ventRoom.grate.x) / 2,
+  y: (ventPod.y + ventRoom.grate.y) / 2,
+  scale: 1,
+}];
+ventFireSim.setPath(ventPod, ventFireSim.graph.ventRoute(ventRoom.idx, ventTarget.idx));
+ventFireSim._advanceMovement(ventFireSim.dt);
+assert.ok(ventPod.move?.entryPoints?.length > 2,
+  'a vent approach crossing fire must receive an in-room detour');
+for (let tick = 0; tick < 1_000 && !ventPod.move?.hidden; tick++) {
+  ventFireSim._advanceMovement(ventFireSim.dt);
+  ventFireSim._fireDamage(ventFireSim.dt);
+}
+assert.equal(ventPod.dead, false, 'a pod must survive a viable route around fire to its grate');
+assert.equal(ventPod.move?.hidden, true, 'the pod must reach the vent after taking the detour');
+
+const reserveSim = new Sim('dormant-vent-reserve-check', {
+  flood: { dormantVentReserves: 2 },
+});
+for (const agent of reserveSim.agents) {
+  if (agent.faction === FACTION.INFECTION || agent.faction === FACTION.COMBAT
+    || agent.faction === FACTION.CARRIER) agent.dead = true;
+}
+reserveSim._checkOutcome();
+let released = reserveSim.agents.find((agent) => !agent.dead
+  && agent.faction === FACTION.INFECTION);
+assert.ok(released, 'apparent extinction must wake the first dormant vent reserve');
+assert.equal(reserveSim.outcome, null, 'a dormant reserve must keep the outbreak live');
+released.dead = true;
+reserveSim._checkOutcome();
+released = reserveSim.agents.find((agent) => !agent.dead
+  && agent.faction === FACTION.INFECTION);
+assert.ok(released, 'the second extinction must wake the final dormant vent reserve');
+assert.equal(reserveSim.dormantVentReserves, 0, 'exactly two dormant reserves may wake');
+released.dead = true;
+reserveSim._checkOutcome();
+assert.equal(reserveSim.outcome, 'contained', 'a third extinction must remain a real containment');
+
 console.log('infection navigation ✓');
