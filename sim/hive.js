@@ -114,6 +114,12 @@ export class Hive {
     this.marinesBelieved = Math.max(0, this.marinesBelieved - 1);
   }
 
+  combatDominates(combatForms) {
+    const P = this.sim.P.swarm;
+    return combatForms >= Math.max(P.dominationMinForms,
+      Math.ceil(this.marinesBelieved * P.dominationRatio));
+  }
+
   // seconds through the duct network between two rooms' grates — the closed
   // form the whole redesign leans on: time ∝ real grate-to-grate distance
   ventEtaSec(from, to) {
@@ -957,6 +963,8 @@ export class Hive {
     // 150-form hive besieged 6 rifles forever (probe timeouts).
     const mass = I + C * 2 + K * 2;
     const wasAllIn = this.allIn;
+    const wasDominant = this.combatDominant;
+    this.combatDominant = this.combatDominates(C);
     // mass-ratio trigger against CONFIDENT beliefs only (a raw count kept
     // every human ever seen; a count cap never fired — hiding civilians
     // kept the believed-survivor count high while 150 forms besieged 6
@@ -970,14 +978,18 @@ export class Hive {
     // remains in beliefs until a death is learned; when overwhelming mass has
     // lost every contact, it searches the topology instead of dropping out of
     // endgame posture and guarding empty rooms forever.
-    const searchAll = believedAlive === 0 && this.beliefs.size > 0 && mass >= 50;
+    const searchAll = believedAlive === 0 && this.beliefs.size > 0
+      && (mass >= 50 || this.combatDominant);
     this.searchingAll = searchAll;
-    this.allIn = (believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3)
+    this.allIn = (believedAlive > 0 && this.combatDominant)
+      || (believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3)
       || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0)
       || searchAll;
     if (this.allIn && !wasAllIn) sim.log('hive', searchAll
       ? 'the hive has lost contact with the last prey — every compartment is swept'
       : 'the hive rises as one — every form converges for the end');
+    if (this.combatDominant && !wasDominant) sim.log('hive',
+      `${C} combat forms overwhelm the hive's estimate of ${this.marinesBelieved} marines — caution ends`);
 
     // POSTURE (user: evasive hit-and-run early, aggressive once strong). Early —
     // few carriers or a small pool — the hive RUNS: it slips off to hit soft
@@ -994,7 +1006,8 @@ export class Hive {
     // hive's reasoning rather than a parallel metric that could disagree
     // with it. Refreshed on the 2.5 s strategic tick, not per frame.
     this.stats = { I, C, K, bodies: bodies.length, mass, S, believedAlive,
-      marinesLeft: this.marinesBelieved, allIn: this.allIn, posture: this.posture, opening: this.opening };
+      marinesLeft: this.marinesBelieved, combatDominant: this.combatDominant,
+      allIn: this.allIn, posture: this.posture, opening: this.opening };
     if (this.posture === 'AGGRESSIVE' && !wasAggro) sim.log('hive', 'the hive turns from hit-and-run to open aggression');
 
     // re-validate queued paths against current beliefs: a route planned two
@@ -1018,7 +1031,7 @@ export class Hive {
     // §6.4 EVADE runs in every mode: pull forms out of nodes the marines own.
     this.evade(forms, carriers);
 
-    if (this.opening) {
+    if (this.opening && !this.combatDominant) {
       this.openingMove(infection, combat, bodies);
       this.protectCarriers(combat, carriers, S);
       if (sim.firstSweepCleared) {
@@ -1026,6 +1039,10 @@ export class Hive {
         sim.log('hive', 'hive hands off to steady-state economy (first sweep has passed)');
       }
       return;
+    }
+    if (this.opening) {
+      this.opening = false;
+      sim.log('hive', 'overwhelming combat strength ends the opening — every surviving marine is hunted');
     }
     this.steadyState(infection, combat, carriers, bodies, I, C, K, S);
   }
@@ -1724,11 +1741,27 @@ export class Hive {
       // conscripted forms already standing near the fight — everyone
       // breeding three decks away sat the assault out forever
       if (!this.allIn && !rampaging.has(f.node)) continue;
-      if (f.task?.retreat) continue;
-      if (f.task && (f.task.kind === TASK.ATTACK || f.task.kind === TASK.TRANSFORM)) continue; // a rooting carrier is not a soldier
+      if (f.task?.retreat) {
+        if (!this.combatDominant) continue;
+        if (f.move) sim._interruptMove(f);
+        f.path = [];
+        f.task = null;
+      }
+      // When all confident contacts have decayed, an old room-level ATTACK is
+      // no longer an objective. Clear its physical leg so the graph sweep can
+      // redistribute the army; otherwise dozens of forms can keep charging an
+      // empty compartment forever while the last survivors sit elsewhere.
+      if (f.task?.kind === TASK.ATTACK) {
+        if (!this.searchingAll) continue;
+        if (f.move) sim._interruptMove(f);
+        f.path = [];
+        f.task = null;
+      }
+      if (f.task?.kind === TASK.TRANSFORM) continue; // a rooting carrier is not a soldier
       if (f.task?.kind === TASK.SCOUT && f.task.sweep
         && (f.move || f.path.length || f.node !== f.task.node)) continue;
-      if (f.task?.seed || f.task?.screen !== undefined || f.task?.protect !== undefined) continue; // production detail is off-limits to the draft
+      if (!this.combatDominant
+        && (f.task?.seed || f.task?.screen !== undefined || f.task?.protect !== undefined)) continue; // production detail is off-limits until dominance makes every fighter expendable
       // Once the counter calls all-in, a gun line is an objective rather than
       // a reason to report every survivor beyond it as unreachable.
       const target = this.allIn ? this.nearestAllInHuman(f.node) : this.nearestBelievedHuman(f.node);
@@ -1789,7 +1822,10 @@ export class Hive {
         // moment it arrived — solo, in single file, into the guns. The
         // zerg rush gathers MOST of the living force and goes in together
         // (the 75s patience valve below still breaks any stall).
-        const needed = this.allIn
+        const needed = this.combatDominant
+          ? Math.min(P.swarm.maxMusterForms, Math.max(4,
+            Math.ceil(this.believedHumanStr[target] * P.swarm.dominationRatio)))
+          : this.allIn
           ? Math.min(P.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6)))
           : Math.min(defense * P.swarm.killRatio, P.swarm.maxMusterForms);
         const arrived = forms.filter((f) => !f.move && f.node === f.task.node).length;
@@ -2462,6 +2498,14 @@ export class Hive {
     }
     if ((t?.kind === TASK.TRANSFORM) !== (task.kind === TASK.TRANSFORM)) {
       this._combatCacheTick = -1;
+    }
+    // A new destination cannot inherit a physical leg aimed somewhere else.
+    // Preserve movement whose complete queued route already ends at the new
+    // objective (the anti-stutter case), but interrupt an opposite ladder,
+    // lift, or doorway leg before the replacement order is installed.
+    if (!same && form.move && task.node !== undefined) {
+      const moveGoal = form.path.at(-1)?.to ?? form.move.to;
+      if (moveGoal !== task.node) this.sim._interruptMove(form);
     }
     form.task = task;
     if (!same) {
