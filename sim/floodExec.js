@@ -552,7 +552,7 @@ function convertHuman(sim, form, target) {
   }
   target.dead = true;
   // a TAKEN marine is the surest kill the hive knows about (user redesign)
-  if (target.faction === FACTION.MARINE) sim.hive.noteMarineKill();
+  if (target.faction === FACTION.MARINE) sim.hive.noteMarineKill(target);
   const cf = spawnCombatForm(sim, target.node, target);
   cf.hostArmed = target.faction === FACTION.ARMED || target.faction === FACTION.MARINE;
   // "IMMEDIATELY STARTS THE SAME PROCESS" (user): a live host does not skip

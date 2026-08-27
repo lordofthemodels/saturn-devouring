@@ -42,7 +42,10 @@ export class Hive {
     // claws. This is what "it knows where they are, therefore where they are
     // not" hangs off: few marines believed left => the rest of the ship is
     // open ground.
-    this.marinesBelieved = sim.agents.filter((a) => a.faction === FACTION.MARINE && !a.dead).length;
+    // Fixed Deck 1 coverage remains a local tactical threat, but it is not a
+    // roaming force the hive must overpower before ending global caution.
+    this.marinesBelieved = sim.agents.filter((a) => a.faction === FACTION.MARINE
+      && !a.dead && !(a.garrison && a.deck === 1)).length;
     // Belief per human (§6.1), seeded with absorbed-crew knowledge: it knows
     // the brig/medbay are stocked and where the barracks squads berth. It
     // does NOT know where detached squads happen to be — the sweep ETA it
@@ -110,7 +113,9 @@ export class Hive {
   }
 
   // the hive killed (or took) a marine — the counter is ground truth it earned
-  noteMarineKill() {
+  noteMarineKill(marine) {
+    // These guards were never included in the global dominance denominator.
+    if (marine?.garrison && marine.deck === 1) return;
     this.marinesBelieved = Math.max(0, this.marinesBelieved - 1);
   }
 

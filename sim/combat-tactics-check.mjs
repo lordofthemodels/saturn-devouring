@@ -482,6 +482,19 @@ assert.ok(breachForms.every((form) => form.task.targetId !== undefined),
 // retreats at exactly two active forms per believed marine. A small remnant
 // still cannot infer victory merely because its marine counter reached zero.
 const dominanceSim = new Sim('global-combat-dominance-check');
+const fixedDeckOne = dominanceSim.agents.filter((agent) => agent.faction === FACTION.MARINE
+  && agent.garrison && agent.deck === 1);
+const mobileMarines = dominanceSim.agents.filter((agent) => agent.faction === FACTION.MARINE
+  && !agent.garrison);
+assert.equal(dominanceSim.hive.marinesBelieved, mobileMarines.length,
+  'global dominance must exclude fixed Deck 1 Marines from its denominator');
+const believedBeforeGuardKill = dominanceSim.hive.marinesBelieved;
+dominanceSim.hive.noteMarineKill(fixedDeckOne[0]);
+assert.equal(dominanceSim.hive.marinesBelieved, believedBeforeGuardKill,
+  'killing an excluded Deck 1 guard must not decrement the mobile-force ledger');
+dominanceSim.hive.noteMarineKill(mobileMarines[0]);
+assert.equal(dominanceSim.hive.marinesBelieved, believedBeforeGuardKill - 1,
+  'killing a counted field Marine must decrement the mobile-force ledger');
 for (const agent of dominanceSim.agents) {
   if (agent.faction === FACTION.INFECTION || agent.faction === FACTION.COMBAT
     || agent.faction === FACTION.CARRIER) agent.dead = true;
