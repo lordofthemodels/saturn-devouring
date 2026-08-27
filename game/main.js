@@ -1143,7 +1143,20 @@ player.onShoved = (mps) => { shake = Math.min(1.4, shake + mps * 0.16); };
 
 player.onAmmoTaken = (src) => {
   if (src === 'armory') { sim.armoryStock--; weapon.reserve += 120; frags = Math.min(FRAG.max, frags + 4); sim.log('combat', `you strip mags and a bandolier of frags from the rack (${sim.armoryStock} rifles left)`); }
-  else { src.wasArmed = false; weapon.reserve += 60; sim.log('combat', 'you take the mags off the dead'); }
+  else {
+    const available = src.ammoRounds ?? 60;
+    const rounds = isSimAuthority()
+      ? sim.claimAmmoDrop(player.agent, src.id, available)
+      : available;
+    if (!rounds) return;
+    if (!isSimAuthority()) {
+      src.wasArmed = false;
+      src.ammoRounds = 0;
+      gameSync?.ammoPickup(src.id, rounds);
+    }
+    weapon.reserve += rounds;
+    sim.log('combat', `you take ${rounds / MA5.mag} magazine${rounds === MA5.mag ? '' : 's'} off the dead`);
+  }
 };
 player.onGrenadesTaken = () => {
   const drop = player.grenadeSource(frags, FRAG.max);

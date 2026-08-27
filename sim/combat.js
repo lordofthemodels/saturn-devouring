@@ -580,6 +580,10 @@ export function humanDeathToCorpse(sim, a) {
   // the host's weapon falls with the body — a combat form raised from it
   // picks the weapon back up (lore)
   corpse.wasArmed = a.faction === FACTION.ARMED || a.faction === FACTION.MARINE;
+  // Marines carry two recoverable magazines; armed crew keep the lighter
+  // one-magazine drop. Store the actual yield on the corpse so pickup logic
+  // does not have to infer the dead body's former faction later.
+  if (corpse.wasArmed) corpse.ammoRounds = a.faction === FACTION.MARINE ? 120 : 60;
   // ...and so does the flamethrower, if he was the one carrying it. Recorded
   // under its OWN keys, never `flamer`/`fuel`: a corpse wearing those would be
   // picked up as a live flamer by the shooter scan above. This is inert data

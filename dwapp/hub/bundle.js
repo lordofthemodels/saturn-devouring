@@ -68941,13 +68941,24 @@ function validGamePacket(packet) {
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 15;
+    PROTOCOL_VERSION = 16;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
     SAFE_CODE = /^[a-z0-9][a-z0-9-]{5,47}$/;
     PUBLIC_LOBBY = /^lobby-[a-z0-9]{12,48}$/;
-    GAME_KINDS = /* @__PURE__ */ new Set(["election", "state", "hit", "explosion", "shot", "snapshot", "medkit", "armorpack", "grenadepickup"]);
+    GAME_KINDS = /* @__PURE__ */ new Set([
+      "election",
+      "state",
+      "hit",
+      "explosion",
+      "shot",
+      "snapshot",
+      "medkit",
+      "armorpack",
+      "grenadepickup",
+      "ammopickup"
+    ]);
     bytesToHex = (bytes) => Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
     hexToBytes = (hex) => Uint8Array.from(hex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
   }
@@ -70940,6 +70951,7 @@ function makeAgent(kind, node, graph) {
     hadFlamer: void 0,
     flamerFuel: void 0,
     wasArmed: void 0,
+    ammoRounds: void 0,
     hostArmed: void 0,
     // escort / marine kit & posts (humans.js)
     callsign: void 0,
@@ -72247,6 +72259,14 @@ var init_hive = __esm({
         return link.kind === "std" && !this.knownLocked.has(link.i);
       };
       combatPass = this.bigPass;
+      // A search cannot treat a discovered locked hatch as the edge of the
+      // universe. Combat forms may route to any door they can physically batter;
+      // the movement layer performs the breach when the path reaches its panel.
+      searchPass = (link, from, to) => {
+        if (this.sim.graph.burningUntil[to ?? -1] > this.sim.t || link.kind !== "std") return false;
+        if (!this.knownLocked.has(link.i)) return true;
+        return !!link.door && !link.armorySeal && !link.fireSite;
+      };
       _layersFor(kind) {
         return ["std"];
       }
@@ -73045,14 +73065,22 @@ var init_hive = __esm({
         this.lastScarcity = S2;
         const mass = I2 + C2 * 2 + K2 * 2;
         const wasAllIn = this.allIn;
+        const wasSearchingAll = this.searchingAll;
         const wasDominant = this.combatDominant;
         this.combatDominant = this.combatDominates(C2);
         let believedAlive = 0;
         for (const b2 of this.beliefs.values()) if (b2.static || b2.conf > 0.15) believedAlive++;
-        const searchAll = believedAlive === 0 && this.beliefs.size > 0 && (mass >= 50 || this.combatDominant);
+        const searchAll = believedAlive === 0 && this.beliefs.size > 0;
         this.searchingAll = searchAll;
-        this.allIn = believedAlive > 0 && this.combatDominant || believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3 || this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0 || searchAll;
-        if (this.allIn && !wasAllIn) sim2.log("hive", searchAll ? "the hive has lost contact with the last prey — every compartment is swept" : "the hive rises as one — every form converges for the end");
+        this.allIn = believedAlive > 0 && this.combatDominant || believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3 || this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0;
+        if (this.searchingAll && !wasSearchingAll) sim2.log(
+          "hive",
+          "the hive has lost contact with the last prey — free forms sweep every compartment"
+        );
+        if (this.allIn && !wasAllIn) sim2.log(
+          "hive",
+          "the hive rises as one — every form converges for the end"
+        );
         if (this.combatDominant && !wasDominant) sim2.log(
           "hive",
           `${C2} combat forms overwhelm the hive's estimate of ${this.marinesBelieved} marines — caution ends`
@@ -73070,6 +73098,7 @@ var init_hive = __esm({
           marinesLeft: this.marinesBelieved,
           combatDominant: this.combatDominant,
           allIn: this.allIn,
+          searchingAll: this.searchingAll,
           posture: this.posture,
           opening: this.opening
         };
@@ -73417,10 +73446,13 @@ var init_hive = __esm({
           const node = targets[(form.id + i2) % targets.length].idx;
           if (node === form.node) continue;
           if (kind === "infection" && (this.localThreat(node) > 1 || g2.burningUntil[node] > this.sim.t)) continue;
-          if (kind === "combat" && !g2.path(form.node, node, ["std"], this.bigPass)) continue;
+          if (kind === "combat" && !this.searchPath(form.node, node)) continue;
           return node;
         }
         return -1;
+      }
+      searchPath(from, to) {
+        return this.sim.graph.path(from, to, ["std"], this.searchPass);
       }
       // --- §6.7/§13.5 the opening: a timed smash-and-grab ---
       openingMove(infection, combat, bodies) {
@@ -73544,7 +73576,8 @@ var init_hive = __esm({
         const sim2 = this.sim, g2 = sim2.graph, P2 = sim2.P;
         const riskAversion = P2.hive.riskBase * S2;
         const coverageTargets = g2.nodes.slice().sort((a2, b2) => sim2.influence.floodStr[a2.idx] - sim2.influence.floodStr[b2.idx] || a2.idx - b2.idx);
-        const sweepTargets = this.allIn ? coverageTargets : [];
+        const shouldSweep = this.searchingAll || this.allIn;
+        const sweepTargets = shouldSweep ? coverageTargets : [];
         const rampaging = /* @__PURE__ */ new Set();
         if (this.posture === "AGGRESSIVE") for (const n2 of g2.nodes) {
           const region = g2.nodesWithin(n2.idx, 1, ["std"], () => true);
@@ -73563,7 +73596,10 @@ var init_hive = __esm({
         const earlyFloor = sim2.t < 240 ? 3 : 2;
         let wantK = Math.min(5, earlyFloor + Math.floor((I2 + C2) / 22));
         if (sim2.t < (this._breedUntil ?? 0)) wantK = Math.min(6, wantK + 2);
-        if (K2 < wantK && (C2 > K2 || K2 === 0)) {
+        const seedingK = combat.reduce((count, form) => count + (form.task?.kind === TASK.TRANSFORM || form.task?.seed ? 1 : 0), 0);
+        const plannedK = K2 + seedingK;
+        if (bodies.some((body) => !body.claimed)) wantK = Math.max(wantK, K2 + 1);
+        if (plannedK < wantK && (C2 > K2 || K2 === 0)) {
           const target = this.bestCarrierNode();
           if (target !== -1) {
             const spares = combat.filter((c3) => !c3.fromPlayer && !this.isCombatCommitted(c3) && (!c3.task || c3.task.kind === TASK.GUARD && c3.task.muster === void 0 || c3.task.kind === TASK.ATTACK));
@@ -73627,7 +73663,7 @@ var init_hive = __esm({
         }
         this.protectCarriers(combat, carriers, S2);
         for (const f2 of combat) {
-          if (!this.allIn && !rampaging.has(f2.node)) continue;
+          if (!this.allIn && !this.searchingAll && !rampaging.has(f2.node)) continue;
           if (f2.task?.retreat) {
             if (!this.combatDominant) continue;
             if (f2.move) sim2._interruptMove(f2);
@@ -73640,12 +73676,13 @@ var init_hive = __esm({
             if (f2.move) sim2._interruptMove(f2);
             f2.path = [];
             f2.task = null;
+            sim2._setCharging(f2, false);
           }
           if (f2.task?.kind === TASK.TRANSFORM) continue;
           if (!this.combatDominant && (f2.task?.seed || f2.task?.screen !== void 0 || f2.task?.protect !== void 0)) continue;
           const target = this.allIn ? this.nearestAllInHuman(f2.node) : this.nearestBelievedHuman(f2.node);
           if (target === -1) {
-            if (this.allIn) {
+            if (shouldSweep) {
               if (f2.task?.kind === TASK.SCOUT && f2.task.sweep && (f2.move || f2.path.length || f2.node !== f2.task.node)) continue;
               const sweep = this.sweepTarget(f2, sweepTargets, "combat");
               if (sweep !== -1) this.assign(f2, { kind: TASK.SCOUT, node: sweep, sweep: true });
@@ -74203,6 +74240,9 @@ var init_hive = __esm({
           const moveGoal = form.path.at(-1)?.to ?? form.move.to;
           if (moveGoal !== task.node) this.sim._interruptMove(form);
         }
+        if (form.faction === FACTION.COMBAT && task.kind !== TASK.ATTACK) {
+          this.sim._setCharging(form, false);
+        }
         form.task = task;
         if (!same) {
           form.path = [];
@@ -74357,7 +74397,7 @@ function updateFloodTick(sim2, dt) {
       case TASK.MOVE:
       case TASK.SCOUT:
       case TASK.GUARD:
-        moveToward(sim2, a2, t2.node);
+        moveToward(sim2, a2, t2.node, t2.kind === TASK.SCOUT && t2.sweep && a2.faction === FACTION.COMBAT ? (from, to) => hive.searchPath(from, to) : null);
         if (a2.node === t2.node && !a2.move && (t2.kind === TASK.MOVE || t2.kind === TASK.SCOUT)) a2.task = null;
         break;
       case TASK.ATTACK:
@@ -75101,6 +75141,7 @@ function humanDeathToCorpse(sim2, a2) {
   corpse.lastHurtTick = a2.lastHurtTick;
   corpse.deathImpulse = a2.deathImpulse ?? null;
   corpse.wasArmed = a2.faction === FACTION.ARMED || a2.faction === FACTION.MARINE;
+  if (corpse.wasArmed) corpse.ammoRounds = a2.faction === FACTION.MARINE ? 120 : 60;
   if (a2.flamer && a2.fuel > 0) {
     corpse.hadFlamer = true;
     corpse.flamerFuel = a2.fuel;
@@ -75970,6 +76011,16 @@ var init_sim = __esm({
         if (!drop) return 0;
         const taken = Math.min(drop.count, maxCount, this.P.grenade.playerMax);
         drop.count -= taken;
+        return taken;
+      }
+      claimAmmoDrop(a2, corpseId, maxRounds) {
+        if (!a2 || a2.dead || a2.hp <= 0 || !Number.isSafeInteger(corpseId) || !Number.isSafeInteger(maxRounds) || maxRounds <= 0) return 0;
+        const corpse = this.byId.get(corpseId);
+        if (!corpse || corpse.dead || corpse.faction !== FACTION.CORPSE || !corpse.wasArmed || corpse.damage >= 100 || corpse.deck !== a2.deck || Math.hypot(corpse.x - a2.x, corpse.y - a2.y) > 2.2) return 0;
+        const taken = Math.min(corpse.ammoRounds ?? 60, maxRounds);
+        if (taken <= 0) return 0;
+        corpse.ammoRounds = Math.max(0, (corpse.ammoRounds ?? 60) - taken);
+        if (corpse.ammoRounds === 0) corpse.wasArmed = false;
         return taken;
       }
       // the unused kit within arm's reach of this agent, or null
@@ -84008,7 +84059,7 @@ var init_fps_data = __esm({
       rpm: 900,
       damage: 8,
       mag: 60,
-      reserve: 240,
+      reserve: 720,
       reloadS: 2.3,
       spreadBaseDeg: 1.35,
       spreadMaxDeg: 6.2,
@@ -92434,7 +92485,9 @@ function agentRow(agent) {
     pack(agent.armor ?? 0),
     hiddenTransit,
     agent.afterlifeId ?? -1,
-    pack(agent.respawnReadyAt ?? -1)
+    pack(agent.respawnReadyAt ?? -1),
+    agent.wasArmed ? 1 : 0,
+    agent.ammoRounds ?? 0
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === "melee") row.push(
@@ -92473,7 +92526,7 @@ function snapshotState(sim2, cache3, full) {
   };
 }
 function validSnapshotRow(row, graph) {
-  return Array.isArray(row) && (row.length === 23 || row.length === 29) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && Number.isSafeInteger(row[21]) && row[21] >= -1 && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE && row.slice(23).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+  return Array.isArray(row) && (row.length === 25 || row.length === 31) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && Number.isSafeInteger(row[21]) && row[21] >= -1 && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE && (row[23] === 0 || row[23] === 1) && Number.isSafeInteger(row[24]) && row[24] >= 0 && row[24] <= 1e3 && row.slice(25).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 function createGameSync({
   session: session2,
@@ -92606,7 +92659,9 @@ function createGameSync({
         armor,
         hiddenTransit,
         afterlifeId,
-        respawnReadyAt
+        respawnReadyAt,
+        wasArmed,
+        ammoRounds
       ] = row;
       live.add(id);
       let agent = sim2.byId.get(id);
@@ -92641,14 +92696,16 @@ function createGameSync({
       agent.armor = unpack(armor);
       agent.afterlifeId = afterlifeId;
       agent.respawnReadyAt = unpack(respawnReadyAt);
-      agent.deathImpulse = row.length === 29 ? {
+      agent.wasArmed = wasArmed === 1;
+      agent.ammoRounds = ammoRounds;
+      agent.deathImpulse = row.length === 31 ? {
         kind: "melee",
-        dirX: unpack(row[23]),
-        dirY: unpack(row[24]),
-        speed: unpack(row[25]),
-        up: unpack(row[26]),
-        spin: unpack(row[27]),
-        kick: unpack(row[28])
+        dirX: unpack(row[25]),
+        dirY: unpack(row[26]),
+        speed: unpack(row[27]),
+        up: unpack(row[28]),
+        spin: unpack(row[29]),
+        kick: unpack(row[30])
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -92805,6 +92862,10 @@ function createGameSync({
       const sender = playerAgents.get(packet.from);
       if (!sender || !Number.isSafeInteger(packet.dropId) || packet.dropId <= 0 || !Number.isSafeInteger(packet.count) || packet.count <= 0 || packet.count > sim2.P.grenade.playerMax) return;
       sim2.claimGrenadeDrop(sender, packet.dropId, packet.count);
+    } else if (packet.kind === "ammopickup") {
+      const sender = playerAgents.get(packet.from);
+      if (!sender || !Number.isSafeInteger(packet.corpseId) || packet.corpseId <= 0 || !Number.isSafeInteger(packet.rounds) || packet.rounds <= 0 || packet.rounds > 120) return;
+      sim2.claimAmmoDrop(sender, packet.corpseId, packet.rounds);
     } else if (packet.kind === "explosion") {
       const values = [packet.deck, packet.x, packet.y, packet.radius, packet.damage];
       if (!packedIntegers(values) || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5 || Math.abs(packet.x) > SIM_BOUND * WIRE_SCALE || Math.abs(packet.y) > SIM_BOUND * WIRE_SCALE) return;
@@ -92840,6 +92901,9 @@ function createGameSync({
     },
     grenadePickup(dropId, count) {
       send("grenadepickup", { dropId, count });
+    },
+    ammoPickup(corpseId, rounds) {
+      send("ammopickup", { corpseId, rounds });
     },
     explosion(deck, x2, y2, radius, damage) {
       send("explosion", { deck, x: pack(x2), y: pack(y2), radius: pack(radius), damage: pack(damage) });
@@ -92952,7 +93016,13 @@ var init_game_sync = __esm({
     LAG_SLACK_M = 2.2;
     MELEE_SLACK_M = 3.5;
     WIRE_SCALE = 1e3;
-    ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4, grenadepickup: 8 });
+    ACTION_LIMITS = Object.freeze({
+      hit: 18,
+      shot: 20,
+      explosion: 4,
+      grenadepickup: 8,
+      ammopickup: 8
+    });
     pack = (value) => Math.round(Number(value) * WIRE_SCALE);
     unpack = (value) => value / WIRE_SCALE;
     packedIntegers = (values) => values.every(Number.isSafeInteger);
@@ -95929,9 +95999,16 @@ var init_main = __esm({
         frags = Math.min(FRAG.max, frags + 4);
         sim.log("combat", `you strip mags and a bandolier of frags from the rack (${sim.armoryStock} rifles left)`);
       } else {
-        src.wasArmed = false;
-        weapon.reserve += 60;
-        sim.log("combat", "you take the mags off the dead");
+        const available = src.ammoRounds ?? 60;
+        const rounds = isSimAuthority() ? sim.claimAmmoDrop(player.agent, src.id, available) : available;
+        if (!rounds) return;
+        if (!isSimAuthority()) {
+          src.wasArmed = false;
+          src.ammoRounds = 0;
+          gameSync?.ammoPickup(src.id, rounds);
+        }
+        weapon.reserve += rounds;
+        sim.log("combat", `you take ${rounds / MA5.mag} magazine${rounds === MA5.mag ? "" : "s"} off the dead`);
       }
     };
     player.onGrenadesTaken = () => {

@@ -567,6 +567,20 @@ export class Sim {
     return taken;
   }
 
+  claimAmmoDrop(a, corpseId, maxRounds) {
+    if (!a || a.dead || a.hp <= 0 || !Number.isSafeInteger(corpseId)
+      || !Number.isSafeInteger(maxRounds) || maxRounds <= 0) return 0;
+    const corpse = this.byId.get(corpseId);
+    if (!corpse || corpse.dead || corpse.faction !== FACTION.CORPSE || !corpse.wasArmed
+      || corpse.damage >= 100 || corpse.deck !== a.deck
+      || Math.hypot(corpse.x - a.x, corpse.y - a.y) > 2.2) return 0;
+    const taken = Math.min(corpse.ammoRounds ?? 60, maxRounds);
+    if (taken <= 0) return 0;
+    corpse.ammoRounds = Math.max(0, (corpse.ammoRounds ?? 60) - taken);
+    if (corpse.ammoRounds === 0) corpse.wasArmed = false;
+    return taken;
+  }
+
   // the unused kit within arm's reach of this agent, or null
   medkitNear(a) {
     const R = this.P.medkits.useRadiusM;
