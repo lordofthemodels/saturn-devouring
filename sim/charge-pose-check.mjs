@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { combatChargeArmLift, combatChargeArmsHigh } from './charge-pose.js';
+import * as THREE from '../engine/vendor/three.webgpu.module.js';
+import { combatChargeArmPose, combatChargeArmsHigh } from './charge-pose.js';
 import { Sim } from './sim.js';
 import { FACTION, FLAG } from '../shared/agentBuffer.js';
 import { makeAgent } from './init.js';
@@ -19,7 +20,7 @@ assert.ok(Math.abs(raised / sample - 1 / 3) < 0.015,
 
 // Validate the actual combat-model fingertip directions, not just the pose
 // flag: throughout the shoulder thrash each arm must remain raised and sit
-// roughly 23°–40° outside vertical, producing a readable Y head-on.
+// roughly 38°–66° outside vertical, producing a readable Y head-on.
 for (const modelName of ['combat_civ', 'combat_odst']) {
   const model = CHARACTERS[modelName];
   for (const part of ['armL', 'armR']) {
@@ -34,15 +35,19 @@ for (const modelName of ['combat_civ', 'combat_odst']) {
       }
     }
     const side = part === 'armR' ? 1 : -1;
+    const swings = [];
     for (let sampleIndex = 0; sampleIndex < 100; sampleIndex++) {
       const phase = sampleIndex / 10;
-      const lift = combatChargeArmLift(side, phase);
-      const y = tip[1] * Math.cos(lift) - tip[2] * Math.sin(lift);
-      const z = tip[1] * Math.sin(lift) + tip[2] * Math.cos(lift);
-      const spread = Math.atan2(Math.abs(z), y);
-      assert.ok(y > 0 && spread > 0.4 && spread < 0.7,
+      const pose = combatChargeArmPose(side, phase, 37, {});
+      const direction = new THREE.Vector3(...tip)
+        .applyEuler(new THREE.Euler(pose.x, pose.y, pose.z));
+      const spread = Math.atan2(Math.hypot(direction.x, direction.z), direction.y);
+      assert.ok(direction.y > 0 && spread > 0.66 && spread < 1.16,
         `${modelName} ${part} must hold a raised Y silhouette (${spread.toFixed(3)} rad)`);
+      swings.push(pose.y + pose.z);
     }
+    assert.ok(Math.max(...swings) - Math.min(...swings) > 0.45,
+      `${modelName} ${part} must wave visibly while raised`);
   }
 }
 

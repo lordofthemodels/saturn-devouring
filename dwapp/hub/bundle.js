@@ -75199,8 +75199,12 @@ function combatChargeArmsHigh(id, chargeSequence) {
   hash3 = (hash3 ^ hash3 >>> 16) >>> 0;
   return hash3 % 3 === 0;
 }
-function combatChargeArmLift(side, phase) {
-  return -side * (1.88 + Math.sin(phase * 0.73 + side) * 0.08);
+function combatChargeArmPose(side, phase, id, out) {
+  const seed2 = id * 0.173;
+  out.x = -side * (1.55 + Math.sin(phase * 0.83 + side * 0.7 + seed2) * 0.13 + Math.sin(phase * 1.91 - side * 0.45 + seed2 * 0.37) * 0.05);
+  out.y = side * (Math.sin(phase * 1.27 + side * 0.9 + seed2) * 0.22 + Math.sin(phase * 2.61 - seed2 * 0.31) * 0.08);
+  out.z = Math.sin(phase * 0.97 - side * 0.8 + seed2 * 0.71) * 0.26 + Math.sin(phase * 2.33 + side + seed2 * 0.23) * 0.1;
+  return out;
 }
 var init_charge_pose = __esm({
   "sim/charge-pose.js"() {
@@ -82253,10 +82257,16 @@ var init_agents3d = __esm({
             if (armsHigh) {
               const side = part === "armR" ? 1 : -1;
               const phase = gaitPhase(clip, animT, id);
+              const pose = combatChargeArmPose(
+                side,
+                phase,
+                id,
+                this._chargeArmPose ??= { x: 0, y: 0, z: 0 }
+              );
               (this._eHold ??= new Euler()).set(
-                combatChargeArmLift(side, phase),
-                side * Math.sin(phase * 1.31 + id) * 0.1,
-                Math.sin(phase * 1.07 + side * 0.8) * 0.16
+                pose.x,
+                pose.y,
+                pose.z
               );
               this._mRot.makeRotationFromEuler(this._eHold);
             } else if (feral) {
