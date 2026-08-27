@@ -87,6 +87,8 @@ export class Sim {
     this.marinesKnowRevive = false; // flips at the first witnessed revive (reviveWitnessed)
     this.outcome = null;
     this.outcomeAt = null; // sim seconds at the moment it was decided
+    this.dormantVentReserves = this.P.flood.dormantVentReserves ?? 0;
+    this._dormantVentReleaseNodes = new Set();
 
     this.stats = {
       conversions: 0, conversionsRound: 0, humansConverted: 0,
@@ -1481,6 +1483,64 @@ export class Sim {
     return run / mps + (M.doorDelaySec[link.type] ?? 0);
   }
 
+  // A vent order still begins with a real walk to the grate. Route that short
+  // in-room leg around active fire instead of drawing a straight line through
+  // it—the crash blaze was silently deleting healthy opening pods before
+  // they ever reached the duct network.
+  _ventEntryPoints(from, to, room) {
+    const points = [{ x: from.x, y: from.y }];
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length > 1e-6) {
+      const ux = dx / length, uy = dy / length;
+      const px = -uy, py = ux;
+      const fires = this.fires.filter((fire) => fire.deck === room.deck && fire.node === room.idx)
+        .map((fire) => ({ fire, along: (fire.x - from.x) * ux + (fire.y - from.y) * uy }))
+        .filter(({ along }) => along > 0 && along < length)
+        .sort((a, b) => a.along - b.along);
+      for (const { fire, along } of fires) {
+        const closestX = from.x + ux * along, closestY = from.y + uy * along;
+        const signed = (fire.x - closestX) * px + (fire.y - closestY) * py;
+        const radius = this.P.fire.radiusM * fire.scale + 0.65;
+        if (Math.abs(signed) >= radius) continue;
+        const side = signed >= 0 ? -1 : 1;
+        const offset = radius * side;
+        const before = Math.max(0, along - radius);
+        const after = Math.min(length, along + radius);
+        points.push({ x: from.x + ux * before + px * offset, y: from.y + uy * before + py * offset });
+        points.push({ x: from.x + ux * after + px * offset, y: from.y + uy * after + py * offset });
+      }
+    }
+    points.push({ x: to.x, y: to.y });
+    const hw = Math.max(0.4, room.w / 2 - 0.4), hd = Math.max(0.4, room.d / 2 - 0.4);
+    for (const point of points) {
+      point.x = Math.max(room.x - hw, Math.min(room.x + hw, point.x));
+      point.y = Math.max(room.y - hd, Math.min(room.y + hd, point.y));
+    }
+    return points;
+  }
+
+  _polylinePoint(points, progress) {
+    let total = 0;
+    const lengths = [];
+    for (let index = 1; index < points.length; index++) {
+      const length = Math.hypot(points[index].x - points[index - 1].x,
+        points[index].y - points[index - 1].y);
+      lengths.push(length);
+      total += length;
+    }
+    let remaining = total * progress;
+    for (let index = 0; index < lengths.length; index++) {
+      if (remaining <= lengths[index] || index === lengths.length - 1) {
+        const part = lengths[index] > 1e-6 ? remaining / lengths[index] : 1;
+        return [points[index].x + (points[index + 1].x - points[index].x) * part,
+          points[index].y + (points[index + 1].y - points[index].y) * part];
+      }
+      remaining -= lengths[index];
+    }
+    return [points.at(-1).x, points.at(-1).y];
+  }
+
   _speedMult(a) {
     const S = this.P.speed;
     switch (a.faction) {
@@ -1787,10 +1847,13 @@ export class Sim {
           const eToX = a.move.eToX ?? to.x, eToY = a.move.eToY ?? to.y;
           if (k < appT) {
             const kk = appT > 1e-6 ? k / appT : 1;
-            const sx = a.move.sx ?? from.x, sy = a.move.sy ?? from.y;
-            a.x = sx + (eFromX - sx) * kk;
-            a.y = sy + (eFromY - sy) * kk;
-            a.heading = Math.atan2(eFromY - sy, eFromX - sx);
+            const [x, y] = a.move.entryPoints
+              ? this._polylinePoint(a.move.entryPoints, kk)
+              : [(a.move.sx ?? from.x) + (eFromX - (a.move.sx ?? from.x)) * kk,
+                (a.move.sy ?? from.y) + (eFromY - (a.move.sy ?? from.y)) * kk];
+            const oldX = a.x, oldY = a.y;
+            a.x = x; a.y = y;
+            a.heading = Math.atan2(a.y - oldY, a.x - oldX) || a.heading;
             a.move.hidden = false;
           } else if (k > 1 - exitT) {
             const kk = exitT > 1e-6 ? (k - (1 - exitT)) / exitT : 1;
@@ -1898,7 +1961,7 @@ export class Sim {
           const retreatBlocked = retreating && visibleFight.defense > 0
             && visibleFight.threatNode === step.to;
           const attackOutmatched = !retreating
-            && !this.hive.canPressCombatContact(a, !!a.task?.surge, a.task?.force);
+            && !this.hive.canPressCombatContact(a, !!a.task?.surge || this.hive.allIn, a.task?.force);
           if (!sensedCrossing || retreatBlocked || attackOutmatched) {
             a.path = [];
             this._setCharging(a, false);
@@ -1962,7 +2025,7 @@ export class Sim {
         const ladder = link.kind === 'std' && link.type === 'ladder'
           && this.graph.node(step.to).deck !== this.graph.node(a.node).deck;
         const surging = a.faction === FACTION.COMBAT && a.task?.kind === TASK.ATTACK
-          && a.task.surge && a.dragging === -1 && link.kind === 'std';
+          && (a.task.surge || this.hive.allIn) && a.dragging === -1 && link.kind === 'std';
         // hold at the pad while the rungs are taken — OR while the player has
         // called "next" on this ladder (a busy ladder queues the emergency,
         // it doesn't deny it; without the reservation NPCs re-claim the rungs
@@ -1978,7 +2041,7 @@ export class Sim {
         const holder = ladder ? this.byId.get(link.occupiedBy) : null;
         const joinsSurge = surging && holder?.faction === FACTION.COMBAT
           && holder.move?.link === link && holder.task?.kind === TASK.ATTACK
-          && holder.task.surge;
+          && (holder.task.surge || this.hive.allIn);
         if (queues && (this.vertReserved(link, a.id)
           || (this.vertBusy(link, a.id) && !joinsSurge))) continue;
         a.doorBalks = 0;
@@ -2105,11 +2168,18 @@ export class Sim {
           const eTo = (a.node === link.a ? link.doorB : link.doorA) ?? link.door ?? { x: toN.x, y: toN.y };
           const [tx, ty] = this._moveArrivalPoint(a, toN);
           const mps = Math.max(0.5, this.P.movement.baseMps * mult);
-          const appSec = Math.hypot(eFrom.x - a.x, eFrom.y - a.y) / mps;
+          const entryPoints = this._ventEntryPoints(a, eFrom, fromN);
+          let entryLength = 0;
+          for (let index = 1; index < entryPoints.length; index++) {
+            entryLength += Math.hypot(entryPoints[index].x - entryPoints[index - 1].x,
+              entryPoints[index].y - entryPoints[index - 1].y);
+          }
+          const appSec = entryLength / mps;
           const exitSec = Math.hypot(tx - eTo.x, ty - eTo.y) / mps;
           a.move.eFromX = eFrom.x; a.move.eFromY = eFrom.y;
           a.move.eToX = eTo.x; a.move.eToY = eTo.y;
           a.move.tx = tx; a.move.ty = ty;
+          a.move.entryPoints = entryPoints;
           a.move.travelSec += appSec + exitSec;
           a.move.appT = appSec / a.move.travelSec;
           a.move.exitT = exitSec / a.move.travelSec;
@@ -3086,6 +3156,7 @@ export class Sim {
         (a.faction === FACTION.COMBAT && a.downed && a.damage < 100 && a.reviveAt >= 0)));
     const anyHuman = this.agents.some((a) => !a.dead && isLivingHuman(a));
     if (!anyFlood) {
+      if (anyHuman && this._releaseDormantVentReserve()) return;
       this.outcome = 'contained';
       this.outcomeAt = this.t; // frozen: the clock keeps running, the result does not
       this.log('end', `OUTBREAK CONTAINED at ${fmtTime(this.t)} — the ship survives`);
@@ -3094,6 +3165,48 @@ export class Sim {
       this.outcomeAt = this.t;
       this.log('end', `SHIP LOST at ${fmtTime(this.t)} — the Flood owns the Saturn Devouring`);
     }
+  }
+
+  _releaseDormantVentReserve() {
+    if (this.dormantVentReserves <= 0) return false;
+    const guns = this.agents.filter((agent) => !agent.dead && agent.hp > 0
+      && (agent.faction === FACTION.MARINE || agent.faction === FACTION.ARMED));
+    let best = null;
+    let bestScore = -Infinity;
+    for (const room of this.graph.nodes) {
+      if (this.graph.burningUntil[room.idx] > this.t) continue;
+      if (this._dormantVentReleaseNodes.has(room.idx)) continue;
+      const corpses = this.agents.reduce((count, agent) => count
+        + (!agent.dead && agent.faction === FACTION.CORPSE && agent.node === room.idx
+          && agent.damage < 100 ? 1 : 0), 0);
+      if (corpses === 0) continue;
+      let nearestGun = this.graph.n;
+      for (const gun of guns) {
+        const hops = this.graph.hops(room.idx, gun.pnode ?? gun.node, ['std'], () => true);
+        if (hops !== -1) nearestGun = Math.min(nearestGun, hops);
+      }
+      // Distance from rifles dominates food quantity: one safe corpse is a
+      // viable carrier seed; four bodies beside a squad are four dead pods.
+      const score = Math.min(nearestGun, 8) * 10 + Math.min(corpses, 3) * 2
+        + (room.roles.includes('corpse_cache') ? 2 : 0);
+      if (score > bestScore || (score === bestScore && room.idx < best?.idx)) {
+        best = room;
+        bestScore = score;
+      }
+    }
+    if (!best) return false;
+    const pod = makeAgent(FACTION.INFECTION, best.idx, this.graph);
+    const angle = (pod.id * 2.399963) % (Math.PI * 2);
+    const radius = Math.min(best.w, best.d) * 0.12;
+    pod.x = best.x + Math.cos(angle) * radius;
+    pod.y = best.y + Math.sin(angle) * radius;
+    pod.hp = pod.maxHp = 1;
+    this.spawn(pod);
+    this.dormantVentReserves--;
+    this._dormantVentReleaseNodes.add(best.idx);
+    this.log('duct', `the dying hive wakes a dormant infection form in the vents of ${best.name}`,
+      best.idx, pod.x, pod.y);
+    return true;
   }
 
   // --- the one shared boundary (§2.2) ---

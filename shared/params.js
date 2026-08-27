@@ -48,6 +48,7 @@ export const PARAMS = {
     initialInfectionForms: 12, // solo base when the breach is above the lower two decks
     lowerDeckInitialInfectionForms: 10,
     initialInfectionFormsPerAdditionalPlayer: 3,
+    dormantVentReserves: 2,   // final extinction wakes at most two isolated pods already hidden in the duct network
     initialCombatForms: 0,     // a pure infection swarm; combat forms + carriers
     initialCarriers: 0,        // are EARNED through conversions, not handed out at t=0
   },
