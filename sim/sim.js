@@ -1052,6 +1052,7 @@ export class Sim {
     }
 
     this._doorFlipTick(); // per-tick: each faulty door keeps its own clock
+    this._captureHumanWalkStart();
     updateHumansTick(this, dt);
     updateFloodTick(this, dt);
     this._grenadeTick();
@@ -1060,6 +1061,7 @@ export class Sim {
     this._advanceMovement(dt);
     this._separate(dt);
     this._fireAvoid(dt);
+    this._faceWalkingHumans();
     this._fireDamage(dt);
     this._advanceDoors(dt);
     this._refreshOccupancy();
@@ -1554,6 +1556,33 @@ export class Sim {
       case FACTION.COMBAT: return a.dragging !== -1 ? S.drag : S.combatForm;
       case FACTION.CARRIER: return S.carrier;
       default: return 1;
+    }
+  }
+
+  _captureHumanWalkStart() {
+    for (const a of this.agents) {
+      if (a.dead || a.isPlayer || (a.faction !== FACTION.CIVILIAN
+        && a.faction !== FACTION.ARMED && a.faction !== FACTION.MARINE)) continue;
+      a.walkStartX = a.x;
+      a.walkStartY = a.y;
+    }
+  }
+
+  // Human facing follows the displacement the player actually sees after
+  // doorway funnels, hatch approaches and crowd separation have all acted.
+  // Individual movement branches used their intended path bearing instead;
+  // at cross-deck hatches that could be nearly perpendicular to the real
+  // walk, producing a forward gait sliding sideways across the floor.
+  // ATTACK is deliberately excluded: a shooter keeps facing the target while
+  // giving ground or shifting along a firing line.
+  _faceWalkingHumans() {
+    for (const a of this.agents) {
+      if (a.dead || a.isPlayer || a.move?.hidden || (a.faction !== FACTION.CIVILIAN
+        && a.faction !== FACTION.ARMED && a.faction !== FACTION.MARINE)) continue;
+      const clip = this._clipFor(a);
+      if (clip !== CLIP.WALK && clip !== CLIP.RUN) continue;
+      const dx = a.x - a.walkStartX, dy = a.y - a.walkStartY;
+      if (dx * dx + dy * dy > 1e-6) a.heading = Math.atan2(dy, dx);
     }
   }
 
