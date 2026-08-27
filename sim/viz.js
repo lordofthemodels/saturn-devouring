@@ -852,7 +852,7 @@ export class Viz {
 
 export function renderStats(sim, el) {
   const s = sim.getStats();
-  const teamRows = sim.squads.map((squad) => {
+  const teamRows = sim.squads.filter((squad) => !squad.deckGuard).map((squad) => {
     const living = squad.members.map((id) => sim.byId.get(id)).filter((a) => a && !a.dead && a.hp > 0);
     const room = living.length ? sim.graph.node(living[0].node).name : 'wiped out';
     return { squad, living, room };
@@ -872,7 +872,8 @@ export function renderStats(sim, el) {
       + `<span class="forceRoom">${escapeHtml(room)}</span></button>`;
   });
   if (guards.length) {
-    const room = sim.graph.node(guards[0].node).name;
+    const room = guards.some((guard) => guard.deckGuard)
+      ? 'Deck 1 coverage' : sim.graph.node(guards[0].node).name;
     teams.push(`<div class="forceRow" style="--team:${GARRISON_COLOR}"><span class="forceTag">G</span>`
       + `<span class="forceCount">${guards.length}</span><span class="forceRoom">${escapeHtml(room)}</span></div>`);
   }

@@ -28,6 +28,7 @@ export const PARAMS = {
     patrols: 3,               // roaming pair patrols walking the whole ship
     patrolSize: 2,
     garrison: 6,              // permanent Command Corridor guard detail
+    deckGuardPerRoom: 1,      // one mobile Deck 1 sentry in every actual room
   },
   // open flame on the deck (breach blaze + burning broken doors): real
   // environmental damage inside the radius, and every NPC steers clear

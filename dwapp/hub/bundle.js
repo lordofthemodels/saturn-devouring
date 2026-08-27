@@ -69017,8 +69017,10 @@ var init_params = __esm({
         patrols: 3,
         // roaming pair patrols walking the whole ship
         patrolSize: 2,
-        garrison: 6
+        garrison: 6,
         // permanent Command Corridor guard detail
+        deckGuardPerRoom: 1
+        // one mobile Deck 1 sentry in every actual room
       },
       // open flame on the deck (breach blaze + burning broken doors): real
       // environmental damage inside the radius, and every NPC steers clear
@@ -70803,6 +70805,7 @@ function makeAgent(kind, node, graph) {
     panicked: false,
     stayPut: false,
     garrison: false,
+    deckGuard: false,
     worker: false,
     captain: false,
     fleeSteps: 0,
@@ -71264,6 +71267,36 @@ function initRun(seed2, rng, P2, runOptions = {}) {
     scatterInRoom(c2, graph.node(breach), rng);
     corpses.push(c2);
   }
+  const deckOneRooms = graph.nodes.filter((node) => node.deck === 1 && node.type === "room");
+  for (const room of deckOneRooms) {
+    for (let i2 = 0; i2 < M2.deckGuardPerRoom; i2++) {
+      const squad = {
+        id: squads.length,
+        members: [],
+        objective: { kind: "guard", node: room.idx },
+        morale: 1,
+        respondingTo: null,
+        phase1: false,
+        deckGuard: true,
+        postNode: room.idx,
+        size0: 1
+      };
+      const a2 = makeAgent(FACTION.MARINE, room.idx, graph);
+      const angle = (room.idx * 2.399963 + i2 * 3.883222) % (Math.PI * 2);
+      const radius = Math.min(room.w, room.d) * 0.12;
+      a2.x = room.x + Math.cos(angle) * radius;
+      a2.y = room.y + Math.sin(angle) * radius;
+      a2.hp = a2.maxHp = P2.combat.marine.hp;
+      a2.hasRadio = true;
+      a2.frags = P2.grenade.perMarine;
+      a2.squad = squad.id;
+      a2.garrison = true;
+      a2.deckGuard = true;
+      squad.members.push(a2.id);
+      agents2.push(a2);
+      squads.push(squad);
+    }
+  }
   return { graph, agents: [...agents2, ...corpses, ...flood], squads, breach };
 }
 function scatterInRoom(a2, nd, rng) {
@@ -71575,7 +71608,7 @@ function maybeThrowFrag(sim2, a2, dt) {
 }
 function updateMarineTick(sim2, a2, dt) {
   const P2 = sim2.P;
-  if (a2.garrison) {
+  if (a2.garrison && !a2.deckGuard) {
     a2.state = sim2.losFloodThreat(a2) > 0 ? STATE.FIGHT : STATE.IDLE;
     a2.path = [];
     a2.move = null;
@@ -71635,7 +71668,8 @@ function updateMarineTick(sim2, a2, dt) {
   a2.givingGround = false;
   if (a2.state === STATE.FIGHT) a2.state = STATE.MOVE;
   const pursuitFresh = squad.pursuitNode !== void 0 && sim2.tickCount - squad.pursuitTick <= P2.marineDoctrine.pursuitMemorySec * P2.sim.tickHz;
-  if (pursuitFresh && sim2.tickCount > squad.contactTick && !squad.order && !squad.lastStandBound && !securingCrash(sim2, squad)) {
+  const guardMayPursue = !squad.deckGuard || squad.objective?.kind === "distress" || squad.pursuitResume?.kind === "distress";
+  if (pursuitFresh && sim2.tickCount > squad.contactTick && !squad.order && !squad.lastStandBound && !securingCrash(sim2, squad) && guardMayPursue) {
     setPursuitObjective(squad, squad.pursuitNode, squad.pursuitTargetId);
   }
   if (sim2.graph.node(a2.node).type !== "corridor" && threat === 0) sim2.sweptAt[a2.node] = sim2.t;
@@ -71689,8 +71723,9 @@ function updateMarineTick(sim2, a2, dt) {
   if (!a2.move && !a2.path.length && squad.objective) {
     const target = squad.objective.node;
     if (a2.node !== target) {
-      let ok = sim2.setPathTo(a2, target, ["std"], humanPass);
-      if (!ok) ok = sim2.setPathTo(a2, target, ["std"], marinePass);
+      const guardPass = squad.deckGuard ? deckOnePass(sim2) : humanPass;
+      let ok = sim2.setPathTo(a2, target, ["std"], guardPass);
+      if (!ok && !squad.deckGuard) ok = sim2.setPathTo(a2, target, ["std"], marinePass);
       if (!ok) squad.objective = null;
       else a2.state = STATE.MOVE;
     }
@@ -71741,6 +71776,9 @@ function setPursuitObjective(squad, node, targetId) {
 }
 function securingCrash(sim2, squad) {
   return squad.phase1 && squad.reachedBreachAt !== void 0 && sim2.t - squad.reachedBreachAt < sim2.P.marineDoctrine.crashSecureSec;
+}
+function deckOnePass(sim2) {
+  return sim2._deckOneMarinePass ??= (link, from, to) => humanPass(link) && sim2.graph.node(from).deck === 1 && sim2.graph.node(to).deck === 1;
 }
 function applySquadOrder(sim2, squad, leader) {
   const o2 = squad.order;
@@ -71805,6 +71843,10 @@ function strategicSquads(sim2) {
     if (members.some((m2) => m2.state === STATE.FIGHT)) continue;
     if (squad.patrol) {
       patrolPlan(sim2, squad, leader);
+      continue;
+    }
+    if (squad.deckGuard) {
+      deckGuardPlan(sim2, squad, leader);
       continue;
     }
     if (squad.pendingSweep && sim2.t >= sim2.P.marineDoctrine.firstSweepDelaySec) {
@@ -71889,6 +71931,42 @@ function strategicSquads(sim2) {
     }
   }
 }
+function deckGuardPlan(sim2, squad, leader) {
+  const P2 = sim2.P;
+  const pass3 = deckOnePass(sim2);
+  if (squad.objective?.kind === "distress") {
+    const call3 = sim2.calls.find((entry) => entry.id === squad.objective.callId);
+    const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
+    const clear = sim2.visibleNodes(squad.objective.node).every((node) => sim2.floodStrengthAt(node) === 0);
+    const active2 = call3 && sim2.t - call3.t <= P2.radio.callFadeSec && sim2.graph.node(call3.node).deck === 1;
+    if (active2 && (!arrived || !clear)) return;
+    squad.respondingTo = null;
+    squad.objective = null;
+    leader.path = [];
+  }
+  if (squad.lastStandBound) {
+    squad.objective = { kind: "guard", node: squad.postNode };
+    return;
+  }
+  for (let index = sim2.calls.length - 1; index >= 0; index--) {
+    const call3 = sim2.calls[index];
+    if (sim2.t - call3.t > P2.radio.callFadeSec) continue;
+    if (sim2.graph.node(call3.node).deck !== 1 || call3.rolled.has(squad.id)) continue;
+    call3.rolled.add(squad.id);
+    const nearest = sim2.squads.filter((candidate) => candidate.deckGuard && !candidate.broken && (candidate.objective?.kind !== "distress" || candidate.objective.callId === call3.id)).map((candidate) => {
+      const point = candidate.members.map((id) => sim2.byId.get(id)).find((member) => member && !member.dead && member.hp > 0 && member.state !== STATE.FIGHT);
+      const distance3 = point ? sim2.graph.hops(point.pnode ?? point.node, call3.node, ["std"], pass3) : -1;
+      return { id: candidate.id, distance: distance3 };
+    }).filter((candidate) => candidate.distance >= 0).sort((a2, b2) => a2.distance - b2.distance || a2.id - b2.id).slice(0, 2);
+    if (!nearest.some((candidate) => candidate.id === squad.id)) continue;
+    squad.objective = { kind: "distress", node: call3.node, callId: call3.id };
+    squad.respondingTo = call3.id;
+    leader.path = [];
+    sim2.log("radio", `Deck 1 sentry responding to distress in ${sim2.graph.node(call3.node).name}`);
+    return;
+  }
+  squad.objective = { kind: "guard", node: squad.postNode };
+}
 function patrolPlan(sim2, squad, leader) {
   const P2 = sim2.P;
   if (squad.lastStandBound) {
@@ -71971,10 +72049,11 @@ function mergeThinSquads(sim2) {
   for (const A2 of sim2.squads) {
     const aliveA = A2.members.map((id) => sim2.byId.get(id)).filter((m2) => m2 && !m2.dead && m2.hp > 0);
     if (!aliveA.length) continue;
+    if (A2.deckGuard) continue;
     if (!A2.broken && aliveA.length > 2) continue;
     if (A2.patrol && aliveA.length >= 2) continue;
     for (const B3 of sim2.squads) {
-      if (B3 === A2 || B3.broken) continue;
+      if (B3 === A2 || B3.broken || B3.deckGuard) continue;
       const aliveB = B3.members.map((id) => sim2.byId.get(id)).filter((m2) => m2 && !m2.dead && m2.hp > 0);
       if (aliveB.length < 2) continue;
       const d2 = sim2.graph.hops(aliveA[0].node, aliveB[0].node, ["std"], humanPass);
@@ -72023,7 +72102,7 @@ function assignFirstSweep(sim2) {
   for (const squad of sim2.squads) {
     const leader = sim2.byId.get(squad.members[0]);
     squad.size0 = squad.members.length;
-    if (squad.patrol) continue;
+    if (squad.patrol || squad.deckGuard) continue;
     squad.objective = { kind: "hold", node: leader.node };
     const d2 = sim2.graph.hops(leader.node, sim2.graph.breachNode, ["std"], humanPass);
     if (d2 !== -1) ranked.push({ squad, d: d2 });
@@ -76014,6 +76093,7 @@ var init_sim = __esm({
             members[0].callsign.rank = "Cpl";
             continue;
           }
+          if (squad.deckGuard) continue;
           lineSquads++;
           if (lineSquads === 1) {
             members[0].callsign.rank = "2ndLt";
@@ -76067,7 +76147,7 @@ var init_sim = __esm({
         if (!freshest || this.tickCount - freshest.contactTick > 60 * 10) return;
         const node = freshest.contactNode;
         for (const s2 of this.squads) {
-          if (s2.broken || s2.patrol || s2 === freshest || s2.order) continue;
+          if (s2.broken || s2.patrol || s2.deckGuard || s2 === freshest || s2.order) continue;
           const k2 = s2.objective?.kind;
           if (k2 !== "hold" && k2 !== "sweep" && s2.objective) continue;
           const lead = s2.members.map((id) => this.byId.get(id)).find((m2) => m2 && !m2.dead && m2.hp > 0);

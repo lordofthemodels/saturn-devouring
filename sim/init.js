@@ -28,7 +28,8 @@ export function makeAgent(kind, node, graph) {
     move: null, // { to, link, layer, t (0..1), travelSec }
     path: [],   // remaining [{to, link, layer}]
     hp: 1, maxHp: 1, damage: 0,
-    hasRadio: false, helpless: false, panicked: false, stayPut: false, garrison: false,
+    hasRadio: false, helpless: false, panicked: false, stayPut: false,
+    garrison: false, deckGuard: false,
     worker: false, captain: false, fleeSteps: 0,
     downed: false, reviveAt: -1, // self-revive schedule (sim seconds)
     squad: -1,
@@ -514,6 +515,34 @@ export function initRun(seed, rng, P, runOptions = {}) {
     c.wasArmed = rng.chance(P.bodies.armedFraction);
     scatterInRoom(c, graph.node(breach), rng);
     corpses.push(c);
+  }
+
+  // Append dynamic command-deck coverage after the original population so
+  // adding sentries never perturbs a seed's existing crew, bodies, or Flood.
+  // Fixed room-relative posts likewise consume no shared random rolls.
+  const deckOneRooms = graph.nodes.filter((node) => node.deck === 1 && node.type === 'room');
+  for (const room of deckOneRooms) {
+    for (let i = 0; i < M.deckGuardPerRoom; i++) {
+      const squad = {
+        id: squads.length, members: [], objective: { kind: 'guard', node: room.idx },
+        morale: 1, respondingTo: null, phase1: false,
+        deckGuard: true, postNode: room.idx, size0: 1,
+      };
+      const a = makeAgent(FACTION.MARINE, room.idx, graph);
+      const angle = (room.idx * 2.399963 + i * 3.883222) % (Math.PI * 2);
+      const radius = Math.min(room.w, room.d) * 0.12;
+      a.x = room.x + Math.cos(angle) * radius;
+      a.y = room.y + Math.sin(angle) * radius;
+      a.hp = a.maxHp = P.combat.marine.hp;
+      a.hasRadio = true;
+      a.frags = P.grenade.perMarine;
+      a.squad = squad.id;
+      a.garrison = true;
+      a.deckGuard = true;
+      squad.members.push(a.id);
+      agents.push(a);
+      squads.push(squad);
+    }
   }
 
   return { graph, agents: [...agents, ...corpses, ...flood], squads, breach };

@@ -5,6 +5,7 @@ import { Sim } from './sim.js';
 import { Viz, renderStats, renderLog, squadTag } from './viz.js';
 import { CMD } from './commands.js';
 import { PARAMS } from '../shared/params.js';
+import { SHIP } from './data/ship.js';
 
 const canvas = document.getElementById('canvas');
 const statsEl = document.getElementById('stats');
@@ -14,13 +15,15 @@ const logEl = document.getElementById('log');
 // provide explicit overrides, so tuning cannot silently drift.
 const SCENARIO_IDS = ['startInf', 'startCf', 'startCar', 'inMarines', 'inCivilians',
   'inArmed', 'inMaint', 'inBodies', 'inBreach'];
+const DECK_ONE_GUARDS = SHIP.nodes.filter((node) => node.deck === 1 && node.type === 'room').length
+  * PARAMS.marines.deckGuardPerRoom;
 const CONTROL_DEFAULTS = {
   startInf: PARAMS.flood.initialInfectionForms,
   startCf: PARAMS.flood.initialCombatForms,
   startCar: PARAMS.flood.initialCarriers,
   inMarines: PARAMS.marines.squads * PARAMS.marines.squadSize
     + PARAMS.marines.patrols * PARAMS.marines.patrolSize
-    + PARAMS.marines.garrison + PARAMS.armory.odstSquadSize,
+    + PARAMS.marines.garrison + DECK_ONE_GUARDS + PARAMS.armory.odstSquadSize,
   inCivilians: PARAMS.crew.civilians + PARAMS.crew.lowerMaintenance
     + PARAMS.crew.brigPrisoners + PARAMS.crew.medbayWounded,
   inArmed: PARAMS.crew.armedCrew + PARAMS.marineDoctrine.officers + PARAMS.marineDoctrine.bridgeOfficers,
@@ -31,6 +34,7 @@ const CONTROL_DEFAULTS = {
   dialQ: Math.round(PARAMS.belief.predictionQuality * 100),
   dialRadio: Math.round(PARAMS.radio.marineCallReliability * 100),
 };
+document.getElementById('inMarines').min = DECK_ONE_GUARDS;
 for (const [id, value] of Object.entries(CONTROL_DEFAULTS)) {
   document.getElementById(id).value = value;
 }
@@ -47,8 +51,11 @@ function swarmOverrides() {
       : CONTROL_DEFAULTS[id];
   };
   const marineTotal = num('inMarines');
-  const odst = Math.min(PARAMS.armory.odstSquadSize, marineTotal);
-  const fieldMarines = marineTotal - odst;
+  // Deck 1 coverage is the minimum complement. Remaining Marines fill the
+  // reserve, corridor garrison, patrols, then line squads in that order.
+  const afterDeckGuard = marineTotal - DECK_ONE_GUARDS;
+  const odst = Math.min(PARAMS.armory.odstSquadSize, afterDeckGuard);
+  const fieldMarines = afterDeckGuard - odst;
   const garrison = Math.min(fieldMarines, Math.round(fieldMarines * 3 / 14));
   const patrols = Math.min(Math.floor((fieldMarines - garrison) / 2), Math.round(fieldMarines * 3 / 28));
   const lineCount = fieldMarines - garrison - patrols * PARAMS.marines.patrolSize;
@@ -79,6 +86,7 @@ function swarmOverrides() {
       lineCount,
       patrols,
       garrison,
+      deckGuardPerRoom: PARAMS.marines.deckGuardPerRoom,
     },
     crew: {
       civilians: civilianRemainder,
