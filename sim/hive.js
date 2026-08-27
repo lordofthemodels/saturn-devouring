@@ -96,6 +96,14 @@ export class Hive {
     return link.kind === 'std' && !this.knownLocked.has(link.i);
   };
   combatPass = this.bigPass;
+  // A search cannot treat a discovered locked hatch as the edge of the
+  // universe. Combat forms may route to any door they can physically batter;
+  // the movement layer performs the breach when the path reaches its panel.
+  searchPass = (link, from, to) => {
+    if (this.sim.graph.burningUntil[to ?? -1] > this.sim.t || link.kind !== 'std') return false;
+    if (!this.knownLocked.has(link.i)) return true;
+    return !!link.door && !link.armorySeal && !link.fireSite;
+  };
   _layersFor(kind) {
     return ['std'];
   }
@@ -1003,6 +1011,7 @@ export class Hive {
     // 150-form hive besieged 6 rifles forever (probe timeouts).
     const mass = I + C * 2 + K * 2;
     const wasAllIn = this.allIn;
+    const wasSearchingAll = this.searchingAll;
     const wasDominant = this.combatDominant;
     this.combatDominant = this.combatDominates(C);
     // mass-ratio trigger against CONFIDENT beliefs only (a raw count kept
@@ -1014,20 +1023,19 @@ export class Hive {
     // THE COUNTER CLOSES THE GAME (user redesign): when the hive's own kill
     // ledger says the garrison is nearly spent, it stops tip-toeing — the
     // armed resistance is what stood between it and the ship.
-    // No confident position does not mean no prey. The absorbed crew manifest
-    // remains in beliefs until a death is learned; when overwhelming mass has
-    // lost every contact, it searches the topology instead of dropping out of
-    // endgame posture and guarding empty rooms forever.
-    const searchAll = believedAlive === 0 && this.beliefs.size > 0
-      && (mass >= 50 || this.combatDominant);
+    // No confident position does not mean no prey. Once every contact is lost,
+    // free appendages search the topology whether or not the hive is strong
+    // enough for an all-in assault. Production and carrier guards remain
+    // committed; searching is information gathering, not aggression.
+    const searchAll = believedAlive === 0 && this.beliefs.size > 0;
     this.searchingAll = searchAll;
     this.allIn = (believedAlive > 0 && this.combatDominant)
       || (believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3)
-      || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0)
-      || searchAll;
-    if (this.allIn && !wasAllIn) sim.log('hive', searchAll
-      ? 'the hive has lost contact with the last prey — every compartment is swept'
-      : 'the hive rises as one — every form converges for the end');
+      || (this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0);
+    if (this.searchingAll && !wasSearchingAll) sim.log('hive',
+      'the hive has lost contact with the last prey — free forms sweep every compartment');
+    if (this.allIn && !wasAllIn) sim.log('hive',
+      'the hive rises as one — every form converges for the end');
     if (this.combatDominant && !wasDominant) sim.log('hive',
       `${C} combat forms overwhelm the hive's estimate of ${this.marinesBelieved} marines — caution ends`);
 
@@ -1047,7 +1055,8 @@ export class Hive {
     // with it. Refreshed on the 2.5 s strategic tick, not per frame.
     this.stats = { I, C, K, bodies: bodies.length, mass, S, believedAlive,
       marinesLeft: this.marinesBelieved, combatDominant: this.combatDominant,
-      allIn: this.allIn, posture: this.posture, opening: this.opening };
+      allIn: this.allIn, searchingAll: this.searchingAll,
+      posture: this.posture, opening: this.opening };
     if (this.posture === 'AGGRESSIVE' && !wasAggro) sim.log('hive', 'the hive turns from hit-and-run to open aggression');
 
     // re-validate queued paths against current beliefs: a route planned two
@@ -1459,10 +1468,14 @@ export class Hive {
       if (node === form.node) continue;
       if (kind === 'infection' && (this.localThreat(node) > 1
         || g.burningUntil[node] > this.sim.t)) continue;
-      if (kind === 'combat' && !g.path(form.node, node, ['std'], this.bigPass)) continue;
+      if (kind === 'combat' && !this.searchPath(form.node, node)) continue;
       return node;
     }
     return -1;
+  }
+
+  searchPath(from, to) {
+    return this.sim.graph.path(from, to, ['std'], this.searchPass);
   }
 
   // --- §6.7/§13.5 the opening: a timed smash-and-grab ---
@@ -1624,7 +1637,8 @@ export class Hive {
     // no room names or authored search route are involved.
     const coverageTargets = g.nodes.slice().sort((a, b) =>
       (sim.influence.floodStr[a.idx] - sim.influence.floodStr[b.idx]) || (a.idx - b.idx));
-    const sweepTargets = this.allIn ? coverageTargets : [];
+    const shouldSweep = this.searchingAll || this.allIn;
+    const sweepTargets = shouldSweep ? coverageTargets : [];
 
     // 1. AGGRESSION IS LOCAL (user note): each region decides hide-vs-rampage
     //    on its OWN situation, independent of the global pool. A pocket of
@@ -1667,7 +1681,14 @@ export class Hive {
     const earlyFloor = sim.t < 240 ? 3 : 2;
     let wantK = Math.min(5, earlyFloor + Math.floor((I + C) / 22));
     if (sim.t < (this._breedUntil ?? 0)) wantK = Math.min(6, wantK + 2);
-    if (K < wantK && (C > K || K === 0)) {
+    const seedingK = combat.reduce((count, form) => count
+      + (form.task?.kind === TASK.TRANSFORM || form.task?.seed ? 1 : 0), 0);
+    const plannedK = K + seedingK;
+    // An unclaimed body is stored growth. Keep one additional carrier in the
+    // pipeline while that food remains, but count walking/rooting seeds so a
+    // single corpse cannot draft a new carrier every strategic tick.
+    if (bodies.some((body) => !body.claimed)) wantK = Math.max(wantK, K + 1);
+    if (plannedK < wantK && (C > K || K === 0)) {
       const target = this.bestCarrierNode();
       if (target !== -1) {
         // a form raised from the PLAYER never roots into a carrier (game rule);
@@ -1780,7 +1801,7 @@ export class Hive {
       // ship never joined the endgame push): the rampage-pocket gate only
       // conscripted forms already standing near the fight — everyone
       // breeding three decks away sat the assault out forever
-      if (!this.allIn && !rampaging.has(f.node)) continue;
+      if (!this.allIn && !this.searchingAll && !rampaging.has(f.node)) continue;
       if (f.task?.retreat) {
         if (!this.combatDominant) continue;
         if (f.move) sim._interruptMove(f);
@@ -1797,6 +1818,7 @@ export class Hive {
         if (f.move) sim._interruptMove(f);
         f.path = [];
         f.task = null;
+        sim._setCharging(f, false);
       }
       if (f.task?.kind === TASK.TRANSFORM) continue; // a rooting carrier is not a soldier
       if (!this.combatDominant
@@ -1805,7 +1827,7 @@ export class Hive {
       // a reason to report every survivor beyond it as unreachable.
       const target = this.allIn ? this.nearestAllInHuman(f.node) : this.nearestBelievedHuman(f.node);
       if (target === -1) {
-        if (this.allIn) {
+        if (shouldSweep) {
           // Keep a live topology sweep stable only while there is genuinely
           // no prey to pursue. A newly refreshed human belief must interrupt
           // scouting immediately instead of leaving the army walking past it.
@@ -2558,6 +2580,12 @@ export class Hive {
     if (!same && form.move && task.node !== undefined) {
       const moveGoal = form.path.at(-1)?.to ?? form.move.to;
       if (moveGoal !== task.node) this.sim._interruptMove(form);
+    }
+    // Charging is an attack state, not a permanent animation bit. Strategic
+    // reassignment to search, guard, or production must drop it immediately,
+    // including when the old attack had already reached its room.
+    if (form.faction === FACTION.COMBAT && task.kind !== TASK.ATTACK) {
+      this.sim._setCharging(form, false);
     }
     form.task = task;
     if (!same) {

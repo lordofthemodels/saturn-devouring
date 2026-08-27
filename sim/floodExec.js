@@ -198,7 +198,10 @@ export function updateFloodTick(sim, dt) {
       case TASK.MOVE:
       case TASK.SCOUT:
       case TASK.GUARD:
-        moveToward(sim, a, t.node);
+        moveToward(sim, a, t.node, t.kind === TASK.SCOUT && t.sweep
+          && a.faction === FACTION.COMBAT
+          ? (from, to) => hive.searchPath(from, to)
+          : null);
         if (a.node === t.node && !a.move && (t.kind === TASK.MOVE || t.kind === TASK.SCOUT)) a.task = null;
         break;
 
