@@ -580,11 +580,29 @@ export class Hive {
     return best;
   }
 
-  nearestCombatTarget(form, candidates = null) {
+  lockedCombatTarget(form) {
+    if (form.task?.kind !== TASK.ATTACK || form.task.targetId === undefined) return null;
+    const target = this.sim.byId.get(form.task.targetId);
+    return target && isLivingHuman(target) ? target : null;
+  }
+
+  combatTargetLoad(targetId, excludeId = -1) {
+    let load = 0;
+    for (const attacker of this.sim.agents) {
+      if (attacker.id === excludeId || attacker.dead || attacker.downed || attacker.hp <= 0
+        || attacker.faction !== FACTION.COMBAT) continue;
+      if (this.lockedCombatTarget(attacker)?.id === targetId) load++;
+    }
+    return load;
+  }
+
+  nearestCombatTarget(form, candidates = null, targetLoads = null) {
     const humans = candidates ?? this.sim.lineOfSightAgents(form, isLivingHuman);
+    const cap = this.sim.P.combat.combatForm.attackersPerTarget;
     let best = null, bestDistance = Infinity;
     for (const human of humans) {
       if (!isLivingHuman(human)) continue;
+      if (targetLoads && (targetLoads.get(human.id) ?? 0) >= cap) continue;
       const distance = this.sim.agentDistance(form, human);
       if (distance < bestDistance - 1e-9
         || (Math.abs(distance - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
@@ -664,8 +682,23 @@ export class Hive {
     const canPress = forced || this.allIn || decisionDefense === 0
       || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.killRatio);
     if (canPress) {
+      // Target locks are individual and sticky. Count every live combat form,
+      // not just this visible pack, so two waves entering through different
+      // doors cannot each dogpile the same marine. New commitments fill the
+      // nearest target to three, then spill onto the next. Existing locks are
+      // never rebalanced when another trio dies; assign() preserves them until
+      // either the form or its target is dead.
+      const targetLoads = new Map();
+      for (const attacker of this.sim.agents) {
+        if (attacker.dead || attacker.downed || attacker.hp <= 0
+          || attacker.faction !== FACTION.COMBAT) continue;
+        const locked = this.lockedCombatTarget(attacker);
+        if (locked) targetLoads.set(locked.id, (targetLoads.get(locked.id) ?? 0) + 1);
+      }
       for (const member of pack) {
-        const prey = this.nearestCombatTarget(member, knownHumans) ?? stimulus;
+        const locked = this.lockedCombatTarget(member);
+        const prey = locked ?? this.nearestCombatTarget(member, knownHumans, targetLoads);
+        if (!locked && prey) targetLoads.set(prey.id, (targetLoads.get(prey.id) ?? 0) + 1);
         const node = prey ? (prey.pnode ?? prey.node) : fallbackNode;
         if (node === undefined || node < 0) continue;
         this.assign(member, { kind: TASK.ATTACK, node, targetId: prey?.id,
@@ -928,6 +961,8 @@ export class Hive {
     if (!replan && form.task?.retreat && form.task.threatNode === threatNode
       && (form.move || form.path.length)) return false;
     if (this.retreatCombatForm(form, threatNode, retreatStrength)) return false;
+    if (targetId !== undefined && this.combatTargetLoad(targetId, form.id)
+      >= this.sim.P.combat.combatForm.attackersPerTarget) targetId = undefined;
     this.assign(form, { kind: TASK.ATTACK, node: threatNode, targetId,
       force: true, cornered: true });
     return true;
@@ -1757,6 +1792,7 @@ export class Hive {
       // redistribute the army; otherwise dozens of forms can keep charging an
       // empty compartment forever while the last survivors sit elsewhere.
       if (f.task?.kind === TASK.ATTACK) {
+        if (this.lockedCombatTarget(f)) continue;
         if (!this.searchingAll) continue;
         if (f.move) sim._interruptMove(f);
         f.path = [];
@@ -2484,6 +2520,14 @@ export class Hive {
         : (body && !body.dead && body.damage < 100);
       if (alive) return; // committed — the order is ignored
     }
+    // A combat form is an appendage with one job once a live body is chosen.
+    // Do not rebalance it when another target becomes nearer or an adjacent
+    // trio is killed; that produces visible target oscillation. Death on
+    // either side naturally releases the lock because lockedCombatTarget()
+    // then returns null and the next response may allocate a replacement.
+    const lockedTarget = form.faction === FACTION.COMBAT
+      ? this.lockedCombatTarget(form) : null;
+    if (lockedTarget && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
     // re-issuing the SAME task must not wipe the path or restart progress —
     // the strategic round re-assigns standing orders every 2.5 s, and the
     // clear-repath cycle read as agents stuttering mid-corridor (user note:

@@ -475,8 +475,41 @@ breachForms[0].lastHurtTick = breachSim.tickCount;
 breachSim._spatialSteer(breachForms[0], breachSim.dt);
 assert.ok(breachForms.every((form) => form.task?.kind === TASK.ATTACK && form.task.surge),
   'an overwhelming pack must surge through the doorway as one response');
-assert.ok(breachForms.every((form) => form.task.targetId !== undefined),
-  'every appendage in the breach must receive a concrete marine target');
+const targetLoads = new Map();
+for (const form of breachForms) {
+  if (form.task.targetId === undefined) continue;
+  targetLoads.set(form.task.targetId, (targetLoads.get(form.task.targetId) ?? 0) + 1);
+}
+assert.equal([...targetLoads.values()].reduce((sum, count) => sum + count, 0), 12,
+  'four marines must receive three concrete attackers each');
+assert.ok([...targetLoads.values()].every((count) => count === 3),
+  'no marine may receive more than its three-form attack team');
+
+const firstTarget = breachMarines[0];
+const secondTarget = breachMarines[1];
+const firstTeam = breachForms.filter((form) => form.task.targetId === firstTarget.id);
+const secondTeam = breachForms.filter((form) => form.task.targetId === secondTarget.id);
+assert.equal(firstTeam.length, 3, 'the nearest marine must receive the first trio');
+assert.equal(secondTeam.length, 3, 'the next marine must receive the second trio');
+for (const form of firstTeam) form.dead = true;
+breachSim.tickCount++;
+breachSim.t += breachSim.dt;
+breachSim._refreshOccupancy();
+breachSim.hive.respondToCombat(secondTeam[0], firstTarget, true);
+assert.ok(secondTeam.every((form) => form.task.targetId === secondTarget.id),
+  'losing the first trio must not retask a surviving trio onto the newly open target');
+const replacementFirstTeam = breachForms.filter((form) => !form.dead
+  && form.task.targetId === firstTarget.id);
+assert.equal(replacementFirstTeam.length, 3,
+  'previously unassigned forms may fill the newly open attack slots');
+for (const form of replacementFirstTeam) form.dead = true;
+secondTarget.dead = true;
+breachSim.tickCount++;
+breachSim.t += breachSim.dt;
+breachSim._refreshOccupancy();
+breachSim.hive.respondToCombat(secondTeam[0], firstTarget, true);
+assert.ok(secondTeam.every((form) => form.task.targetId === firstTarget.id),
+  'a target death must release its trio onto the nearest available marine');
 
 // Global combat dominance ends the conservative opening and cancels existing
 // retreats at exactly two active forms per believed marine. A small remnant

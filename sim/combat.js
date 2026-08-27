@@ -4,6 +4,7 @@
 
 import { FACTION } from '../shared/agentBuffer.js';
 import { STATE, makeAgent } from './init.js';
+import { TASK } from './hive.js';
 import { explodeCarrier } from './floodExec.js';
 
 // deterministic per-agent marksmanship in [1-spread, 1+spread] — squads have
@@ -421,12 +422,21 @@ export function resolveCombat(sim, dt) {
         const victims = sim.lineOfSightAgents(f, (a) => a.faction === FACTION.MARINE
           || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN);
         if (victims.length) {
-          let best = null, bestScore = Infinity;
-          for (const v of victims) {
-            if (v.hp <= 0 || v.dead) continue;
-            const d = sim.agentDistance(f, v);
-            const score = d + v.id * 1e-6;
-            if (score < bestScore) { bestScore = score; best = v; }
+          const locked = sim.hive.lockedCombatTarget(f);
+          // An allocated attacker hits only its chosen body. An overflow form
+          // with a room-level ATTACK but no available slot waits for one; it
+          // must not bypass the three-per-target cap in the damage layer.
+          let best = locked && victims.some((victim) => victim.id === locked.id)
+            ? locked : null;
+          if (f.task?.kind === TASK.ATTACK && !best) continue;
+          let bestScore = Infinity;
+          if (!best) {
+            for (const v of victims) {
+              if (v.hp <= 0 || v.dead) continue;
+              const d = sim.agentDistance(f, v);
+              const score = d + v.id * 1e-6;
+              if (score < bestScore) { bestScore = score; best = v; }
+            }
           }
           if (!best) break;
           const range = Math.hypot(best.x - f.x, best.y - f.y);
