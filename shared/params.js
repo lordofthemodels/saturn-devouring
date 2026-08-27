@@ -161,10 +161,12 @@ export const PARAMS = {
   },
   swarm: {
     overwhelmRatio: 2.0,   // weighted flood:shooter ratio at which grabs work THROUGH gunfire
+    dominationRatio: 2.0,  // active combat forms per believed marine that ends caution globally
+    dominationMinForms: 8, // zero/near-zero marine beliefs still require a real fighting mass
     // 3:1 DOCTRINE (user redesign): the hive avoids marines unless it holds a
-    // ~3:1 combat-form advantage — or has no choice (the muster patience
-    // valve, cornered forms, and the all-in endgame are the "no choice"
-    // paths, and they all stand).
+    // ~3:1 local advantage until its total combat force reaches the 2:1
+    // global dominance rule above. The muster patience valve and cornered
+    // forms remain the other "no choice" paths.
     killRatio: 3.0,        // muster:defense ratio before an assault launches
     musterHops: 3,         // how far the hive gathers forms for a squad-wipe
     maxMusterForms: 45,    // a wave this size flattens any line — stop waiting

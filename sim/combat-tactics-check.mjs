@@ -478,6 +478,90 @@ assert.ok(breachForms.every((form) => form.task?.kind === TASK.ATTACK && form.ta
 assert.ok(breachForms.every((form) => form.task.targetId !== undefined),
   'every appendage in the breach must receive a concrete marine target');
 
+// Global combat dominance ends the conservative opening and cancels existing
+// retreats at exactly two active forms per believed marine. A small remnant
+// still cannot infer victory merely because its marine counter reached zero.
+const dominanceSim = new Sim('global-combat-dominance-check');
+for (const agent of dominanceSim.agents) {
+  if (agent.faction === FACTION.INFECTION || agent.faction === FACTION.COMBAT
+    || agent.faction === FACTION.CARRIER) agent.dead = true;
+}
+dominanceSim.hive.marinesBelieved = 4;
+assert.equal(dominanceSim.hive.combatDominates(7), false,
+  'seven forms must not claim dominance over four believed marines');
+assert.equal(dominanceSim.hive.combatDominates(8), true,
+  'the 2:1 global combat threshold must trigger exactly');
+dominanceSim.hive.marinesBelieved = 0;
+assert.equal(dominanceSim.hive.combatDominates(7), false,
+  'a tiny remnant must not claim an empty marine ledger as certain victory');
+assert.equal(dominanceSim.hive.combatDominates(8), true,
+  'the minimum fighting mass must close a zero-marine endgame');
+dominanceSim.hive.marinesBelieved = 4;
+const dominanceForms = Array.from({ length: 8 }, () =>
+  makeAgent(FACTION.COMBAT, dominanceSim.graph.breachNode, dominanceSim.graph));
+for (const form of dominanceForms) dominanceSim.spawn(form);
+dominanceForms[0].task = { kind: TASK.MOVE, node: dominanceForms[0].node,
+  retreat: true, threatNode: dominanceForms[0].node, retreatStrength: 1 };
+dominanceForms[0].path = [{ to: dominanceForms[0].node, link: null, layer: 'std' }];
+dominanceSim._refreshOccupancy();
+dominanceSim._computeInfluence();
+dominanceSim.hive.strategicTick();
+assert.equal(dominanceSim.hive.combatDominant, true,
+  'the strategic posture must expose global combat dominance');
+assert.equal(dominanceSim.hive.allIn, true,
+  'global combat dominance must activate all-in routing and contact rules');
+assert.equal(dominanceSim.hive.opening, false,
+  'global combat dominance must not remain trapped in opening doctrine');
+assert.ok(dominanceForms.every((form) => !form.task?.retreat),
+  'global combat dominance must cancel every surviving retreat');
+assert.ok(dominanceForms.every((form) => form.task?.kind === TASK.ATTACK
+  || form.task?.kind === TASK.SCOUT
+  || form.task?.kind === TASK.TRANSFORM
+  || (form.task?.kind === TASK.GUARD && form.task.muster !== undefined)),
+  'dominant combat forms must attack or preserve only the hive production bet');
+assert.ok(dominanceForms.filter((form) => form.task?.kind === TASK.TRANSFORM).length <= 1,
+  'dominance must preserve at most one immediate carrier investment');
+
+// A stale all-in attack must be replaced by topology search. This is the
+// late-game failure mode where a whole army kept charging an empty room after
+// its last confident contact decayed, leaving isolated survivors untouched.
+const staleAttack = dominanceForms[0];
+dominanceSim.hive.searchingAll = true;
+dominanceSim.hive.believedHumanStr.fill(0);
+dominanceSim.hive.believedHardness.fill(0);
+staleAttack.task = { kind: TASK.ATTACK, node: staleAttack.node };
+staleAttack.path = [];
+dominanceSim.hive.steadyState([], dominanceForms, [], [], 0,
+  dominanceForms.length, 0, dominanceSim.hive.lastScarcity);
+assert.notEqual(staleAttack.task?.kind, TASK.ATTACK,
+  'search-all must discard an attack whose human contact has gone stale');
+
+// Strategic retasking must not leave a form physically travelling away from
+// its new objective. Matching destinations preserve the leg (no stutter);
+// an opposite order interrupts and re-anchors it before the next path solve.
+const retaskSim = new Sim('strategic-opposite-leg-check');
+for (const agent of retaskSim.agents) agent.dead = true;
+const retaskDoor = openEscapeDoor(retaskSim);
+assert.ok(retaskDoor, 'strategic retask fixture needs an open standard edge');
+const retaskedForm = makeAgent(FACTION.COMBAT, retaskDoor.a, retaskSim.graph);
+retaskSim.spawn(retaskedForm);
+retaskSim.tickCount = 1;
+retaskSim.t = retaskSim.dt;
+retaskedForm.task = { kind: TASK.GUARD, node: retaskDoor.b };
+retaskSim.setPathTo(retaskedForm, retaskDoor.b, ['std'], (edge) => !edge.locked);
+retaskSim._refreshOccupancy();
+retaskSim._advanceMovement(retaskSim.dt);
+assert.ok(retaskedForm.move, 'strategic retask fixture must begin a physical leg');
+const retainedLeg = retaskedForm.move;
+retaskSim.hive.assign(retaskedForm, { kind: TASK.ATTACK, node: retaskDoor.b });
+assert.equal(retaskedForm.move, retainedLeg,
+  'a replacement order with the same destination must preserve movement');
+retaskSim.hive.assign(retaskedForm, { kind: TASK.ATTACK, node: retaskDoor.a });
+assert.equal(retaskedForm.move, null,
+  'a replacement order aimed behind the mover must cancel the opposite leg');
+assert.equal(retaskedForm.node, retaskDoor.a,
+  'the interrupted mover must re-anchor where it physically stands');
+
 // An all-in hive must be able to see and route to survivors behind another
 // remembered gun line. Previously nearestBelievedHuman returned no target and
 // the entire rear mass idled at its carrier node.

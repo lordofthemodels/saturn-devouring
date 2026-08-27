@@ -69196,10 +69196,14 @@ var init_params = __esm({
       swarm: {
         overwhelmRatio: 2,
         // weighted flood:shooter ratio at which grabs work THROUGH gunfire
+        dominationRatio: 2,
+        // active combat forms per believed marine that ends caution globally
+        dominationMinForms: 8,
+        // zero/near-zero marine beliefs still require a real fighting mass
         // 3:1 DOCTRINE (user redesign): the hive avoids marines unless it holds a
-        // ~3:1 combat-form advantage — or has no choice (the muster patience
-        // valve, cornered forms, and the all-in endgame are the "no choice"
-        // paths, and they all stand).
+        // ~3:1 local advantage until its total combat force reaches the 2:1
+        // global dominance rule above. The muster patience valve and cornered
+        // forms remain the other "no choice" paths.
         killRatio: 3,
         // muster:defense ratio before an assault launches
         musterHops: 3,
@@ -72096,6 +72100,13 @@ var init_hive = __esm({
       noteMarineKill() {
         this.marinesBelieved = Math.max(0, this.marinesBelieved - 1);
       }
+      combatDominates(combatForms) {
+        const P2 = this.sim.P.swarm;
+        return combatForms >= Math.max(
+          P2.dominationMinForms,
+          Math.ceil(this.marinesBelieved * P2.dominationRatio)
+        );
+      }
       // seconds through the duct network between two rooms' grates — the closed
       // form the whole redesign leans on: time ∝ real grate-to-grate distance
       ventEtaSec(from, to) {
@@ -72844,12 +72855,18 @@ var init_hive = __esm({
         this.lastScarcity = S2;
         const mass = I2 + C2 * 2 + K2 * 2;
         const wasAllIn = this.allIn;
+        const wasDominant = this.combatDominant;
+        this.combatDominant = this.combatDominates(C2);
         let believedAlive = 0;
         for (const b2 of this.beliefs.values()) if (b2.static || b2.conf > 0.15) believedAlive++;
-        const searchAll = believedAlive === 0 && this.beliefs.size > 0 && mass >= 50;
+        const searchAll = believedAlive === 0 && this.beliefs.size > 0 && (mass >= 50 || this.combatDominant);
         this.searchingAll = searchAll;
-        this.allIn = believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3 || this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0 || searchAll;
+        this.allIn = believedAlive > 0 && this.combatDominant || believedAlive > 0 && mass >= 50 && mass >= believedAlive * 3 || this.marinesBelieved <= 3 && mass >= 25 && believedAlive > 0 || searchAll;
         if (this.allIn && !wasAllIn) sim2.log("hive", searchAll ? "the hive has lost contact with the last prey — every compartment is swept" : "the hive rises as one — every form converges for the end");
+        if (this.combatDominant && !wasDominant) sim2.log(
+          "hive",
+          `${C2} combat forms overwhelm the hive's estimate of ${this.marinesBelieved} marines — caution ends`
+        );
         const wasAggro = this.posture === "AGGRESSIVE";
         this.posture = K2 >= 2 && S2 <= 1.05 || this.allIn || this.marinesBelieved <= 2 ? "AGGRESSIVE" : "EVASIVE";
         this.stats = {
@@ -72861,6 +72878,7 @@ var init_hive = __esm({
           S: S2,
           believedAlive,
           marinesLeft: this.marinesBelieved,
+          combatDominant: this.combatDominant,
           allIn: this.allIn,
           posture: this.posture,
           opening: this.opening
@@ -72874,7 +72892,7 @@ var init_hive = __esm({
           }
         }
         this.evade(forms, carriers);
-        if (this.opening) {
+        if (this.opening && !this.combatDominant) {
           this.openingMove(infection, combat, bodies);
           this.protectCarriers(combat, carriers, S2);
           if (sim2.firstSweepCleared) {
@@ -72882,6 +72900,10 @@ var init_hive = __esm({
             sim2.log("hive", "hive hands off to steady-state economy (first sweep has passed)");
           }
           return;
+        }
+        if (this.opening) {
+          this.opening = false;
+          sim2.log("hive", "overwhelming combat strength ends the opening — every surviving marine is hunted");
         }
         this.steadyState(infection, combat, carriers, bodies, I2, C2, K2, S2);
       }
@@ -73416,10 +73438,21 @@ var init_hive = __esm({
         this.protectCarriers(combat, carriers, S2);
         for (const f2 of combat) {
           if (!this.allIn && !rampaging.has(f2.node)) continue;
-          if (f2.task?.retreat) continue;
-          if (f2.task && (f2.task.kind === TASK.ATTACK || f2.task.kind === TASK.TRANSFORM)) continue;
+          if (f2.task?.retreat) {
+            if (!this.combatDominant) continue;
+            if (f2.move) sim2._interruptMove(f2);
+            f2.path = [];
+            f2.task = null;
+          }
+          if (f2.task?.kind === TASK.ATTACK) {
+            if (!this.searchingAll) continue;
+            if (f2.move) sim2._interruptMove(f2);
+            f2.path = [];
+            f2.task = null;
+          }
+          if (f2.task?.kind === TASK.TRANSFORM) continue;
           if (f2.task?.kind === TASK.SCOUT && f2.task.sweep && (f2.move || f2.path.length || f2.node !== f2.task.node)) continue;
-          if (f2.task?.seed || f2.task?.screen !== void 0 || f2.task?.protect !== void 0) continue;
+          if (!this.combatDominant && (f2.task?.seed || f2.task?.screen !== void 0 || f2.task?.protect !== void 0)) continue;
           const target = this.allIn ? this.nearestAllInHuman(f2.node) : this.nearestBelievedHuman(f2.node);
           if (target === -1) {
             if (this.allIn) {
@@ -73461,7 +73494,10 @@ var init_hive = __esm({
           this._musterBan ??= /* @__PURE__ */ new Map();
           for (const [target, forms] of staged) {
             const defense = this.believedHumanStr[target] + this.believedHardness[target];
-            const needed = this.allIn ? Math.min(P2.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6))) : Math.min(defense * P2.swarm.killRatio, P2.swarm.maxMusterForms);
+            const needed = this.combatDominant ? Math.min(P2.swarm.maxMusterForms, Math.max(
+              4,
+              Math.ceil(this.believedHumanStr[target] * P2.swarm.dominationRatio)
+            )) : this.allIn ? Math.min(P2.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6))) : Math.min(defense * P2.swarm.killRatio, P2.swarm.maxMusterForms);
             const arrived = forms.filter((f2) => !f2.move && f2.node === f2.task.node).length;
             if (defense <= 0.8 || arrived >= needed) {
               this._musterStart.delete(target);
@@ -73969,6 +74005,10 @@ var init_hive = __esm({
         }
         if (t2?.kind === TASK.TRANSFORM !== (task.kind === TASK.TRANSFORM)) {
           this._combatCacheTick = -1;
+        }
+        if (!same && form.move && task.node !== void 0) {
+          const moveGoal = form.path.at(-1)?.to ?? form.move.to;
+          if (moveGoal !== task.node) this.sim._interruptMove(form);
         }
         form.task = task;
         if (!same) {
