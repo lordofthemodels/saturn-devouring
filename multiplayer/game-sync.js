@@ -17,7 +17,9 @@ const SIM_BOUND = 1_000;
 const LAG_SLACK_M = 2.2;
 const MELEE_SLACK_M = 3.5;
 const WIRE_SCALE = 1_000;
-const ACTION_LIMITS = Object.freeze({ hit: 18, shot: 20, explosion: 4, grenadepickup: 8 });
+const ACTION_LIMITS = Object.freeze({
+  hit: 18, shot: 20, explosion: 4, grenadepickup: 8, ammopickup: 8,
+});
 
 const pack = (value) => Math.round(Number(value) * WIRE_SCALE);
 const unpack = (value) => value / WIRE_SCALE;
@@ -76,6 +78,8 @@ function agentRow(agent) {
     hiddenTransit,
     agent.afterlifeId ?? -1,
     pack(agent.respawnReadyAt ?? -1),
+    agent.wasArmed ? 1 : 0,
+    agent.ammoRounds ?? 0,
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === 'melee') row.push(
@@ -111,14 +115,14 @@ function snapshotState(sim, cache, full) {
 }
 
 function validSnapshotRow(row, graph) {
-  // 23 fields, or 29 with a melee death impulse on the tail. The two at
+  // 25 fields, or 31 with a melee death impulse on the tail. The two at
   // 17/18 are the leap arc, 20 is hidden transit, and 21/22 carry each
   // player's physical afterlife target and authority-owned revive clock;
   // positional
   // layout changes are why
   // PROTOCOL_VERSION moved — a peer on the old shape rejects every row rather
   // than misreading one.
-  return Array.isArray(row) && (row.length === 23 || row.length === 29)
+  return Array.isArray(row) && (row.length === 25 || row.length === 31)
     && packedIntegers(row.slice(0, 12))
     && Number.isSafeInteger(row[0]) && row[0] > 0
     && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6
@@ -137,7 +141,9 @@ function validSnapshotRow(row, graph) {
     && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2                 // hidden transit kind
     && Number.isSafeInteger(row[21]) && row[21] >= -1
     && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE
-    && row.slice(23).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+    && (row[23] === 0 || row[23] === 1)
+    && Number.isSafeInteger(row[24]) && row[24] >= 0 && row[24] <= 1_000
+    && row.slice(25).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 
 export function createGameSync({
@@ -271,7 +277,7 @@ export function createGameSync({
     for (const row of rows) {
       const [id, faction, state, node, x, y, deck, hp, maxHp, damage,
         heading, animTime, dead, downed, helpless, panicked, meleeUntil, hoverY, leaping, armor,
-        hiddenTransit, afterlifeId, respawnReadyAt] = row;
+        hiddenTransit, afterlifeId, respawnReadyAt, wasArmed, ammoRounds] = row;
       live.add(id);
       let agent = sim.byId.get(id);
       if (!agent) {
@@ -307,9 +313,11 @@ export function createGameSync({
       agent.armor = unpack(armor);
       agent.afterlifeId = afterlifeId;
       agent.respawnReadyAt = unpack(respawnReadyAt);
-      agent.deathImpulse = row.length === 29 ? {
-        kind: 'melee', dirX: unpack(row[23]), dirY: unpack(row[24]),
-        speed: unpack(row[25]), up: unpack(row[26]), spin: unpack(row[27]), kick: unpack(row[28]),
+      agent.wasArmed = wasArmed === 1;
+      agent.ammoRounds = ammoRounds;
+      agent.deathImpulse = row.length === 31 ? {
+        kind: 'melee', dirX: unpack(row[25]), dirY: unpack(row[26]),
+        speed: unpack(row[27]), up: unpack(row[28]), spin: unpack(row[29]), kick: unpack(row[30]),
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -491,6 +499,11 @@ export function createGameSync({
         || !Number.isSafeInteger(packet.count) || packet.count <= 0
         || packet.count > sim.P.grenade.playerMax) return;
       sim.claimGrenadeDrop(sender, packet.dropId, packet.count);
+    } else if (packet.kind === 'ammopickup') {
+      const sender = playerAgents.get(packet.from);
+      if (!sender || !Number.isSafeInteger(packet.corpseId) || packet.corpseId <= 0
+        || !Number.isSafeInteger(packet.rounds) || packet.rounds <= 0 || packet.rounds > 120) return;
+      sim.claimAmmoDrop(sender, packet.corpseId, packet.rounds);
     } else if (packet.kind === 'explosion') {
       const values = [packet.deck, packet.x, packet.y, packet.radius, packet.damage];
       if (!packedIntegers(values) || !Number.isInteger(packet.deck) || packet.deck < 1 || packet.deck > 5
@@ -522,6 +535,9 @@ export function createGameSync({
     },
     grenadePickup(dropId, count) {
       send('grenadepickup', { dropId, count });
+    },
+    ammoPickup(corpseId, rounds) {
+      send('ammopickup', { corpseId, rounds });
     },
     explosion(deck, x, y, radius, damage) {
       send('explosion', { deck, x: pack(x), y: pack(y), radius: pack(radius), damage: pack(damage) });

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { CLIP, FLAG, FACTION } from '../shared/agentBuffer.js';
+import { makeAgent } from '../sim/init.js';
 import { Sim } from '../sim/sim.js';
 import { createGameSync } from './game-sync.js';
 import { PROTOCOL_VERSION } from './protocol.js';
@@ -49,12 +50,12 @@ const sync = createGameSync({
 const target = sim.agents.find((agent) => agent.faction === FACTION.INFECTION && !agent.dead);
 assert.ok(target, 'fixture needs a live infection form');
 
-const row = (hiddenTransit) => [
-  target.id, target.faction, target.state, target.node,
-  Math.round(target.x * 1_000), Math.round(target.y * 1_000), target.deck,
-  Math.round(target.hp * 1_000), Math.round(target.maxHp * 1_000), Math.round(target.damage * 1_000),
-  Math.round(target.heading * 1_000), Math.round(target.animTime * 1_000),
-  0, 0, 0, 0, -1_000, 0, 0, 0, hiddenTransit, -1, -1_000,
+const row = (hiddenTransit, agent = target, wasArmed = 0, ammoRounds = 0) => [
+  agent.id, agent.faction, agent.state, agent.node,
+  Math.round(agent.x * 1_000), Math.round(agent.y * 1_000), agent.deck,
+  Math.round(agent.hp * 1_000), Math.round(agent.maxHp * 1_000), Math.round(agent.damage * 1_000),
+  Math.round(agent.heading * 1_000), Math.round(agent.animTime * 1_000),
+  0, 0, 0, 0, -1_000, 0, 0, 0, hiddenTransit, -1, -1_000, wasArmed, ammoRounds,
 ];
 const direct = listeners.get('direct');
 assert.equal(typeof direct, 'function', 'game sync must subscribe to direct packets');
@@ -153,6 +154,30 @@ direct({
 assert.deepEqual(sim.grenadeDrops, [{ id: 900, node: cic, deck: 1, x: 2, y: 3, count: 2 }],
   'authority snapshots must recreate marine grenade drops on peers');
 
+const remoteCorpse = makeAgent(FACTION.CORPSE, cic, sim.graph);
+sim.spawn(remoteCorpse);
+direct({
+  from: 'did:a',
+  data: {
+    v: PROTOCOL_VERSION,
+    kind: 'snapshot',
+    from: 'did:a',
+    authority: 'did:a',
+    authorityTerm: 1,
+    seq: 5,
+    tick: sim.tickCount + 1,
+    t: Math.round((sim.t + sim.dt) * 1_000),
+    full: false,
+    complete: true,
+    agents: [row(0, remoteCorpse, 1, 120)],
+    removed: [],
+  },
+});
+assert.equal(remoteCorpse.wasArmed, true,
+  'authority snapshots must preserve an armed corpse as an ammo source');
+assert.equal(remoteCorpse.ammoRounds, 120,
+  'authority snapshots must preserve the marine two-magazine drop');
+
 sync.close();
 
 const authorityListeners = new Map();
@@ -195,6 +220,23 @@ authorityListeners.get('direct')({
 });
 assert.equal(authoritySim.grenadeDrops[0].count, 1,
   'authority must validate and consume a remote grenade pickup claim');
+const ammoCorpse = makeAgent(FACTION.CORPSE, remote.node, authoritySim.graph);
+ammoCorpse.x = remote.x;
+ammoCorpse.y = remote.y;
+ammoCorpse.wasArmed = true;
+ammoCorpse.ammoRounds = 120;
+authoritySim.spawn(ammoCorpse);
+authorityListeners.get('direct')({
+  from: 'did:b',
+  data: {
+    v: PROTOCOL_VERSION, kind: 'ammopickup', from: 'did:b',
+    authority: 'did:a', authorityTerm: 1, seq: 2, corpseId: ammoCorpse.id, rounds: 120,
+  },
+});
+assert.equal(ammoCorpse.wasArmed, false,
+  'authority must validate and consume a remote marine-ammo pickup');
+assert.equal(ammoCorpse.ammoRounds, 0,
+  'a remote marine-ammo pickup cannot be collected twice');
 authoritySync.close();
 
 console.log('multiplayer hidden transit ✓');
