@@ -75447,9 +75447,9 @@ function combatChargeArmsHigh(id, chargeSequence) {
 }
 function combatChargeArmPose(side, phase, id, out) {
   const seed2 = id * 0.173;
-  out.x = -side * (1.55 + Math.sin(phase * 0.83 + side * 0.7 + seed2) * 0.13 + Math.sin(phase * 1.91 - side * 0.45 + seed2 * 0.37) * 0.05);
-  out.y = side * (Math.sin(phase * 1.27 + side * 0.9 + seed2) * 0.22 + Math.sin(phase * 2.61 - seed2 * 0.31) * 0.08);
-  out.z = Math.sin(phase * 0.97 - side * 0.8 + seed2 * 0.71) * 0.26 + Math.sin(phase * 2.33 + side + seed2 * 0.23) * 0.1;
+  out.x = -side * (1.52 + Math.sin(id * 1.713 + side * 2.177) * 0.08 + Math.sin(phase * 0.83 + side * 0.7 + seed2) * 0.08 + Math.sin(phase * 1.91 - side * 0.45 + seed2 * 0.37) * 0.045 + Math.sin(phase * 3.87 + side * 1.2 + seed2 * 1.1) * 0.035);
+  out.y = side * (0.14 + Math.sin(phase * 1.27 + side * 0.9 + seed2) * 0.055 + Math.sin(phase * 2.61 - seed2 * 0.31) * 0.025);
+  out.z = -0.1 + Math.sin(phase * 0.97 - side * 0.8 + seed2 * 0.71) * 0.06 + Math.sin(phase * 2.33 + side + seed2 * 0.23) * 0.03;
   return out;
 }
 var init_charge_pose = __esm({

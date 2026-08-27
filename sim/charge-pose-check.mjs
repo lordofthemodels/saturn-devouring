@@ -19,8 +19,9 @@ assert.ok(Math.abs(raised / sample - 1 / 3) < 0.015,
   `arms-high rate must stay near one third (got ${raised}/${sample})`);
 
 // Validate the actual combat-model fingertip directions, not just the pose
-// flag: throughout the shoulder thrash each arm must remain raised and sit
-// roughly 38°–66° outside vertical, producing a readable Y head-on.
+// flag: throughout the shoulder thrash each arm must remain raised, stay on
+// its own side, and point forward. Depth cannot count toward the Y spread —
+// that was how a backwards-pointing hand passed the previous check.
 for (const modelName of ['combat_civ', 'combat_odst']) {
   const model = CHARACTERS[modelName];
   for (const part of ['armL', 'armR']) {
@@ -35,19 +36,32 @@ for (const modelName of ['combat_civ', 'combat_odst']) {
       }
     }
     const side = part === 'armR' ? 1 : -1;
-    const swings = [];
-    for (let sampleIndex = 0; sampleIndex < 100; sampleIndex++) {
-      const phase = sampleIndex / 10;
-      const pose = combatChargeArmPose(side, phase, 37, {});
-      const direction = new THREE.Vector3(...tip)
-        .applyEuler(new THREE.Euler(pose.x, pose.y, pose.z));
-      const spread = Math.atan2(Math.hypot(direction.x, direction.z), direction.y);
-      assert.ok(direction.y > 0 && spread > 0.66 && spread < 1.16,
-        `${modelName} ${part} must hold a raised Y silhouette (${spread.toFixed(3)} rad)`);
-      swings.push(pose.y + pose.z);
+    const averageRaises = [];
+    for (let poseId = 1; poseId <= 24; poseId++) {
+      const spreads = [], raises = [];
+      for (let sampleIndex = 0; sampleIndex < 120; sampleIndex++) {
+        const phase = sampleIndex / 12;
+        const pose = combatChargeArmPose(side, phase, poseId, {});
+        const direction = new THREE.Vector3(...tip)
+          .applyEuler(new THREE.Euler(pose.x, pose.y, pose.z));
+        const spread = Math.atan2(Math.abs(direction.z), direction.y);
+        assert.ok(direction.y > 0 && spread > 0.66 && spread < 1.20,
+          `${modelName} ${part} must hold a raised Y silhouette (${spread.toFixed(3)} rad)`);
+        assert.ok(direction.x > 0,
+          `${modelName} ${part} must point forward while raised (${direction.x.toFixed(3)} m)`);
+        assert.ok(direction.z * side > 0,
+          `${modelName} ${part} must stay on its anatomical side`);
+        spreads.push(spread);
+        raises.push(Math.abs(pose.x));
+      }
+      assert.ok(Math.max(...spreads) - Math.min(...spreads) > 0.22,
+        `${modelName} ${part} must wave visibly while raised`);
+      assert.ok(Math.max(...raises) - Math.min(...raises) > 0.20,
+        `${modelName} ${part} must jerk through multiple raise angles`);
+      averageRaises.push(raises.reduce((sum, value) => sum + value, 0) / raises.length);
     }
-    assert.ok(Math.max(...swings) - Math.min(...swings) > 0.45,
-      `${modelName} ${part} must wave visibly while raised`);
+    assert.ok(Math.max(...averageRaises) - Math.min(...averageRaises) > 0.15,
+      `${modelName} ${part} must vary its resting raise angle between forms`);
   }
 }
 
