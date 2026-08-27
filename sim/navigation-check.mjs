@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { FACTION } from '../shared/agentBuffer.js';
-import { makeAgent } from './init.js';
+import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
 import { Sim } from './sim.js';
 
@@ -125,6 +125,33 @@ for (let tick = 0; tick < 1_000 && ladderForm.move; tick++) {
   break;
 }
 assert.ok(emerged, 'the flood form must emerge from the destination ladder hatch');
+
+// Cross-deck travellers approach a real pad that is usually nowhere near the
+// abstract bearing between the two room centres. The rendered walk must face
+// that visible displacement, including formation and collision correction.
+const humanFacingSim = new Sim('human-cross-deck-facing-check');
+for (const agent of humanFacingSim.agents) agent.dead = true;
+humanFacingSim.fires = [];
+const command = humanFacingSim.graph.byId.get('d1corr');
+const commandLift = humanFacingSim.graph.edges.find((edge) => edge.kind === 'std'
+  && edge.type === 'lift' && (edge.a === command || edge.b === command));
+assert.ok(commandLift, 'human facing fixture needs the Command Corridor lift');
+const liftTarget = commandLift.a === command ? commandLift.b : commandLift.a;
+const walker = makeAgent(FACTION.MARINE, command, humanFacingSim.graph);
+humanFacingSim.spawn(walker);
+walker.state = STATE.MOVE;
+humanFacingSim.setPath(walker, [{ to: liftTarget, link: commandLift, layer: 'std' }]);
+humanFacingSim._refreshOccupancy();
+humanFacingSim._advanceMovement(humanFacingSim.dt); // begin the leg
+humanFacingSim._captureHumanWalkStart();
+humanFacingSim._advanceMovement(humanFacingSim.dt); // visibly approach the pad
+humanFacingSim._faceWalkingHumans();
+const walkDx = walker.x - walker.walkStartX, walkDy = walker.y - walker.walkStartY;
+assert.ok(Math.hypot(walkDx, walkDy) > 0.001, 'the lift approach must visibly move');
+const walkBearing = Math.atan2(walkDy, walkDx);
+const headingError = Math.abs(Math.atan2(Math.sin(walker.heading - walkBearing),
+  Math.cos(walker.heading - walkBearing)));
+assert.ok(headingError < 1e-6, 'a walking human must face its actual visible travel vector');
 
 // A combat wave that has already committed to a shared surge must not stop
 // for the full climb behind its lead form. Ordinary bodies still use the
