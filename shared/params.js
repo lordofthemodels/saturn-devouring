@@ -233,17 +233,12 @@ export const PARAMS = {
     stock: 16,             // rifles racked — first come, first served (once unsealed)
     // THE SEALED RESERVE (user rule): the armory starts LOCKED. Inside: the
     // racked rifles + grenade crates, one flamethrower, and an ODST squad
-    // standing by with more armor than a line marine. The seal releases only
-    // when the ship is genuinely losing — a strong hive AND a thin line.
+    // standing by with more armor than a line marine. Each seed assigns its
+    // own release time without consulting marine or Flood strength.
     odstSquadSize: 5,
     odstHp: 85,                // vs line marine 45 — hardened ODST plate
-    unlockCombatForms: 20,     // flood must field at least this many combat forms
-    unlockMarinesLeft: 10,     // and the line squads must be down to this few
-    // SECOND GATE (user: the seal should open just before the all-hands fall
-    // back, and it was landing after it or not at all). Release once the line
-    // is within this many marines of the fall-back threshold, so the reserve
-    // is always out first.
-    releaseLeadMarines: 4,
+    releaseMinSec: 5 * 60,
+    releaseMaxSec: 8 * 60,
   },
   // MED PACKS (user: "a classic halo edition ... two per player in the med
   // bay, and 2 per player randomly scattered throughout the ship as part of
