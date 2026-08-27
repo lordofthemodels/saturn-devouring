@@ -54,8 +54,8 @@ export const PARAMS = {
   // carrier and only spill out when it RUPTURES — under fire, or at the top
   // limit. Gestation starts the moment the carrier forms.
   carrier: {
-    incubationIntervalSec: 7.3125, // faster gestation makes a protected carrier snowball sooner
-    firstIncubationSec: 3.9,     // first form seats quickly (-35%)
+    incubationIntervalSec: 8.409375, // +15% gestation reins in protected-carrier snowballs
+    firstIncubationSec: 4.485,   // the quick first form pays the same +15%
     maxInfectionForms: 8,      // top limit — the skin can't hold more; it ruptures
     seekOrExplodeFraction: 0.85, // near-full: waddle toward prey so the pop lands on someone
     explodeDamage: 20,         // to humans within the rupture radius
@@ -465,10 +465,10 @@ export const PARAMS = {
     // panicked sprint. The lunge (~6.6) and charge (~6.3) still beat it.
     civilian: 1.0, civilianFlee: 3.0, armed: 1.0, marine: 1.0,
     // pods SKITTER at full tilt ALWAYS (user: they read fast when attacking
-    // and slow otherwise — one speed now). 4.7 = the old 1.35 base × the old
-    // 3.5 lunge burst, so the attack closing speed (~6.6 m/s) is unchanged
-    // and travel simply matches it.
-    infection: 4.7, combatForm: 1.25,
+    // and slow otherwise — one speed now). 3.76 is 20% below the former 4.7,
+    // still faster than a panicked human sprint without dominating every
+    // open-room pursuit.
+    infection: 3.76, combatForm: 1.25,
     carrier: 0.55, // lore: a slow, blundering waddle — people underestimate it
     drag: 0.5,
     // lore: combat forms don't jog at prey — they SPRINT, as fast as a
