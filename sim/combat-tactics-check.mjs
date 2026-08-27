@@ -577,10 +577,13 @@ dominanceSim.hive.believedHumanStr.fill(0);
 dominanceSim.hive.believedHardness.fill(0);
 staleAttack.task = { kind: TASK.ATTACK, node: staleAttack.node };
 staleAttack.path = [];
+staleAttack.charging = true;
 dominanceSim.hive.steadyState([], dominanceForms, [], [], 0,
   dominanceForms.length, 0, dominanceSim.hive.lastScarcity);
 assert.notEqual(staleAttack.task?.kind, TASK.ATTACK,
   'search-all must discard an attack whose human contact has gone stale');
+assert.equal(staleAttack.charging, false,
+  'discarding a stale attack must also clear its orphaned charge pose');
 
 // Strategic retasking must not leave a form physically travelling away from
 // its new objective. Matching destinations preserve the leg (no stutter);
@@ -637,19 +640,18 @@ updateFloodTick(allInSim, allInSim.dt);
 assert.ok(allInForm.path.length > 0,
   'an all-in attack must take the direct breach route instead of idling');
 
-// If the hive's live contacts all go stale while the crew manifest still says
-// prey remains, its combat mass fans across the graph rather than guarding
-// empty carrier rooms. Different ids should naturally cover different nodes.
-const sweepSim = new Sim('all-in-sweep-check');
+// Searching for unlocated survivors is not itself an all-in attack. Free
+// appendages fan across the graph while production commitments remain intact.
+const sweepSim = new Sim('unknown-contact-sweep-check');
 for (const agent of sweepSim.agents) agent.dead = true;
 const sweepForms = Array.from({ length: 10 }, () => makeAgent(FACTION.COMBAT, sweepSim.graph.breachNode, sweepSim.graph));
 const sweepPods = Array.from({ length: 6 }, () => makeAgent(FACTION.INFECTION, sweepSim.graph.breachNode, sweepSim.graph));
 for (const form of sweepForms) sweepSim.spawn(form);
 for (const form of sweepPods) sweepSim.spawn(form);
 sweepSim.hive.opening = false;
-sweepSim.hive.allIn = true;
+sweepSim.hive.allIn = false;
 sweepSim.hive.searchingAll = true;
-sweepSim.hive.posture = 'AGGRESSIVE';
+sweepSim.hive.posture = 'EVASIVE';
 sweepSim.hive.believedHumanStr.fill(0);
 sweepSim.hive.believedHardness.fill(0);
 sweepSim._refreshOccupancy();
@@ -657,13 +659,90 @@ sweepSim._computeInfluence();
 sweepSim.hive.steadyState(sweepPods, sweepForms, [], [], sweepPods.length, sweepForms.length, 5, 1);
 const sweeps = sweepForms.filter((form) => form.task?.kind === TASK.SCOUT && form.task.sweep);
 assert.equal(sweeps.length, sweepForms.length,
-  'an all-in hive without a contact must send every free combat form searching');
+  'an uncertain hive must send every free combat form searching without requiring all-in');
 assert.ok(new Set(sweeps.map((form) => form.task.node)).size > 1,
   'the endgame search must fan out across the live graph instead of forming another pile');
 assert.ok(sweepPods.every((form) => form.task?.kind === TASK.SCOUT && form.task.sweep),
   'free infection forms must join the shared coverage sweep instead of parking at a carrier');
 assert.ok(new Set(sweepPods.map((form) => form.task.node)).size > 1,
   'infection-form coverage must distribute across the topology');
+
+// A hatch the hive has already found locked is still searchable territory:
+// combat forms route to the panel and let the ordinary door-busting actuator
+// open it instead of treating everything beyond it as nonexistent.
+const breachSearchSim = new Sim('locked-door-search-check');
+for (const agent of breachSearchSim.agents) agent.dead = true;
+const searchDoor = breachSearchSim.graph.edges.find((edge) => edge.kind === 'std'
+  && edge.door && !edge.armorySeal && !edge.fireSite);
+assert.ok(searchDoor, 'search fixture needs a breachable door');
+searchDoor.locked = true;
+breachSearchSim.hive.knownLocked.add(searchDoor.i);
+breachSearchSim.graph.invalidatePathCache();
+const breachSearcher = makeAgent(FACTION.COMBAT, searchDoor.a, breachSearchSim.graph);
+breachSearchSim.spawn(breachSearcher);
+breachSearcher.task = { kind: TASK.SCOUT, node: searchDoor.b, sweep: true };
+breachSearchSim.tickCount = 1;
+breachSearchSim.t = breachSearchSim.dt;
+breachSearchSim._refreshOccupancy();
+updateFloodTick(breachSearchSim, breachSearchSim.dt);
+assert.ok(breachSearcher.path.some((step) => step.link === searchDoor),
+  'a combat search path must include a known locked but breachable hatch');
+breachSearchSim._advanceMovement(breachSearchSim.dt);
+assert.equal(breachSearcher.busting, searchDoor,
+  'the searcher must begin battering the locked hatch instead of dropping its task');
+
+// A stale manifest entry must activate that search through the real strategic
+// posture even when the hive is too small to claim combat dominance.
+const uncertainSim = new Sim('uncertain-survivor-search-check');
+for (const agent of uncertainSim.agents) agent.dead = true;
+const hiddenSurvivor = makeAgent(FACTION.CIVILIAN,
+  uncertainSim.graph.nodes.at(-1).idx, uncertainSim.graph);
+const uncertainForms = Array.from({ length: 8 }, () =>
+  makeAgent(FACTION.COMBAT, uncertainSim.graph.breachNode, uncertainSim.graph));
+uncertainSim.spawn(hiddenSurvivor);
+for (const form of uncertainForms) uncertainSim.spawn(form);
+uncertainSim.hive.beliefs = new Map([[hiddenSurvivor.id,
+  { node: hiddenSurvivor.node, t: 0, conf: 0 }]]);
+uncertainSim.hive.opening = false;
+uncertainSim.hive.marinesBelieved = 20;
+uncertainSim.t = 300;
+uncertainSim._refreshOccupancy();
+uncertainSim._computeInfluence();
+uncertainSim.hive.strategicTick();
+assert.equal(uncertainSim.hive.searchingAll, true,
+  'known living survivors with no location must activate topology search');
+assert.equal(uncertainSim.hive.allIn, false,
+  'topology search must not manufacture combat dominance');
+assert.ok(uncertainForms.some((form) => form.task?.kind === TASK.SCOUT && form.task.sweep),
+  'free combat forms must receive distributed search work from the strategic tick');
+
+// Bodies keep the reproductive pipeline open beyond the ordinary carrier cap,
+// with only one new seed drafted at a time while the prior one is still rooting.
+const bodyCarrierSim = new Sim('body-backed-carrier-check');
+for (const agent of bodyCarrierSim.agents) agent.dead = true;
+const carrierNode = bodyCarrierSim.graph.nodes.find((node) => node.idx !== bodyCarrierSim.graph.breachNode);
+assert.ok(carrierNode, 'body-backed carrier fixture needs a second room');
+const bodyCombat = Array.from({ length: 7 }, () =>
+  makeAgent(FACTION.COMBAT, bodyCarrierSim.graph.breachNode, bodyCarrierSim.graph));
+const bodyCarriers = Array.from({ length: 5 }, () =>
+  makeAgent(FACTION.CARRIER, carrierNode.idx, bodyCarrierSim.graph));
+const freeBody = makeAgent(FACTION.CORPSE, bodyCarrierSim.graph.breachNode, bodyCarrierSim.graph);
+for (const form of [...bodyCombat, ...bodyCarriers, freeBody]) bodyCarrierSim.spawn(form);
+bodyCarrierSim.hive.bestCarrierNode = () => bodyCarrierSim.graph.breachNode;
+bodyCarrierSim.hive.opening = false;
+bodyCarrierSim.hive.searchingAll = true;
+bodyCarrierSim.hive.allIn = false;
+bodyCarrierSim._refreshOccupancy();
+bodyCarrierSim._computeInfluence();
+const runBodyCarrierPlan = () => bodyCarrierSim.hive.steadyState([], bodyCombat,
+  bodyCarriers, [freeBody], 0, bodyCombat.length, bodyCarriers.length,
+  bodyCarrierSim.hive.scarcity(bodyCarriers.length * 2));
+runBodyCarrierPlan();
+assert.equal(bodyCombat.filter((form) => form.task?.kind === TASK.TRANSFORM || form.task?.seed).length, 1,
+  'an unclaimed body must keep one new carrier in production beyond the normal cap');
+runBodyCarrierPlan();
+assert.equal(bodyCombat.filter((form) => form.task?.kind === TASK.TRANSFORM || form.task?.seed).length, 1,
+  'an unfinished carrier seed must prevent repeated drafting for the same free body');
 
 // Contact decay erases a location, not the shared hive's knowledge that the
 // person remains unaccounted for. Deleting the whole record made hidden last
