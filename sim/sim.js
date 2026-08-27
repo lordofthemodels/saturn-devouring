@@ -84,6 +84,13 @@ export class Sim {
     this.armoryFlamer = true;
     this.armoryFuelCans = 3;
     this.armoryLocked = true; // the sealed reserve (init.js locked the blastdoor)
+    // A dedicated stream keeps the seeded release time reproducible without
+    // moving any gameplay RNG draws. It is deliberately independent of force
+    // strength: Deck 1 sentries and line losses cannot open the seal early.
+    this.armoryReleaseAt = new RNG(`${this.seed}:armory-release`).range(
+      this.P.armory.releaseMinSec,
+      this.P.armory.releaseMaxSec,
+    );
     this.marinesKnowRevive = false; // flips at the first witnessed revive (reviveWitnessed)
     this.outcome = null;
     this.outcomeAt = null; // sim seconds at the moment it was decided
@@ -1209,31 +1216,12 @@ export class Sim {
   // Once panic breaks out shipwide (before any last stand), some unarmed
   // civilians make a run for the armory and arm themselves — first come,
   // first served on the remaining rifles (user note).
-  // THE SEAL RELEASES (user rule): once the hive fields enough combat forms
-  // AND the marine line has worn thin, the armory blastdoor unlocks and the
-  // ODST reserve deploys — racks, grenades and the flamethrower behind them
-  // suddenly in play for whoever lives to reach them.
+  // THE SEAL RELEASES on this seed's fixed timer. Force composition never
+  // enters the gate: the mandatory Deck 1 sentries are a local garrison, not
+  // a reason to delay the reserve. Racks, grenades and the flamethrower behind
+  // the ODSTs enter play at the same moment.
   _armoryWatch() {
-    if (!this.armoryLocked) return;
-    let combat = 0, marines = 0;
-    for (const a of this.agents) {
-      if (a.dead || a.hp <= 0) continue;
-      if (a.faction === FACTION.COMBAT && !a.downed) combat++;
-      else if (a.faction === FACTION.MARINE && !a.downed && !a.odst) marines++;
-    }
-    // Two ways in. The original gate — a big flood and a thin line — still
-    // applies. But it could miss entirely: on one seed the flood peaked at 13
-    // combat forms and the seal never opened all run. The second gate is the
-    // one that matters dramatically: the line is ABOUT to break. Fall back
-    // trips at ceil(initial x marineFraction); release one squad's worth above
-    // that, so the reserve is always out the door first and the two events
-    // read as one beat — the seal, then the all-hands.
-    const lineGate = combat >= this.P.armory.unlockCombatForms
-      && marines <= this.P.armory.unlockMarinesLeft;
-    const brink = this.initialSquadMarines > 0 && !this.lastStand
-      && marines <= Math.ceil(this.initialSquadMarines * this.P.lastStand.marineFraction)
-        + this.P.armory.releaseLeadMarines;
-    if (!lineGate && !brink) return;
+    if (!this.armoryLocked || this.t < this.armoryReleaseAt) return;
     this.armoryLocked = false;
     const armoryIdx = this.graph.byId.get('armory');
     for (const e of this.graph.edges) {

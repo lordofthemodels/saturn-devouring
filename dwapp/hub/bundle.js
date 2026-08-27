@@ -69327,20 +69327,13 @@ var init_params = __esm({
         // rifles racked — first come, first served (once unsealed)
         // THE SEALED RESERVE (user rule): the armory starts LOCKED. Inside: the
         // racked rifles + grenade crates, one flamethrower, and an ODST squad
-        // standing by with more armor than a line marine. The seal releases only
-        // when the ship is genuinely losing — a strong hive AND a thin line.
+        // standing by with more armor than a line marine. Each seed assigns its
+        // own release time without consulting marine or Flood strength.
         odstSquadSize: 5,
         odstHp: 85,
         // vs line marine 45 — hardened ODST plate
-        unlockCombatForms: 20,
-        // flood must field at least this many combat forms
-        unlockMarinesLeft: 10,
-        // and the line squads must be down to this few
-        // SECOND GATE (user: the seal should open just before the all-hands fall
-        // back, and it was landing after it or not at all). Release once the line
-        // is within this many marines of the fall-back threshold, so the reserve
-        // is always out first.
-        releaseLeadMarines: 4
+        releaseMinSec: 5 * 60,
+        releaseMaxSec: 8 * 60
       },
       // MED PACKS (user: "a classic halo edition ... two per player in the med
       // bay, and 2 per player randomly scattered throughout the ship as part of
@@ -75542,6 +75535,10 @@ var init_sim = __esm({
         this.armoryFlamer = true;
         this.armoryFuelCans = 3;
         this.armoryLocked = true;
+        this.armoryReleaseAt = new RNG(`${this.seed}:armory-release`).range(
+          this.P.armory.releaseMinSec,
+          this.P.armory.releaseMaxSec
+        );
         this.marinesKnowRevive = false;
         this.outcome = null;
         this.outcomeAt = null;
@@ -76550,21 +76547,12 @@ var init_sim = __esm({
       // Once panic breaks out shipwide (before any last stand), some unarmed
       // civilians make a run for the armory and arm themselves — first come,
       // first served on the remaining rifles (user note).
-      // THE SEAL RELEASES (user rule): once the hive fields enough combat forms
-      // AND the marine line has worn thin, the armory blastdoor unlocks and the
-      // ODST reserve deploys — racks, grenades and the flamethrower behind them
-      // suddenly in play for whoever lives to reach them.
+      // THE SEAL RELEASES on this seed's fixed timer. Force composition never
+      // enters the gate: the mandatory Deck 1 sentries are a local garrison, not
+      // a reason to delay the reserve. Racks, grenades and the flamethrower behind
+      // the ODSTs enter play at the same moment.
       _armoryWatch() {
-        if (!this.armoryLocked) return;
-        let combat = 0, marines = 0;
-        for (const a2 of this.agents) {
-          if (a2.dead || a2.hp <= 0) continue;
-          if (a2.faction === FACTION.COMBAT && !a2.downed) combat++;
-          else if (a2.faction === FACTION.MARINE && !a2.downed && !a2.odst) marines++;
-        }
-        const lineGate = combat >= this.P.armory.unlockCombatForms && marines <= this.P.armory.unlockMarinesLeft;
-        const brink = this.initialSquadMarines > 0 && !this.lastStand && marines <= Math.ceil(this.initialSquadMarines * this.P.lastStand.marineFraction) + this.P.armory.releaseLeadMarines;
-        if (!lineGate && !brink) return;
+        if (!this.armoryLocked || this.t < this.armoryReleaseAt) return;
         this.armoryLocked = false;
         const armoryIdx = this.graph.byId.get("armory");
         for (const e2 of this.graph.edges) {
