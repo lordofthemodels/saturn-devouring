@@ -365,6 +365,15 @@ function updateMarineTick(sim, a, dt) {
 
   const squad = sim.squads[a.squad];
   if (!squad || squad.broken) { updateArmed(sim, a, dt); return; }
+  // Arrival is a physical event, so record it here rather than waiting for
+  // the slower strategic cadence. This makes the full security interval
+  // load-bearing even when contact begins at the crash-room doorway.
+  if (squad.phase1 && squad.reachedBreachAt === undefined
+    && (a.pnode ?? a.node) === sim.graph.breachNode) {
+    squad.reachedBreach = true;
+    squad.reachedBreachAt = sim.t;
+    sim.log('sweep', `squad ${squad.id + 1} reaches the crash site`);
+  }
 
   const threat = floodThreatVisible(sim, a);
   maybeThrowFrag(sim, a, dt);
@@ -372,8 +381,19 @@ function updateMarineTick(sim, a, dt) {
   // firefight. There is no detection-only state that can park the squad at an
   // opening while its rifles consider the exact same form untargetable.
   if (threat > 0) {
-    squad.contactNode = nearestThreatNode(sim, a);
+    const contact = nearestThreat(sim, a, squad);
+    squad.contactNode = contact ? (contact.pnode ?? contact.node) : (a.pnode ?? a.node);
     squad.contactTick = sim.tickCount;
+    // A withdrawal is tactical information while the form remains visible,
+    // not hive omniscience after it vanishes. Remember only its last-seen
+    // room so the squad follows through the doorway instead of parking where
+    // the firefight ended. Once a squad starts this chase it keeps refreshing
+    // the same target even if the form switches tasks while under fire.
+    if (contact && (contact.task?.retreat || squad.pursuitTargetId === contact.id)) {
+      squad.pursuitTargetId = contact.id;
+      squad.pursuitNode = squad.contactNode;
+      squad.pursuitTick = sim.tickCount;
+    }
     sim.floodKnown = true;
     if (a.hasRadio && !squad.calledContact) {
       squad.calledContact = true;
@@ -401,6 +421,14 @@ function updateMarineTick(sim, a, dt) {
   }
   a.givingGround = false;
   if (a.state === STATE.FIGHT) a.state = STATE.MOVE;
+  // Start the chase on the first clear tick, before the next strategic round.
+  // Standing player orders and the last-stand line remain authoritative.
+  const pursuitFresh = squad.pursuitNode !== undefined
+    && sim.tickCount - squad.pursuitTick <= P.marineDoctrine.pursuitMemorySec * P.sim.tickHz;
+  if (pursuitFresh && sim.tickCount > squad.contactTick && !squad.order
+    && !squad.lastStandBound && !securingCrash(sim, squad)) {
+    setPursuitObjective(squad, squad.pursuitNode, squad.pursuitTargetId);
+  }
   // a marine standing in a clear room has swept it — timestamp it so the
   // squad's sweep planner expands into unswept ground instead of doubling back
   if (sim.graph.node(a.node).type !== 'corridor' && threat === 0) sim.sweptAt[a.node] = sim.t;
@@ -515,13 +543,34 @@ function updateMarineTick(sim, a, dt) {
   }
 }
 
-function nearestThreatNode(sim, a) {
+function nearestThreat(sim, a, squad) {
   let best = null, bestDistance = Infinity;
   for (const form of visibleFloodForms(sim, a)) {
     const distance = Math.hypot(form.x - a.x, form.y - a.y);
-    if (distance < bestDistance) { best = form; bestDistance = distance; }
+    const priority = form.id === squad.pursuitTargetId ? 0 : form.task?.retreat ? 1 : 2;
+    const bestPriority = best
+      ? best.id === squad.pursuitTargetId ? 0 : best.task?.retreat ? 1 : 2
+      : Infinity;
+    if (priority < bestPriority || (priority === bestPriority && distance < bestDistance)) {
+      best = form; bestDistance = distance;
+    }
   }
-  return best ? (best.pnode ?? best.node) : (a.pnode ?? a.node);
+  return best;
+}
+
+function setPursuitObjective(squad, node, targetId) {
+  const kind = squad.objective?.kind;
+  // Crash response and distress work resume after the chase; routine sweep
+  // targets are cheap and will be freshly selected from the squad's new room.
+  if (kind !== 'pursuit' && (kind === 'breach' || kind === 'distress')) {
+    squad.pursuitResume = squad.objective;
+  }
+  squad.objective = { kind: 'pursuit', node, targetId };
+}
+
+function securingCrash(sim, squad) {
+  return squad.phase1 && squad.reachedBreachAt !== undefined
+    && sim.t - squad.reachedBreachAt < sim.P.marineDoctrine.crashSecureSec;
 }
 
 // Translate a standing player order (companion spec §2.2/§2.3) into the
@@ -566,11 +615,18 @@ export function strategicSquads(sim) {
   // site is known-hot and hasn't been secured within a couple of minutes,
   // the ship goes to general deck sweeps anyway (this is what left every
   // squad holding position forever while the lower decks rotted)
-  if (!sim.firstSweepCleared && sim.floodKnown && sim.t > 120) {
+  const crashMinimumMet = sim.squads
+    .filter((squad) => squad.phase1 && squad.reachedBreachAt !== undefined && !squad.odst)
+    .every((squad) => sim.t - squad.reachedBreachAt >= P.marineDoctrine.crashSecureSec);
+  if (!sim.firstSweepCleared && sim.floodKnown
+    && sim.t > P.marineDoctrine.crashCommitSec && crashMinimumMet) {
     sim.firstSweepCleared = true;
     sim.log('sweep', 'crash site is hot and holding — squads begin general deck sweeps');
     for (const s of sim.squads) {
+      if (!s.phase1 || s.odst) continue;
+      s.phase1 = false;
       if (s.objective?.kind === 'breach') s.objective = null; // stop besieging, start sweeping
+      if (s.pursuitResume?.kind === 'breach') s.pursuitResume = undefined;
     }
   }
 
@@ -649,22 +705,34 @@ export function strategicSquads(sim) {
       }
     }
 
-    // Every marine reads the same cheap room paint. It can interrupt routine
-    // sweeping, but not a player order, the crash response, a distress call,
-    // or the last stand. The interrupted task resumes after the check.
-    if (applyMotionRadar(sim, squad, leader, members)) continue;
-
     // make the crash-response convergence visible in the log
     if (squad.objective?.kind === 'breach' && !squad.reachedBreach && leader.node === sim.graph.breachNode) {
       squad.reachedBreach = true;
+      squad.reachedBreachAt = sim.t;
       sim.log('sweep', `squad ${squad.id + 1} reaches the crash site`);
     }
 
-    // fresh contact on the blackboard -> pursue it (enables the hive's bait play)
-    if (squad.contactNode !== undefined && sim.tickCount - squad.contactTick < 15 * 10
-      && squad.objective?.kind !== 'breach' && sim.rng.chance(0.6)) {
-      squad.objective = { kind: 'pursuit', node: squad.contactNode };
+    // A visibly retreating contact is a mandatory chase. Ordinary contact
+    // reports retain the existing judgment roll, so a squad does not blindly
+    // pursue every possible hive feint.
+    const pursuitFresh = squad.pursuitNode !== undefined
+      && sim.tickCount - squad.pursuitTick <= P.marineDoctrine.pursuitMemorySec * P.sim.tickHz;
+    const contactFresh = squad.contactNode !== undefined
+      && sim.tickCount - squad.contactTick < 15 * 10;
+    const pursueReportedContact = contactFresh && squad.objective?.kind !== 'breach'
+      && sim.rng.chance(0.6);
+    if ((pursuitFresh || pursueReportedContact) && !securingCrash(sim, squad)) {
+      setPursuitObjective(
+        squad,
+        pursuitFresh ? squad.pursuitNode : squad.contactNode,
+        pursuitFresh ? squad.pursuitTargetId : undefined,
+      );
     }
+
+    // Every marine reads the same cheap room paint. It can interrupt routine
+    // sweeping, but not a player order, active pursuit, a distress call, or
+    // the last stand. The interrupted task resumes after the check.
+    if (applyMotionRadar(sim, squad, leader, members)) continue;
 
     // objective reached & clear -> next objective
     const objNode = squad.objective?.node;
@@ -672,37 +740,38 @@ export function strategicSquads(sim) {
     const clear = objNode !== undefined && sim.visibleNodes(objNode).every((n) => sim.floodStrengthAt(n) === 0);
     if (!squad.objective || (arrived && clear)) {
       if (squad.objective?.kind === 'breach') {
+        // Count the security interval from actual arrival. A firefight on the
+        // deck counts; only a fast, quiet clear spends the remainder posted.
+        const secureAt = (squad.reachedBreachAt ?? sim.t) + P.marineDoctrine.crashSecureSec;
+        if (sim.t < secureAt) continue;
         if (!sim.firstSweepCleared) {
           sim.firstSweepCleared = true;
           sim.log('sweep', `first sweep cleared the breach region (${sim.graph.node(sim.graph.breachNode).name})`);
         }
-        // the crash squads spend ~30s working the site before fanning out
-        // in different directions across the lower decks (user note)
-        squad.objective = { kind: 'hold', node: leader.node };
-        squad.holdUntil = sim.t + 30;
-        continue;
+        // The minimum security interval is complete; fan out immediately.
+        squad.phase1 = false;
+        squad.objective = null;
+      } else if (squad.objective?.kind === 'pursuit') {
+        squad.objective = squad.pursuitResume ?? null;
+        squad.pursuitResume = undefined;
+        squad.pursuitNode = undefined;
+        squad.pursuitTargetId = undefined;
+        squad.pursuitTick = undefined;
+        squad.contactNode = undefined;
+        squad.contactTick = undefined;
+        if (squad.objective) continue;
       }
-      if (squad.objective?.kind === 'breach' || sim.firstSweepCleared || !squad.objective) {
-        // phase 2: METHODICAL sweep — push to the nearest room that hasn't
-        // been cleared recently, expanding outward from where the squad is
-        // (which starts at the breach on the lower decks). This stops squads
-        // from clearing the crash site and then wandering back up to already-
-        // safe upper decks (user note).
-        if (sim.firstSweepCleared || squad.objective) {
-          if (squad.holdUntil === undefined || sim.t >= squad.holdUntil) {
-            const target = pickSweepTarget(sim, leader);
-            squad.objective = target !== -1
-              ? { kind: 'sweep', node: target }
-              : { kind: 'hold', node: leader.node };
-            // slow and methodical (user note): a real pause at each cleared
-            // room before pushing to the next — the flood knows this rhythm,
-            // which is why it spreads out and grabs what it can in the gaps
-            squad.holdUntil = sim.t + P.marineDoctrine.sweepDwellSec + sim.rng.range(0, P.marineDoctrine.sweepDwellJitterSec);
-          }
-        } else {
-          // before phase 2, non-sweep squads hold near spawn
-          squad.objective = { kind: 'hold', node: leader.node };
-        }
+      if (sim.firstSweepCleared) {
+        // Continuous sweep: reaching a clear room immediately selects the
+        // next one. Tactical holds still come from contact, radar, orders,
+        // morale, and the last stand rather than an arbitrary room timer.
+        const target = pickSweepTarget(sim, leader);
+        squad.objective = target !== -1
+          ? { kind: 'sweep', node: target }
+          : { kind: 'hold', node: leader.node };
+      } else if (!squad.objective) {
+        // before phase 2, non-sweep squads hold near spawn
+        squad.objective = { kind: 'hold', node: leader.node };
       }
     }
   }
@@ -839,11 +908,11 @@ function pickSweepTarget(sim, leader) {
     if (!s.broken && (s.objective?.kind === 'sweep' || s.objective?.kind === 'order')) taken.add(s.objective.node);
   }
   let best = -1, bestScore = Infinity;
+  let fallback = -1, fallbackScore = Infinity;
   for (const n of g.nodes) {
-    if (n.type === 'corridor' || n.idx === leader.node || taken.has(n.idx)) continue;
+    if (n.type === 'corridor' || n.idx === leader.node) continue;
     if (n.roles.includes('command')) continue; // the garrison holds the bridge
     const staleness = sim.t - sim.sweptAt[n.idx];
-    if (staleness < 40) continue; // cleared very recently — leave it
     const d = g.hops(leader.node, n.idx, ['std'], marinePass);
     if (d === -1) continue;
     const breachDist = g.hops(n.idx, g.breachNode, ['std'], marinePass);
@@ -854,15 +923,22 @@ function pickSweepTarget(sim, leader) {
       + (breachDist === -1 ? 8 : breachDist) * 0.9
       - (n.deck >= 4 ? 2.5 : 0)
       - Math.min(staleness, 300) * 0.01;
-    if (score < bestScore) { bestScore = score; best = n.idx; }
+    // Prefer stale, untaken ground as before. If the whole reachable ship was
+    // just checked, loop onto the oldest available room instead of stopping.
+    const occupiedPenalty = taken.has(n.idx) ? 100 : 0;
+    if (score + occupiedPenalty < fallbackScore) {
+      fallbackScore = score + occupiedPenalty; fallback = n.idx;
+    }
+    if (staleness >= 40 && !taken.has(n.idx) && score < bestScore) {
+      bestScore = score; best = n.idx;
+    }
   }
-  return best;
+  return best !== -1 ? best : fallback;
 }
 
 // Assign the automatic first sweep (§5.3 phase 1): the TWO squads with the
 // shortest human-traversable paths to the breach respond (user note). They
-// muster ~18s, investigate, spend ~30s at the site, then fan out in
-// different directions across the lower decks.
+// muster, investigate, then fan out continuously across the ship.
 export function assignFirstSweep(sim) {
   const ranked = [];
   for (const squad of sim.squads) {
