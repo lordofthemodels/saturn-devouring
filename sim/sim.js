@@ -1961,6 +1961,8 @@ export class Sim {
         // cars: a whole fireteam rides together, no queue.
         const ladder = link.kind === 'std' && link.type === 'ladder'
           && this.graph.node(step.to).deck !== this.graph.node(a.node).deck;
+        const surging = a.faction === FACTION.COMBAT && a.task?.kind === TASK.ATTACK
+          && a.task.surge && a.dragging === -1 && link.kind === 'std';
         // hold at the pad while the rungs are taken — OR while the player has
         // called "next" on this ladder (a busy ladder queues the emergency,
         // it doesn't deny it; without the reservation NPCs re-claim the rungs
@@ -1968,15 +1970,23 @@ export class Sim {
         // INFECTION FORMS ARE EXEMPT (user rule): they're small — a swarm
         // pours up the rungs and through lift wells all at once.
         const queues = ladder && a.faction !== FACTION.INFECTION;
-        if (queues && (this.vertBusy(link, a.id) || this.vertReserved(link, a.id))) continue;
+        // A COMMITTED HIVE SURGE IS ALSO ONE MOVEMENT: once its lead combat
+        // form is on the ladder, packmates in that same surge scramble onto
+        // the rungs behind it instead of standing visibly idle for a complete
+        // climb. This exception never crosses a player's next-slot reservation
+        // and never follows a human, retreating form, or ordinary traveller.
+        const holder = ladder ? this.byId.get(link.occupiedBy) : null;
+        const joinsSurge = surging && holder?.faction === FACTION.COMBAT
+          && holder.move?.link === link && holder.task?.kind === TASK.ATTACK
+          && holder.task.surge;
+        if (queues && (this.vertReserved(link, a.id)
+          || (this.vertBusy(link, a.id) && !joinsSurge))) continue;
         a.doorBalks = 0;
         a.path.shift();
         let mult = this._speedMult(a);
         // lore: a combat form closing on prey doesn't walk — it CHARGES,
         // sprinting/leaping the last stretch (renderers get FLAG.CHARGING)
         this._setCharging(a, false);
-        const surging = a.faction === FACTION.COMBAT && a.task?.kind === TASK.ATTACK
-          && a.task.surge && a.dragging === -1 && link.kind === 'std';
         if (a.faction === FACTION.COMBAT && a.dragging === -1 && link.kind === 'std'
           && (surging || this._occ[step.to].some((h) => isLivingHuman(h)))) {
           mult *= this.P.speed.chargeMult;
