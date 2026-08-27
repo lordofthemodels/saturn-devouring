@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { FACTION } from '../shared/agentBuffer.js';
-import { makeAgent } from './init.js';
+import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
 import { strategicSquads, updateHumansTick } from './humans.js';
 import { Sim } from './sim.js';
@@ -30,6 +30,74 @@ function addSquad(sim, node, size = 2) {
 function openSameDeckEdge(sim) {
   return sim.graph.edges.find((edge) => !edge.locked
     && sim.graph.node(edge.a).deck === sim.graph.node(edge.b).deck);
+}
+
+// Every actual Deck 1 room starts with its own armed sentry. Only the nearest
+// two available posts answer a command-deck distress call, using Deck 1 paths,
+// and a cleared call sends each Marine home. Calls below Deck 1 are ignored.
+{
+  const sim = new Sim('deck-one-room-guards');
+  const rooms = sim.graph.nodes.filter((node) => node.deck === 1 && node.type === 'room');
+  const sentries = sim.agents.filter((agent) => agent.deckGuard && agent.garrison);
+  assert.equal(sentries.length, rooms.length * sim.P.marines.deckGuardPerRoom,
+    'Deck 1 sentry count must follow the live room graph');
+  for (const room of rooms) {
+    assert.equal(sentries.filter((agent) => agent.node === room.idx).length,
+      sim.P.marines.deckGuardPerRoom,
+      `${room.name} must begin with its own armed Marine`);
+  }
+  assert.equal(sim.agents.filter((agent) => agent.garrison && !agent.deckGuard).length,
+    sim.P.marines.garrison, 'room sentries must not replace the corridor garrison');
+
+  sim.t = 20;
+  sim.tickCount = Math.round(sim.t * sim.P.sim.tickHz);
+  const target = sim.graph.byId.get('signal');
+  const call = { id: 9001, node: target, t: sim.t, faction: FACTION.CIVILIAN, rolled: new Set() };
+  sim.calls.push(call);
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  const responders = sim.squads.filter((squad) => squad.deckGuard
+    && squad.objective?.kind === 'distress' && squad.objective.callId === call.id);
+  assert.equal(responders.length, 2,
+    'only the nearest two Deck 1 sentries should leave their posts for one call');
+  assert.ok(responders.every((squad) => sim.graph.node(squad.objective.node).deck === 1),
+    'a sentry response objective must remain on Deck 1');
+
+  updateHumansTick(sim, sim.dt);
+  const moving = responders.map((squad) => sim.byId.get(squad.members[0]))
+    .find((marine) => marine.node !== target);
+  assert.ok(moving?.path.length > 0, 'one responding sentry must travel to the called room');
+  assert.ok(moving.path.every((step) => sim.graph.node(step.to).deck === 1),
+    'a Deck 1 sentry route must never leave Deck 1');
+
+  const returningSquad = responders[0];
+  const returning = sim.byId.get(returningSquad.members[0]);
+  const room = sim.graph.node(target);
+  returning.node = returning.pnode = target;
+  returning.deck = 1;
+  returning.x = room.x;
+  returning.y = room.y;
+  returning.move = null;
+  returning.path = [];
+  returning.state = STATE.IDLE;
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  assert.equal(returningSquad.objective.kind, 'guard',
+    'a sentry must return to guard duty after clearing the call');
+  assert.equal(returningSquad.objective.node, returningSquad.postNode,
+    'guard duty must route the sentry back to its assigned room');
+
+  const lower = sim.graph.nodes.find((node) => node.deck === 2 && node.type === 'room').idx;
+  const lowerCall = { id: 9002, node: lower, t: sim.t, faction: FACTION.CIVILIAN, rolled: new Set() };
+  sim.calls = [lowerCall];
+  for (const squad of sim.squads.filter((candidate) => candidate.deckGuard)) {
+    squad.objective = { kind: 'guard', node: squad.postNode };
+    squad.respondingTo = null;
+  }
+  strategicSquads(sim);
+  assert.ok(sim.squads.filter((squad) => squad.deckGuard)
+    .every((squad) => squad.objective.kind === 'guard'),
+    'Deck 1 sentries must ignore distress calls from every other deck');
 }
 
 // A visibly retreating form leaves a shared last-seen trail. The first clear

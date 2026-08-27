@@ -344,10 +344,10 @@ function maybeThrowFrag(sim, a, dt) {
 // --- marines (§5.3) ---
 function updateMarineTick(sim, a, dt) {
   const P = sim.P;
-  // command-deck garrison: a permanent detail that never leaves the bridge/
-  // CIC (user note). It fights anything that reaches it but never sweeps,
-  // answers calls, or takes orders — a fixed strongpoint.
-  if (a.garrison) {
+  // The corridor garrison is a fixed strongpoint. Deck-room sentries are also
+  // garrison for force accounting, but their one-Marine squads may answer a
+  // same-deck distress call and therefore continue through normal squad AI.
+  if (a.garrison && !a.deckGuard) {
     a.state = sim.losFloodThreat(a) > 0 ? STATE.FIGHT : STATE.IDLE;
     a.path = []; a.move = null;
     if (a.state === STATE.FIGHT && a.hasRadio && sim.tickCount % 60 === 0) sim.emitCall(a);
@@ -425,8 +425,10 @@ function updateMarineTick(sim, a, dt) {
   // Standing player orders and the last-stand line remain authoritative.
   const pursuitFresh = squad.pursuitNode !== undefined
     && sim.tickCount - squad.pursuitTick <= P.marineDoctrine.pursuitMemorySec * P.sim.tickHz;
+  const guardMayPursue = !squad.deckGuard || squad.objective?.kind === 'distress'
+    || squad.pursuitResume?.kind === 'distress';
   if (pursuitFresh && sim.tickCount > squad.contactTick && !squad.order
-    && !squad.lastStandBound && !securingCrash(sim, squad)) {
+    && !squad.lastStandBound && !securingCrash(sim, squad) && guardMayPursue) {
     setPursuitObjective(squad, squad.pursuitNode, squad.pursuitTargetId);
   }
   // a marine standing in a clear room has swept it — timestamp it so the
@@ -505,8 +507,9 @@ function updateMarineTick(sim, a, dt) {
     if (a.node !== target) {
       // cautious doctrine: corridors first, shafts only when there is no
       // other way (or when in hot pursuit — squad.pursuing)
-      let ok = sim.setPathTo(a, target, ['std'], humanPass);
-      if (!ok) ok = sim.setPathTo(a, target, ['std'], marinePass);
+      const guardPass = squad.deckGuard ? deckOnePass(sim) : humanPass;
+      let ok = sim.setPathTo(a, target, ['std'], guardPass);
+      if (!ok && !squad.deckGuard) ok = sim.setPathTo(a, target, ['std'], marinePass);
       if (!ok) squad.objective = null; // truly unreachable
       else a.state = STATE.MOVE;
     }
@@ -571,6 +574,13 @@ function setPursuitObjective(squad, node, targetId) {
 function securingCrash(sim, squad) {
   return squad.phase1 && squad.reachedBreachAt !== undefined
     && sim.t - squad.reachedBreachAt < sim.P.marineDoctrine.crashSecureSec;
+}
+
+function deckOnePass(sim) {
+  // Stable function identity keeps graph caches bounded while guaranteeing a
+  // sentry never takes a cross-deck shortcut between two command rooms.
+  return sim._deckOneMarinePass ??= (link, from, to) => humanPass(link)
+    && sim.graph.node(from).deck === 1 && sim.graph.node(to).deck === 1;
 }
 
 // Translate a standing player order (companion spec §2.2/§2.3) into the
@@ -648,6 +658,10 @@ export function strategicSquads(sim) {
 
     // roaming pair patrols run their own doctrine: circuit + distress response
     if (squad.patrol) { patrolPlan(sim, squad, leader); continue; }
+
+    // Deck 1 sentries never join ship-wide sweeps or command tasking. They
+    // answer only same-deck distress traffic, then return to their room posts.
+    if (squad.deckGuard) { deckGuardPlan(sim, squad, leader); continue; }
 
     // launch the mustered crash sweep once the delay elapses (user note)
     if (squad.pendingSweep && sim.t >= sim.P.marineDoctrine.firstSweepDelaySec) {
@@ -777,10 +791,64 @@ export function strategicSquads(sim) {
   }
 }
 
+function deckGuardPlan(sim, squad, leader) {
+  const P = sim.P;
+  const pass = deckOnePass(sim);
+
+  if (squad.objective?.kind === 'distress') {
+    const call = sim.calls.find((entry) => entry.id === squad.objective.callId);
+    const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
+    const clear = sim.visibleNodes(squad.objective.node)
+      .every((node) => sim.floodStrengthAt(node) === 0);
+    const active = call && sim.t - call.t <= P.radio.callFadeSec
+      && sim.graph.node(call.node).deck === 1;
+    if (active && (!arrived || !clear)) return;
+    squad.respondingTo = null;
+    squad.objective = null;
+    leader.path = [];
+  }
+
+  // A last-stand call does not pull the room sentries into one corridor; they
+  // are already the command deck's distributed fallback line.
+  if (squad.lastStandBound) {
+    squad.objective = { kind: 'guard', node: squad.postNode };
+    return;
+  }
+
+  for (let index = sim.calls.length - 1; index >= 0; index--) {
+    const call = sim.calls[index];
+    if (sim.t - call.t > P.radio.callFadeSec) continue;
+    if (sim.graph.node(call.node).deck !== 1 || call.rolled.has(squad.id)) continue;
+    call.rolled.add(squad.id);
+    const nearest = sim.squads
+      .filter((candidate) => candidate.deckGuard && !candidate.broken
+        && (candidate.objective?.kind !== 'distress'
+          || candidate.objective.callId === call.id))
+      .map((candidate) => {
+        const point = candidate.members.map((id) => sim.byId.get(id))
+          .find((member) => member && !member.dead && member.hp > 0
+            && member.state !== STATE.FIGHT);
+        const distance = point
+          ? sim.graph.hops(point.pnode ?? point.node, call.node, ['std'], pass) : -1;
+        return { id: candidate.id, distance };
+      })
+      .filter((candidate) => candidate.distance >= 0)
+      .sort((a, b) => a.distance - b.distance || a.id - b.id)
+      .slice(0, 2);
+    if (!nearest.some((candidate) => candidate.id === squad.id)) continue;
+    squad.objective = { kind: 'distress', node: call.node, callId: call.id };
+    squad.respondingTo = call.id;
+    leader.path = [];
+    sim.log('radio', `Deck 1 sentry responding to distress in ${sim.graph.node(call.node).name}`);
+    return;
+  }
+
+  squad.objective = { kind: 'guard', node: squad.postNode };
+}
+
 // Roaming pair patrols (user note): walk the whole ship on a fixed circuit,
 // peel off to distress calls like any squad (sharing the 2-responder cap),
 // then pick the round back up where it left off. A commander order overrides
-// the circuit; the last-stand call overrides everything.
 function patrolPlan(sim, squad, leader) {
   const P = sim.P;
   if (squad.lastStandBound) {
@@ -879,10 +947,11 @@ function mergeThinSquads(sim) {
   for (const A of sim.squads) {
     const aliveA = A.members.map((id) => sim.byId.get(id)).filter((m) => m && !m.dead && m.hp > 0);
     if (!aliveA.length) continue;
+    if (A.deckGuard) continue;
     if (!A.broken && aliveA.length > 2) continue; // healthy enough on its own
     if (A.patrol && aliveA.length >= 2) continue; // a pair patrol is MEANT to be 2
     for (const B of sim.squads) {
-      if (B === A || B.broken) continue;
+      if (B === A || B.broken || B.deckGuard) continue;
       const aliveB = B.members.map((id) => sim.byId.get(id)).filter((m) => m && !m.dead && m.hp > 0);
       if (aliveB.length < 2) continue;
       const d = sim.graph.hops(aliveA[0].node, aliveB[0].node, ['std'], humanPass);
@@ -944,7 +1013,7 @@ export function assignFirstSweep(sim) {
   for (const squad of sim.squads) {
     const leader = sim.byId.get(squad.members[0]);
     squad.size0 = squad.members.length;
-    if (squad.patrol) continue; // patrols keep walking their round
+    if (squad.patrol || squad.deckGuard) continue; // autonomous details keep their own posts/rounds
     squad.objective = { kind: 'hold', node: leader.node };
     const d = sim.graph.hops(leader.node, sim.graph.breachNode, ['std'], humanPass);
     if (d !== -1) ranked.push({ squad, d });

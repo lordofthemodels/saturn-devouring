@@ -767,6 +767,7 @@ export class Sim {
         continue;
       }
       if (squad.patrol) { members[0].callsign.rank = 'Cpl'; continue; }
+      if (squad.deckGuard) continue;
       lineSquads++;
       if (lineSquads === 1) {
         members[0].callsign.rank = '2ndLt';
@@ -829,7 +830,7 @@ export class Sim {
     if (!freshest || this.tickCount - freshest.contactTick > 60 * 10) return;
     const node = freshest.contactNode;
     for (const s of this.squads) {
-      if (s.broken || s.patrol || s === freshest || s.order) continue;
+      if (s.broken || s.patrol || s.deckGuard || s === freshest || s.order) continue;
       const k = s.objective?.kind;
       if (k !== 'hold' && k !== 'sweep' && s.objective) continue;
       const lead = s.members.map((id) => this.byId.get(id)).find((m) => m && !m.dead && m.hp > 0);
