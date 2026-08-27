@@ -104,6 +104,7 @@ body[data-input="gamepad"] [data-input-copy="gamepad"] { display: inline; }
 .hub-nav button:focus-visible, .hub-link:focus-visible,
 body[data-input="gamepad"] .hub-nav button:focus,
 body[data-input="gamepad"] .hub-link:focus { color: var(--hub-cyan); outline: 1px solid var(--hub-cyan); }
+.hub-nav button[aria-current="page"] { color: var(--hub-amber); }
 .hub-shell { position: relative; width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: clamp(42px, 8vh, 92px) 0 46px; }
 [data-launch-page][hidden], [data-doc-panel][hidden] { display: none !important; }
 /* every kicker gets a lit tick in front of it — the small "this line is live"
@@ -198,7 +199,8 @@ body[data-input="gamepad"] .hub-button:focus em { color: var(--hub-amber); }
 .hub-form .hub-button { margin-top: 10px; }
 .hub-note { color: #94a8b4; font-size: 11px; margin-top: 10px; }
 .hub-error { color: var(--hub-red); margin-top: 9px; font-size: 12px; }
-.hub-back { margin-bottom: 22px; width: auto; display: inline-flex; }
+.hub-back { margin-bottom: 22px; width: auto; display: inline-flex; align-items: center; gap: 14px; }
+.hub-back-hint { color: #647783; font-size: 8px; letter-spacing: .12em; }
 .lobby-layout { display: grid; grid-template-columns: 1fr 330px; gap: 28px; align-items: start; }
 .lobby-panel { border: 1px solid var(--hub-line); background: rgba(10,16,23,.82); padding: 24px; }
 .lobby-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--hub-line); padding-bottom: 14px; }

@@ -98671,6 +98671,100 @@ function setInputMode2(mode) {
 }
 window.addEventListener("keydown", () => setInputMode2("keyboard"), true);
 window.addEventListener("pointerdown", () => setInputMode2("keyboard"), true);
+var LAUNCHER_HISTORY_KEY = "charonLauncher";
+var VALID_LAUNCH_PAGES = /* @__PURE__ */ new Set(["menu", "multiplayer", "lobby", "about", "docs"]);
+var focusByPage = /* @__PURE__ */ new Map();
+var activeLaunchPage = "menu";
+function routeFromLocation() {
+  const route = location.hash.replace(/^#/, "");
+  if (route === "about") return { page: "about", doc: "" };
+  if (route === "multiplayer") return { page: "multiplayer", doc: "" };
+  if (route === "lobby") return { page: "lobby", doc: "" };
+  if (route.startsWith("docs")) return { page: "docs", doc: route.split("/")[1] || "overview" };
+  return { page: "menu", doc: "" };
+}
+function activeDocTab() {
+  return document.querySelector('[data-doc-tab][aria-selected="true"]')?.dataset.docTab || "overview";
+}
+function routeForPage(page, doc = activeDocTab()) {
+  if (page === "menu") return "home";
+  if (page === "docs") return `docs/${doc}`;
+  return page;
+}
+function launcherState(page, depth3, doc = activeDocTab()) {
+  return { [LAUNCHER_HISTORY_KEY]: true, page, doc: page === "docs" ? doc : "", depth: depth3 };
+}
+function updatePrimaryNavigation(page) {
+  for (const button of document.querySelectorAll(".hub-nav [data-open-page]")) {
+    const current = button.dataset.openPage === page || page === "multiplayer" && button.dataset.openPage === "menu";
+    if (current) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+}
+function focusPage(page) {
+  const section = document.querySelector(`[data-launch-page="${page}"]`);
+  const remembered = focusByPage.get(page);
+  const defaultFocus = ["[data-menu-default]", ".hub-button.primary", ".hub-back", "button", "input", "select"].map((selector) => section?.querySelector(selector)).find(Boolean);
+  const focus = remembered?.isConnected && !remembered.disabled && remembered.getClientRects().length ? remembered : defaultFocus;
+  focus?.focus?.({ preventScroll: true });
+}
+function renderPage(name, { focus = true } = {}) {
+  const pageName = VALID_LAUNCH_PAGES.has(name) ? name : "menu";
+  for (const page of pages) page.hidden = page.dataset.launchPage !== pageName;
+  activeLaunchPage = pageName;
+  updatePrimaryNavigation(pageName);
+  document.body.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  if (focus) focusPage(pageName);
+}
+function showPage(name, { historyMode = "push", focus = true } = {}) {
+  const pageName = VALID_LAUNCH_PAGES.has(name) ? name : "menu";
+  const currentFocus = document.activeElement;
+  if (currentFocus && currentFocus !== document.body) focusByPage.set(activeLaunchPage, currentFocus);
+  const currentDepth = Number(history.state?.depth) || 0;
+  const mode = pageName === activeLaunchPage && historyMode === "push" ? "replace" : historyMode;
+  if (mode !== "none") {
+    const depth3 = mode === "push" ? currentDepth + 1 : currentDepth;
+    try {
+      history[mode === "push" ? "pushState" : "replaceState"](
+        launcherState(pageName, depth3),
+        "",
+        `#${routeForPage(pageName)}`
+      );
+    } catch {
+    }
+  }
+  renderPage(pageName, { focus });
+}
+function replaceDocsRoute(doc) {
+  const depth3 = Number(history.state?.depth) || 0;
+  try {
+    history.replaceState(launcherState("docs", depth3, doc), "", `#docs/${doc}`);
+  } catch {
+  }
+}
+function historyBackOr(fallback) {
+  if (!history.state?.[LAUNCHER_HISTORY_KEY] || Number(history.state.depth) <= 0) {
+    showPage(fallback, { historyMode: "replace" });
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("popstate", finish);
+      clearTimeout(timeout);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      showPage(fallback, { historyMode: "replace" });
+      finish();
+    }, 500);
+    window.addEventListener("popstate", finish, { once: true });
+    history.back();
+  });
+}
 function visibleLauncherControls() {
   return [...launcher.querySelectorAll("button, input, select, [tabindex]")].filter((control) => !control.disabled && control.tabIndex >= 0 && !control.closest("[hidden]") && control.getClientRects().length > 0);
 }
@@ -98712,6 +98806,13 @@ function moveLauncherFocus(dx, dy) {
   best?.focus({ preventScroll: true });
   best?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
+function adjustFocusedSelect(direction) {
+  const select3 = document.activeElement;
+  if (!select3?.matches?.("select") || !direction || select3.options.length < 2) return false;
+  select3.selectedIndex = (select3.selectedIndex + direction + select3.options.length) % select3.options.length;
+  select3.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
 var launcherNavDirection = "";
 var launcherNavRepeatAt = 0;
 function launcherGamepadFrame(now) {
@@ -98726,7 +98827,9 @@ function launcherGamepadFrame(now) {
     launcherNavDirection = "";
   } else if (direction !== launcherNavDirection || now >= launcherNavRepeatAt) {
     const vectors = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-    moveLauncherFocus(...vectors[direction]);
+    if (!(direction === "left" || direction === "right") || !adjustFocusedSelect(direction === "right" ? 1 : -1)) {
+      moveLauncherFocus(...vectors[direction]);
+    }
     launcherNavRepeatAt = now + (direction === launcherNavDirection ? 110 : 360);
     launcherNavDirection = direction;
   }
@@ -98738,7 +98841,7 @@ function launcherGamepadFrame(now) {
   }
   if (state.pressed("b")) {
     if (document.activeElement?.matches("input:not([readonly]), select")) document.activeElement.blur();
-    else document.querySelector("[data-launch-page]:not([hidden]) .hub-back")?.click();
+    else void goBack();
   }
 }
 var lobbyRevisionKey = (id, host) => `${String(id)}\0${String(host)}`;
@@ -98769,21 +98872,6 @@ function playerBody() {
   } catch {
   }
   return body;
-}
-function setHash(route) {
-  try {
-    history.replaceState(null, "", `#${route}`);
-  } catch {
-  }
-}
-function showPage(name) {
-  for (const page2 of pages) page2.hidden = page2.dataset.launchPage !== name;
-  setHash(name === "menu" ? "home" : name);
-  window.scrollTo({ top: 0, left: 0, behavior: "instant" });
-  const page = document.querySelector(`[data-launch-page="${name}"]`);
-  const focus = page?.querySelector("h1") ?? page?.querySelector("input, button");
-  if (focus?.matches?.("h1")) focus.setAttribute("tabindex", "-1");
-  focus?.focus?.({ preventScroll: true });
 }
 function displayError(message) {
   const status = byId("lobby-status");
@@ -99322,7 +99410,7 @@ async function deploy({ members, hosts, scope, seed: seed2, host }) {
     session = null;
     launchStarted = false;
     committing = false;
-    showPage("multiplayer");
+    showPage("multiplayer", { historyMode: "replace" });
     displayError(`Could not enter the match room: ${error2.message}`);
     return;
   }
@@ -99783,7 +99871,7 @@ async function launchGame(config) {
     throw error2;
   }
 }
-async function leaveLobby() {
+async function closeLobby() {
   joinGeneration += 1;
   joinController?.abort();
   joinController = null;
@@ -99808,15 +99896,33 @@ async function leaveLobby() {
   pendingMatch = null;
   committing = false;
   lobbyConsensus = createLobbyConsensus();
-  showPage("multiplayer");
+}
+async function leaveLobby() {
+  await closeLobby();
+  await historyBackOr("multiplayer");
+}
+async function goBack() {
+  if (activeLaunchPage === "menu") return;
+  if (activeLaunchPage === "lobby") {
+    await leaveLobby();
+    return;
+  }
+  await historyBackOr("menu");
 }
 for (const button of document.querySelectorAll("[data-open-page]")) {
   button.addEventListener("click", async () => {
     const target = button.dataset.openPage;
-    if (session && !launchStarted && !document.querySelector('[data-launch-page="lobby"]')?.hidden) {
-      await leaveLobby();
+    if (activeLaunchPage === "lobby" && !launchStarted) {
+      await closeLobby();
+      showPage(target, { historyMode: "replace" });
+      return;
     }
     showPage(target);
+  });
+}
+for (const button of document.querySelectorAll("[data-back]")) {
+  button.addEventListener("click", () => {
+    void goBack();
   });
 }
 for (const tab of document.querySelectorAll("[data-doc-tab]")) {
@@ -99828,7 +99934,7 @@ for (const tab of document.querySelectorAll("[data-doc-tab]")) {
     for (const panel of document.querySelectorAll("[data-doc-panel]")) {
       panel.hidden = panel.dataset.docPanel !== tab.dataset.docTab;
     }
-    setHash(`docs/${tab.dataset.docTab}`);
+    replaceDocsRoute(tab.dataset.docTab);
   });
   tab.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowRight" && event.key !== "ArrowUp" && event.key !== "ArrowLeft") return;
@@ -99874,15 +99980,66 @@ byId("copy-invite").addEventListener("click", async (event) => {
     button.textContent = "COPY CODE";
   }, 1800);
 });
+window.addEventListener("keydown", (event) => {
+  if (launcher.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (document.activeElement?.matches("input:not([readonly]), select")) document.activeElement.blur();
+    else void goBack();
+    return;
+  }
+  if (!event.key.startsWith("Arrow") || event.target?.matches?.("input, select, [data-doc-tab]")) return;
+  const vectors = {
+    ArrowUp: [0, -1],
+    ArrowDown: [0, 1],
+    ArrowLeft: [-1, 0],
+    ArrowRight: [1, 0]
+  };
+  event.preventDefault();
+  moveLauncherFocus(...vectors[event.key]);
+});
+window.addEventListener("popstate", async (event) => {
+  const state = event.state?.[LAUNCHER_HISTORY_KEY] ? event.state : routeFromLocation();
+  const page = VALID_LAUNCH_PAGES.has(state.page) ? state.page : "menu";
+  if (page === "lobby" && !session && !joinController) {
+    showPage("multiplayer", { historyMode: "replace" });
+    return;
+  }
+  if (activeLaunchPage === "lobby" && page !== "lobby" && !launchStarted) {
+    await closeLobby();
+  }
+  renderPage(page);
+  if (page === "docs") {
+    const requested = state.doc || routeFromLocation().doc;
+    document.querySelector(`[data-doc-tab="${requested}"]`)?.click();
+  }
+});
 byId("player-name").value = savedName();
 byId("player-body").value = savedBody();
-var initialRoute = location.hash.replace(/^#/, "");
-if (initialRoute === "about") showPage("about");
-else if (initialRoute.startsWith("docs")) {
-  showPage("docs");
-  const requested = initialRoute.split("/")[1];
-  document.querySelector(`[data-doc-tab="${requested}"]`)?.click();
-} else showPage("menu");
+var initialRoute = history.state?.[LAUNCHER_HISTORY_KEY] ? { page: history.state.page, doc: history.state.doc } : routeFromLocation();
+if (initialRoute.page === "lobby") {
+  initialRoute = { page: "multiplayer", doc: "" };
+  try {
+    history.replaceState(launcherState("multiplayer", Number(history.state?.depth) || 0), "", "#multiplayer");
+  } catch {
+  }
+}
+if (!history.state?.[LAUNCHER_HISTORY_KEY]) {
+  try {
+    if (initialRoute.page === "menu") {
+      history.replaceState(launcherState("menu", 0), "", "#home");
+    } else {
+      const initialHash = `#${routeForPage(initialRoute.page, initialRoute.doc)}`;
+      history.replaceState(launcherState("menu", 0), "", "#home");
+      history.pushState(launcherState(initialRoute.page, 1, initialRoute.doc), "", initialHash);
+    }
+  } catch {
+  }
+}
+renderPage(initialRoute.page);
+if (initialRoute.page === "docs") {
+  document.querySelector(`[data-doc-tab="${initialRoute.doc || "overview"}"]`)?.click();
+}
 requestAnimationFrame(launcherGamepadFrame);
 var scheduleGameWarmup = window.requestIdleCallback ? (callback) => window.requestIdleCallback(callback, { timeout: 250 }) : (callback) => window.setTimeout(callback, 0);
 scheduleGameWarmup(() => {
