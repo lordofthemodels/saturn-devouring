@@ -68582,13 +68582,44 @@ var init_gamepad = __esm({
       released: () => false
     });
     StandardGamepad = class {
-      constructor({ getGamepads, deadzone = 0.18, outerThreshold = 0.95 } = {}) {
+      constructor({ getGamepads, deadzone = 0.18, outerThreshold = 0.95, now } = {}) {
         this.getGamepads = getGamepads ?? (() => globalThis.navigator?.getGamepads?.() ?? []);
+        this.now = now ?? (() => globalThis.performance?.now?.() ?? Date.now());
         this.deadzone = deadzone;
         this.outerThreshold = outerThreshold;
         this.index = null;
         this.previousByIndex = /* @__PURE__ */ new Map();
         this.suppressedByIndex = /* @__PURE__ */ new Map();
+        this.lastRumbleAt = -Infinity;
+      }
+      rumble({
+        duration = 80,
+        strongMagnitude = 0.16,
+        weakMagnitude = 0.08,
+        minInterval = 180
+      } = {}) {
+        const now = this.now();
+        if (now - this.lastRumbleAt < minInterval) return false;
+        const pad = [...this.getGamepads() ?? []].find((candidate) => usablePad(candidate) && candidate.index === this.index);
+        const actuator = pad?.vibrationActuator;
+        if (!actuator?.playEffect) return false;
+        if (actuator.effects?.length && !actuator.effects.includes("dual-rumble")) return false;
+        if (actuator.type && actuator.type !== "dual-rumble") return false;
+        try {
+          const clamp5 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+          const result = actuator.playEffect("dual-rumble", {
+            startDelay: 0,
+            duration: Math.max(0, Math.min(5e3, Number(duration) || 0)),
+            strongMagnitude: clamp5(strongMagnitude),
+            weakMagnitude: clamp5(weakMagnitude)
+          });
+          Promise.resolve(result).catch(() => {
+          });
+          this.lastRumbleAt = now;
+          return true;
+        } catch {
+          return false;
+        }
       }
       poll() {
         const pads = [...this.getGamepads() ?? []].filter(usablePad);
@@ -94858,6 +94889,7 @@ function frame(now) {
   }
   const hurtTick = player.agent.lastHurtTick ?? -1;
   if (hurtTick > lastPlayerHurtTick || player.agent.armor < lastPlayerArmor || player.agent.hp < lastPlayerHp) {
+    if (inputMode === "gamepad") gamepad.rumble();
     const src2 = sim.byId.get(player.agent.lastHurtBy);
     if (src2 && !src2.dead) {
       const [ax, az] = world.simToWorld(src2.x, src2.y, src2.deck);

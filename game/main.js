@@ -3947,6 +3947,10 @@ function frame(now) {
   const hurtTick = player.agent.lastHurtTick ?? -1;
   if (hurtTick > lastPlayerHurtTick
     || player.agent.armor < lastPlayerArmor || player.agent.hp < lastPlayerHp) {
+    // A brief, light handle pulse makes incoming damage tactile without
+    // turning sustained combat into a constant buzz. Unsupported browsers or
+    // controllers simply return false; the visual damage feedback remains.
+    if (inputMode === 'gamepad') gamepad.rumble();
     const src2 = sim.byId.get(player.agent.lastHurtBy);
     if (src2 && !src2.dead) {
       const [ax, az] = world.simToWorld(src2.x, src2.y, src2.deck);

@@ -5,10 +5,11 @@ function button(pressed = false, value = pressed ? 1 : 0) {
   return { pressed, value };
 }
 
-function pad({ index = 0, id = 'Xbox Controller', mapping = 'standard', axes = [0, 0, 0, 0], held = [] } = {}) {
+function pad({ index = 0, id = 'Xbox Controller', mapping = 'standard', axes = [0, 0, 0, 0], held = [],
+  vibrationActuator } = {}) {
   const buttons = Array.from({ length: 17 }, () => button());
   for (const index of held) buttons[index] = button(true);
-  return { index, id, mapping, connected: true, axes, buttons };
+  return { index, id, mapping, connected: true, axes, buttons, vibrationActuator };
 }
 
 assert.deepEqual(radialDeadzone(0.1, 0.1), [0, 0], 'stick drift stays inside the dead zone');
@@ -83,5 +84,30 @@ assert.deepEqual(singleActionPress(true, true), { interactPressed: true, reloadP
   'the shared action resolver gives a live interaction priority over reload');
 assert.deepEqual(singleActionPress(true, false), { interactPressed: true, reloadPressed: true },
   'the shared action resolver reloads when no interaction is available');
+
+let rumbleNow = 1000;
+const rumbleCalls = [];
+const vibrationActuator = {
+  effects: ['dual-rumble'],
+  playEffect: (type, params) => { rumbleCalls.push({ type, params }); return Promise.resolve('complete'); },
+};
+const rumblePads = [pad({ index: 4, vibrationActuator })];
+const rumbleReader = new StandardGamepad({
+  getGamepads: () => rumblePads,
+  now: () => rumbleNow,
+});
+rumbleReader.poll();
+assert.equal(rumbleReader.rumble(), true, 'the active standard pad receives a damage pulse');
+assert.deepEqual(rumbleCalls[0], {
+  type: 'dual-rumble',
+  params: { startDelay: 0, duration: 80, strongMagnitude: 0.16, weakMagnitude: 0.08 },
+});
+rumbleNow += 100;
+assert.equal(rumbleReader.rumble(), false, 'damage pulses are rate-limited to avoid a constant buzz');
+rumbleNow += 100;
+assert.equal(rumbleReader.rumble(), true, 'damage rumble becomes available after the cooldown');
+const silentReader = new StandardGamepad({ getGamepads: () => [pad({ index: 5 })] });
+silentReader.poll();
+assert.equal(silentReader.rumble(), false, 'controllers without haptics remain a silent no-op');
 
 console.log('gamepad input checks passed');
