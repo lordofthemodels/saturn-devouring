@@ -69581,13 +69581,16 @@ var init_params = __esm({
       marineDoctrine: {
         firstSweepDelaySec: 10,
         // muster time before the crash sweep launches (§5.3)
+        crashCommitSec: 45,
+        // stop concentrating on a hot crash and fan out
+        crashSecureSec: 15,
+        // minimum time on site, counted from actual arrival
+        pursuitMemorySec: 20,
+        // keep pushing toward a retreating contact's last seen room
         officers: 4,
         // officer civilians who stay put in Officer Country
         bridgeOfficers: 3,
         // captain + officers who never leave the bridge
-        sweepDwellSec: 15,
-        // min pause at each cleared room (+ jitter)
-        sweepDwellJitterSec: 10,
         radarMemorySec: 3.5,
         // one shared room-level paint, long enough to survive the strategic cadence
         radarCooldownSec: 6,
@@ -71590,11 +71593,22 @@ function updateMarineTick(sim2, a2, dt) {
     updateArmed(sim2, a2, dt);
     return;
   }
+  if (squad.phase1 && squad.reachedBreachAt === void 0 && (a2.pnode ?? a2.node) === sim2.graph.breachNode) {
+    squad.reachedBreach = true;
+    squad.reachedBreachAt = sim2.t;
+    sim2.log("sweep", `squad ${squad.id + 1} reaches the crash site`);
+  }
   const threat = floodThreatVisible(sim2, a2);
   maybeThrowFrag(sim2, a2, dt);
   if (threat > 0) {
-    squad.contactNode = nearestThreatNode(sim2, a2);
+    const contact = nearestThreat(sim2, a2, squad);
+    squad.contactNode = contact ? contact.pnode ?? contact.node : a2.pnode ?? a2.node;
     squad.contactTick = sim2.tickCount;
+    if (contact && (contact.task?.retreat || squad.pursuitTargetId === contact.id)) {
+      squad.pursuitTargetId = contact.id;
+      squad.pursuitNode = squad.contactNode;
+      squad.pursuitTick = sim2.tickCount;
+    }
     sim2.floodKnown = true;
     if (a2.hasRadio && !squad.calledContact) {
       squad.calledContact = true;
@@ -71620,6 +71634,10 @@ function updateMarineTick(sim2, a2, dt) {
   }
   a2.givingGround = false;
   if (a2.state === STATE.FIGHT) a2.state = STATE.MOVE;
+  const pursuitFresh = squad.pursuitNode !== void 0 && sim2.tickCount - squad.pursuitTick <= P2.marineDoctrine.pursuitMemorySec * P2.sim.tickHz;
+  if (pursuitFresh && sim2.tickCount > squad.contactTick && !squad.order && !squad.lastStandBound && !securingCrash(sim2, squad)) {
+    setPursuitObjective(squad, squad.pursuitNode, squad.pursuitTargetId);
+  }
   if (sim2.graph.node(a2.node).type !== "corridor" && threat === 0) sim2.sweptAt[a2.node] = sim2.t;
   if (squad.order?.kind === "order:escort") {
     a2.closeFollow = false;
@@ -71701,16 +71719,28 @@ function updateMarineTick(sim2, a2, dt) {
     }
   }
 }
-function nearestThreatNode(sim2, a2) {
+function nearestThreat(sim2, a2, squad) {
   let best = null, bestDistance = Infinity;
   for (const form of visibleFloodForms(sim2, a2)) {
     const distance3 = Math.hypot(form.x - a2.x, form.y - a2.y);
-    if (distance3 < bestDistance) {
+    const priority = form.id === squad.pursuitTargetId ? 0 : form.task?.retreat ? 1 : 2;
+    const bestPriority = best ? best.id === squad.pursuitTargetId ? 0 : best.task?.retreat ? 1 : 2 : Infinity;
+    if (priority < bestPriority || priority === bestPriority && distance3 < bestDistance) {
       best = form;
       bestDistance = distance3;
     }
   }
-  return best ? best.pnode ?? best.node : a2.pnode ?? a2.node;
+  return best;
+}
+function setPursuitObjective(squad, node, targetId) {
+  const kind = squad.objective?.kind;
+  if (kind !== "pursuit" && (kind === "breach" || kind === "distress")) {
+    squad.pursuitResume = squad.objective;
+  }
+  squad.objective = { kind: "pursuit", node, targetId };
+}
+function securingCrash(sim2, squad) {
+  return squad.phase1 && squad.reachedBreachAt !== void 0 && sim2.t - squad.reachedBreachAt < sim2.P.marineDoctrine.crashSecureSec;
 }
 function applySquadOrder(sim2, squad, leader) {
   const o2 = squad.order;
@@ -71750,11 +71780,15 @@ function applySquadOrder(sim2, squad, leader) {
 }
 function strategicSquads(sim2) {
   const P2 = sim2.P;
-  if (!sim2.firstSweepCleared && sim2.floodKnown && sim2.t > 120) {
+  const crashMinimumMet = sim2.squads.filter((squad) => squad.phase1 && squad.reachedBreachAt !== void 0 && !squad.odst).every((squad) => sim2.t - squad.reachedBreachAt >= P2.marineDoctrine.crashSecureSec);
+  if (!sim2.firstSweepCleared && sim2.floodKnown && sim2.t > P2.marineDoctrine.crashCommitSec && crashMinimumMet) {
     sim2.firstSweepCleared = true;
     sim2.log("sweep", "crash site is hot and holding — squads begin general deck sweeps");
     for (const s2 of sim2.squads) {
+      if (!s2.phase1 || s2.odst) continue;
+      s2.phase1 = false;
       if (s2.objective?.kind === "breach") s2.objective = null;
+      if (s2.pursuitResume?.kind === "breach") s2.pursuitResume = void 0;
     }
   }
   mergeThinSquads(sim2);
@@ -71807,37 +71841,50 @@ function strategicSquads(sim2) {
         sim2.log("radio", `squad ${squad.id + 1} responding to distress in ${sim2.graph.node(call3.node).name}`);
       }
     }
-    if (applyMotionRadar(sim2, squad, leader, members)) continue;
     if (squad.objective?.kind === "breach" && !squad.reachedBreach && leader.node === sim2.graph.breachNode) {
       squad.reachedBreach = true;
+      squad.reachedBreachAt = sim2.t;
       sim2.log("sweep", `squad ${squad.id + 1} reaches the crash site`);
     }
-    if (squad.contactNode !== void 0 && sim2.tickCount - squad.contactTick < 15 * 10 && squad.objective?.kind !== "breach" && sim2.rng.chance(0.6)) {
-      squad.objective = { kind: "pursuit", node: squad.contactNode };
+    const pursuitFresh = squad.pursuitNode !== void 0 && sim2.tickCount - squad.pursuitTick <= P2.marineDoctrine.pursuitMemorySec * P2.sim.tickHz;
+    const contactFresh = squad.contactNode !== void 0 && sim2.tickCount - squad.contactTick < 15 * 10;
+    const pursueReportedContact = contactFresh && squad.objective?.kind !== "breach" && sim2.rng.chance(0.6);
+    if ((pursuitFresh || pursueReportedContact) && !securingCrash(sim2, squad)) {
+      setPursuitObjective(
+        squad,
+        pursuitFresh ? squad.pursuitNode : squad.contactNode,
+        pursuitFresh ? squad.pursuitTargetId : void 0
+      );
     }
+    if (applyMotionRadar(sim2, squad, leader, members)) continue;
     const objNode = squad.objective?.node;
     const arrived = objNode !== void 0 && members.every((m2) => m2.node === objNode || sim2.graph.hops(m2.node, objNode, ["std"], marinePass) <= 1);
     const clear = objNode !== void 0 && sim2.visibleNodes(objNode).every((n2) => sim2.floodStrengthAt(n2) === 0);
     if (!squad.objective || arrived && clear) {
       if (squad.objective?.kind === "breach") {
+        const secureAt = (squad.reachedBreachAt ?? sim2.t) + P2.marineDoctrine.crashSecureSec;
+        if (sim2.t < secureAt) continue;
         if (!sim2.firstSweepCleared) {
           sim2.firstSweepCleared = true;
           sim2.log("sweep", `first sweep cleared the breach region (${sim2.graph.node(sim2.graph.breachNode).name})`);
         }
-        squad.objective = { kind: "hold", node: leader.node };
-        squad.holdUntil = sim2.t + 30;
-        continue;
+        squad.phase1 = false;
+        squad.objective = null;
+      } else if (squad.objective?.kind === "pursuit") {
+        squad.objective = squad.pursuitResume ?? null;
+        squad.pursuitResume = void 0;
+        squad.pursuitNode = void 0;
+        squad.pursuitTargetId = void 0;
+        squad.pursuitTick = void 0;
+        squad.contactNode = void 0;
+        squad.contactTick = void 0;
+        if (squad.objective) continue;
       }
-      if (squad.objective?.kind === "breach" || sim2.firstSweepCleared || !squad.objective) {
-        if (sim2.firstSweepCleared || squad.objective) {
-          if (squad.holdUntil === void 0 || sim2.t >= squad.holdUntil) {
-            const target = pickSweepTarget(sim2, leader);
-            squad.objective = target !== -1 ? { kind: "sweep", node: target } : { kind: "hold", node: leader.node };
-            squad.holdUntil = sim2.t + P2.marineDoctrine.sweepDwellSec + sim2.rng.range(0, P2.marineDoctrine.sweepDwellJitterSec);
-          }
-        } else {
-          squad.objective = { kind: "hold", node: leader.node };
-        }
+      if (sim2.firstSweepCleared) {
+        const target = pickSweepTarget(sim2, leader);
+        squad.objective = target !== -1 ? { kind: "sweep", node: target } : { kind: "hold", node: leader.node };
+      } else if (!squad.objective) {
+        squad.objective = { kind: "hold", node: leader.node };
       }
     }
   }
@@ -71950,21 +71997,26 @@ function pickSweepTarget(sim2, leader) {
     if (!s2.broken && (s2.objective?.kind === "sweep" || s2.objective?.kind === "order")) taken.add(s2.objective.node);
   }
   let best = -1, bestScore = Infinity;
+  let fallback = -1, fallbackScore = Infinity;
   for (const n2 of g2.nodes) {
-    if (n2.type === "corridor" || n2.idx === leader.node || taken.has(n2.idx)) continue;
+    if (n2.type === "corridor" || n2.idx === leader.node) continue;
     if (n2.roles.includes("command")) continue;
     const staleness = sim2.t - sim2.sweptAt[n2.idx];
-    if (staleness < 40) continue;
     const d2 = g2.hops(leader.node, n2.idx, ["std"], marinePass);
     if (d2 === -1) continue;
     const breachDist = g2.hops(n2.idx, g2.breachNode, ["std"], marinePass);
     const score = d2 * 0.5 + (breachDist === -1 ? 8 : breachDist) * 0.9 - (n2.deck >= 4 ? 2.5 : 0) - Math.min(staleness, 300) * 0.01;
-    if (score < bestScore) {
+    const occupiedPenalty = taken.has(n2.idx) ? 100 : 0;
+    if (score + occupiedPenalty < fallbackScore) {
+      fallbackScore = score + occupiedPenalty;
+      fallback = n2.idx;
+    }
+    if (staleness >= 40 && !taken.has(n2.idx) && score < bestScore) {
       bestScore = score;
       best = n2.idx;
     }
   }
-  return best;
+  return best !== -1 ? best : fallback;
 }
 function assignFirstSweep(sim2) {
   const ranked = [];
@@ -72432,15 +72484,15 @@ var init_hive = __esm({
             else if (a2.faction !== FACTION.COMBAT || this._combatResponder(a2)) flood.set(a2.id, a2);
           }
         }
-        let strength = 0, defense = 0, threat = null, nearestThreat = Infinity;
+        let strength = 0, defense = 0, threat = null, nearestThreat2 = Infinity;
         for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
         for (const human of humans.values()) {
           defense += W_HUMAN[human.faction] ?? 0;
           if (human.faction !== FACTION.MARINE && human.faction !== FACTION.ARMED) continue;
           for (const member of pack2) {
             const distance3 = this.sim.agentDistance(member, human);
-            if (distance3 < nearestThreat - 1e-9 || Math.abs(distance3 - nearestThreat) <= 1e-9 && human.id < (threat?.id ?? Infinity)) {
-              nearestThreat = distance3;
+            if (distance3 < nearestThreat2 - 1e-9 || Math.abs(distance3 - nearestThreat2) <= 1e-9 && human.id < (threat?.id ?? Infinity)) {
+              nearestThreat2 = distance3;
               threat = human;
             }
           }
@@ -76021,7 +76073,6 @@ var init_sim = __esm({
           const lead = s2.members.map((id) => this.byId.get(id)).find((m2) => m2 && !m2.dead && m2.hp > 0);
           if (!lead) continue;
           s2.objective = { kind: "order", node };
-          s2.holdUntil = void 0;
           this._lastDirectiveT = this.t;
           this.log("radio", `CDR orders squad ${s2.id + 1} to ${this.graph.node(node).name} — reported contact`, this.byId.get(this.cdrId).node);
           break;

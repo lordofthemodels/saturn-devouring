@@ -449,10 +449,11 @@ export const PARAMS = {
   },
   marineDoctrine: {
     firstSweepDelaySec: 10,    // muster time before the crash sweep launches (§5.3)
+    crashCommitSec: 45,        // stop concentrating on a hot crash and fan out
+    crashSecureSec: 15,        // minimum time on site, counted from actual arrival
+    pursuitMemorySec: 20,      // keep pushing toward a retreating contact's last seen room
     officers: 4,               // officer civilians who stay put in Officer Country
     bridgeOfficers: 3,         // captain + officers who never leave the bridge
-    sweepDwellSec: 15,         // min pause at each cleared room (+ jitter)
-    sweepDwellJitterSec: 10,
     radarMemorySec: 3.5,       // one shared room-level paint, long enough to survive the strategic cadence
     radarCooldownSec: 6,       // finish checking one paint before chasing another
     ladderBlastSettleSec: 0.75,// pause after a frag clears the far ladder mouth

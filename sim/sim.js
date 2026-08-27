@@ -835,7 +835,6 @@ export class Sim {
       const lead = s.members.map((id) => this.byId.get(id)).find((m) => m && !m.dead && m.hp > 0);
       if (!lead) continue;
       s.objective = { kind: 'order', node };
-      s.holdUntil = undefined;
       this._lastDirectiveT = this.t;
       this.log('radio', `CDR orders squad ${s.id + 1} to ${this.graph.node(node).name} — reported contact`, this.byId.get(this.cdrId).node);
       break;
