@@ -12,7 +12,7 @@ import { characterParts } from './characters.js';
 import { buildCarrier, CarrierAnimator, SACK_BLOAT_M } from './carrier-model.js';
 import { RagdollSystem } from '../engine/physics/ragdoll.js';
 import { TASK } from '../sim/hive.js';
-import { combatChargeArmPose } from '../sim/charge-pose.js';
+import { combatAttackArmPose, combatChargeArmPose } from '../sim/charge-pose.js';
 
 const CAP = 512;
 // the carry yaw _rifleAt applies; the weapon light rides the same axis
@@ -647,7 +647,8 @@ export class Agents3D {
       case CLIP.ATTACK:
         // A fast, feral two-beat mauling motion. The old single-axis swipe
         // disappeared head-on — exactly where the player sees a form hitting
-        // them. Both arms now cross, recoil, and lash again before settling.
+        // them. Both arms now recoil and lash independently without crossing
+        // the body's centre plane; the outward lift is applied below.
         // `animTime` resets on the actual damage event, so the visual contact
         // and the physical impulse share the same beat.
         {
@@ -900,14 +901,15 @@ export class Agents3D {
           this._mRot.makeRotationFromEuler(this._eHold);
         } else if (feral) {
           const u = Math.max(0, Math.min(1, animT / 0.74));
-          const envelope = Math.sin(u * Math.PI);
           const side = part === 'armR' ? 1 : -1;
-          // Twist at both shoulder axes as well as the old fore/aft hinge:
-          // head-on this becomes a violent cross-body flail, not a static T.
+          const pose = combatAttackArmPose(side, u, id, ang,
+            this._attackArmPose ??= { x: 0, y: 0, z: 0 });
+          // Twist at both shoulder axes as well as the fore/aft hinge. The
+          // helper keeps each rigid limb on its anatomical side throughout.
           (this._eHold ??= new THREE.Euler()).set(
-            add + side * envelope * 0.95,
-            side * Math.sin(u * Math.PI * 4.4 + id) * envelope * 0.75,
-            ang,
+            add + pose.x,
+            pose.y,
+            pose.z,
           );
           this._mRot.makeRotationFromEuler(this._eHold);
         } else if (add) {

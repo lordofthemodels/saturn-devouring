@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import * as THREE from '../engine/vendor/three.webgpu.module.js';
-import { combatChargeArmPose, combatChargeArmsHigh } from './charge-pose.js';
+import { combatAttackArmPose, combatChargeArmPose, combatChargeArmsHigh } from './charge-pose.js';
 import { Sim } from './sim.js';
 import { FACTION, FLAG } from '../shared/agentBuffer.js';
 import { makeAgent } from './init.js';
@@ -62,6 +62,24 @@ for (const modelName of ['combat_civ', 'combat_odst']) {
     }
     assert.ok(Math.max(...averageRaises) - Math.min(...averageRaises) > 0.15,
       `${modelName} ${part} must vary its resting raise angle between forms`);
+
+    // The melee clip used to raise with the opposite X sign, sending the
+    // rigid arms inward across the body. Sample the real model tips through
+    // both attack beats so a future animation change cannot reintroduce it.
+    for (let attackId = 1; attackId <= 40; attackId++) {
+      for (let sampleIndex = 0; sampleIndex <= 120; sampleIndex++) {
+        const u = sampleIndex / 120;
+        const envelope = Math.sin(u * Math.PI);
+        const right = Math.sin(u * Math.PI * 3.2) * envelope;
+        const left = Math.sin((u * Math.PI * 3.2) - 1.25) * envelope;
+        const foreAft = part === 'armR' ? 0.25 + right * 2.65 : -0.18 - left * 2.45;
+        const pose = combatAttackArmPose(side, u, attackId, foreAft, {});
+        const direction = new THREE.Vector3(...tip)
+          .applyEuler(new THREE.Euler(pose.x, pose.y, pose.z));
+        assert.ok(direction.z * side > 0,
+          `${modelName} ${part} melee must stay on its anatomical side`);
+      }
+    }
   }
 }
 
