@@ -536,8 +536,21 @@ function updateMarineTick(sim, a, dt) {
       const guardPass = squad.deckGuard ? deckOnePass(sim) : humanPass;
       let ok = sim.setPathTo(a, target, ['std'], guardPass);
       if (!ok && !squad.deckGuard) ok = sim.setPathTo(a, target, ['std'], marinePass);
-      if (!ok) squad.objective = null; // truly unreachable
-      else a.state = STATE.MOVE;
+      if (ok) {
+        a.state = STATE.MOVE;
+      } else {
+        // One separated rifleman must never cancel the shared assignment for
+        // everybody. Only the point marine can release an unreachable task;
+        // laggards instead try to rejoin the point and the patrol keeps moving.
+        const leader = squad.members.map((id) => sim.byId.get(id))
+          .find((member) => member && !member.dead && member.hp > 0);
+        if (leader?.id !== a.id) {
+          if (leader && a.node !== leader.node
+            && sim.setPathTo(a, leader.node, ['std'], guardPass)) a.state = STATE.MOVE;
+        } else {
+          releaseUnreachableObjective(sim, squad);
+        }
+      }
     }
   }
 
@@ -595,6 +608,33 @@ function setPursuitObjective(squad, node, targetId) {
     squad.pursuitResume = squad.objective;
   }
   squad.objective = { kind: 'pursuit', node, targetId };
+}
+
+function releaseUnreachableObjective(sim, squad) {
+  const kind = squad.objective?.kind;
+  if (kind === 'motion') {
+    squad.objective = squad.radarResume ?? null;
+    squad.radarResume = null;
+    squad.radarSeenTick = undefined;
+    squad.radarCooldownUntil = sim.t + sim.P.marineDoctrine.radarCooldownSec;
+    return;
+  }
+  if (kind === 'pursuit') {
+    endPursuit(squad);
+  } else {
+    squad.objective = null;
+  }
+  if (kind === 'distress') squad.respondingTo = null;
+}
+
+function endPursuit(squad) {
+  squad.objective = squad.pursuitResume ?? null;
+  squad.pursuitResume = undefined;
+  squad.pursuitNode = undefined;
+  squad.pursuitTargetId = undefined;
+  squad.pursuitTick = undefined;
+  squad.contactNode = undefined;
+  squad.contactTick = undefined;
 }
 
 function securingCrash(sim, squad) {
@@ -776,8 +816,15 @@ export function strategicSquads(sim) {
 
     // objective reached & clear -> next objective
     const objNode = squad.objective?.node;
-    const arrived = objNode !== undefined && members.every((m) => m.node === objNode || sim.graph.hops(m.node, objNode, ['std'], marinePass) <= 1);
-    const clear = objNode !== undefined && sim.visibleNodes(objNode).every((n) => sim.floodStrengthAt(n) === 0);
+    // The point marine owns arrival. Requiring every scattered survivor to
+    // get within one hop let a single cut-off laggard pin the whole squad to a
+    // cleared pursuit room indefinitely, even though nobody had a target.
+    const arrived = objNode !== undefined && leader.node === objNode && !leader.move;
+    // Completion follows what the squad can actually see. Ground-truth Flood
+    // mass in a large room or beyond an opening used to pin an otherwise idle
+    // squad to an objective it had no target with which to engage.
+    const clear = objNode !== undefined
+      && members.every((member) => floodThreatVisible(sim, member) === 0);
     if (!squad.objective || (arrived && clear)) {
       if (squad.objective?.kind === 'breach') {
         // Count the security interval from actual arrival. A firefight on the
@@ -792,13 +839,7 @@ export function strategicSquads(sim) {
         squad.phase1 = false;
         squad.objective = null;
       } else if (squad.objective?.kind === 'pursuit') {
-        squad.objective = squad.pursuitResume ?? null;
-        squad.pursuitResume = undefined;
-        squad.pursuitNode = undefined;
-        squad.pursuitTargetId = undefined;
-        squad.pursuitTick = undefined;
-        squad.contactNode = undefined;
-        squad.contactTick = undefined;
+        endPursuit(squad);
         if (squad.objective) continue;
       }
       if (sim.firstSweepCleared) {
@@ -824,8 +865,7 @@ function deckGuardPlan(sim, squad, leader) {
   if (squad.objective?.kind === 'distress') {
     const call = sim.calls.find((entry) => entry.id === squad.objective.callId);
     const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
-    const clear = sim.visibleNodes(squad.objective.node)
-      .every((node) => sim.floodStrengthAt(node) === 0);
+    const clear = floodThreatVisible(sim, leader) === 0;
     const active = call && sim.t - call.t <= P.radio.callFadeSec
       && sim.graph.node(call.node).deck === 1;
     if (active && (!arrived || !clear)) return;
@@ -886,6 +926,18 @@ function patrolPlan(sim, squad, leader) {
   }
   if (squad.order && applySquadOrder(sim, squad, leader)) return;
 
+  const members = squad.members.map((id) => sim.byId.get(id))
+    .filter((member) => member && !member.dead && member.hp > 0);
+  // Patrols previously had no pursuit-completion branch. Their strategic
+  // plan briefly resumed the circuit, then the still-live contact memory
+  // reissued the already-cleared pursuit on the same tick, forever.
+  if (squad.objective?.kind === 'pursuit') {
+    const arrived = leader.node === squad.objective.node && !leader.move;
+    const clear = members.every((member) => floodThreatVisible(sim, member) === 0);
+    if (!arrived || !clear) return;
+    endPursuit(squad);
+  }
+
   const callPolicy = squad.callPolicy ?? 'auto';
   for (const call of (callPolicy === 'ignore' ? [] : sim.calls)) {
     if (sim.t - call.t > P.radio.callFadeSec) continue;
@@ -905,20 +957,37 @@ function patrolPlan(sim, squad, leader) {
       sim.log('radio', `patrol ${squad.patrolNo} responding to distress in ${sim.graph.node(call.node).name}`);
     }
   }
-  const members = squad.members.map((id) => sim.byId.get(id))
-    .filter((member) => member && !member.dead && member.hp > 0);
   if (applyMotionRadar(sim, squad, leader, members)) return;
   if (squad.objective?.kind === 'distress') {
     const objNode = squad.objective.node;
-    const clear = sim.visibleNodes(objNode).every((n) => sim.floodStrengthAt(n) === 0);
+    const clear = members.every((member) => floodThreatVisible(sim, member) === 0);
     if (leader.node === objNode && clear) { squad.objective = null; squad.respondingTo = null; }
     else return;
   }
-  // walk the circuit
-  if (leader.node === squad.route[squad.leg] && !leader.move && !leader.path.length) {
+
+  // Keep a reachable patrol leg stable between strategic rounds, including a
+  // temporary local detour when fog cuts the fixed ship-wide circuit.
+  if (squad.objective?.kind === 'patrol' && leader.node !== squad.objective.node
+    && sim.pathFor(leader, squad.objective.node, ['std'], marinePass)) return;
+
+  // Walk the circuit, skipping legs the point marine cannot currently reach
+  // under the exact same fog/door policy movement will enforce. If a fog bank
+  // partitions the circuit, patrol the reachable component instead of idling.
+  if (leader.node === squad.route[squad.leg]) squad.leg = (squad.leg + 1) % squad.route.length;
+  let target = -1;
+  for (let tries = 0; tries < squad.route.length; tries++) {
+    const candidate = squad.route[squad.leg];
+    if (candidate !== leader.node
+      && sim.pathFor(leader, candidate, ['std'], marinePass)) {
+      target = candidate;
+      break;
+    }
     squad.leg = (squad.leg + 1) % squad.route.length;
   }
-  squad.objective = { kind: 'patrol', node: squad.route[squad.leg] };
+  if (target === -1) target = pickSweepTarget(sim, leader);
+  squad.objective = target === -1
+    ? { kind: 'hold', node: leader.node }
+    : { kind: 'patrol', node: target };
 }
 
 // Marine radar is a SQUAD decision over the Sim's once-per-tick room summary,
@@ -952,7 +1021,9 @@ function applyMotionRadar(sim, squad, leader, members) {
   }
   if (best) {
     squad.radarResume = squad.objective;
-    const hold = best.score > members.length;
+    // Fog is information, too: line marines check its threshold but do not
+    // repeatedly accept and fail an impossible radar path into the growth.
+    const hold = best.score > members.length || sim.fogAt(best.node);
     squad.objective = {
       kind: 'motion', node: hold ? (leader.pnode ?? leader.node) : best.node,
       contactNode: best.node, hold,
@@ -1011,8 +1082,9 @@ function pickSweepTarget(sim, leader) {
     if (n.type === 'corridor' || n.idx === leader.node) continue;
     if (n.roles.includes('command')) continue; // the garrison holds the bridge
     const staleness = sim.t - sim.sweptAt[n.idx];
-    const d = g.hops(leader.node, n.idx, ['std'], marinePass);
-    if (d === -1) continue;
+    const path = sim.pathFor(leader, n.idx, ['std'], marinePass);
+    if (!path) continue;
+    const d = path.length;
     const breachDist = g.hops(n.idx, g.breachNode, ['std'], marinePass);
     // the danger is DOWN where the ship was holed: breach-proximity and the
     // lower decks dominate the pick, distance-from-squad only breaks ties —

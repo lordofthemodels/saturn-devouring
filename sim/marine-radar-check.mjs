@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { FACTION } from '../shared/agentBuffer.js';
 import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
+import { humanPass } from './graph.js';
 import { strategicSquads, updateHumansTick } from './humans.js';
 import { Sim } from './sim.js';
 
@@ -227,6 +228,163 @@ function openSameDeckEdge(sim) {
     'a recently checked ship must still produce a continuous sweep route');
   assert.notEqual(squad.objective.node, current,
     'continuous sweep must not hold in its current room');
+}
+
+// Patrol planning and movement must use the same spore-fog policy. A patrol
+// skips a fogged leg instead of accepting an objective that execution will
+// reject every tick.
+{
+  const sim = emptySim('marine-patrol-fog-route');
+  sim.squads = [];
+  const origin = sim.graph.nodes.find((node) =>
+    [...sim.graph.neighbors(node.idx, ['std'], humanPass)].length >= 2);
+  assert.ok(origin, 'patrol fog fixture needs a room with two open exits');
+  const neighbors = [...sim.graph.neighbors(origin.idx, ['std'], humanPass)];
+  const fogged = neighbors[0].to;
+  const clear = neighbors[1].to;
+  const squad = addSquad(sim, origin.idx, 2);
+  squad.patrol = true;
+  squad.route = [origin.idx, fogged, clear];
+  squad.leg = 0;
+  squad.objective = { kind: 'patrol', node: origin.idx };
+  sim.floodHoldSec[fogged] = sim.P.darkness.fogSec;
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  assert.equal(squad.objective.kind, 'patrol');
+  assert.equal(squad.objective.node, clear,
+    'a patrol must advance to a reachable leg rather than stall on fog');
+}
+
+// Once fog grows around a squad, the refusal to enter it cannot also prevent
+// that squad from crossing the connected bank to reach a clear room.
+{
+  const sim = emptySim('marine-escape-fog-bank');
+  sim.squads = [];
+  let fixture = null;
+  for (const from of sim.graph.nodes) {
+    for (const to of sim.graph.nodes) {
+      const path = sim.graph.path(from.idx, to.idx, ['std'], humanPass);
+      if (path && path.length >= 2) {
+        fixture = { from: from.idx, to: to.idx };
+        break;
+      }
+    }
+    if (fixture) break;
+  }
+  assert.ok(fixture, 'fog escape fixture needs a multi-room open route');
+  const squad = addSquad(sim, fixture.from, 1);
+  const marine = sim.byId.get(squad.members[0]);
+  sim.floodHoldSec.fill(sim.P.darkness.fogSec);
+  sim.floodHoldSec[fixture.to] = 0;
+  assert.ok(sim.pathFor(marine, fixture.to, ['std'], humanPass),
+    'a marine already inside fog must retain a route to clear ground');
+
+  sim.floodHoldSec.fill(0);
+  sim.floodHoldSec[fixture.to] = sim.P.darkness.fogSec;
+  assert.equal(sim.pathFor(marine, fixture.to, ['std'], humanPass), null,
+    'a line marine on clear ground must still refuse a fogged destination');
+}
+
+// A laggard with no route cannot erase the shared objective after the point
+// marine has already found a valid path.
+{
+  const sim = emptySim('marine-laggard-objective');
+  sim.squads = [];
+  const edge = openSameDeckEdge(sim);
+  const squad = addSquad(sim, edge.a, 2);
+  squad.objective = { kind: 'sweep', node: edge.b };
+  const laggard = sim.byId.get(squad.members[1]);
+  const setPathTo = sim.setPathTo.bind(sim);
+  sim.setPathTo = (marine, ...args) => marine.id === laggard.id
+    ? false : setPathTo(marine, ...args);
+  sim._refreshOccupancy();
+  updateHumansTick(sim, sim.dt);
+  assert.equal(squad.objective?.node, edge.b,
+    'one separated member must not cancel the squad route');
+}
+
+// The point marine reaching a clear objective releases the squad even when a
+// separated survivor is still more than one room behind.
+{
+  const sim = emptySim('marine-laggard-arrival');
+  sim.squads = [];
+  let fixture = null;
+  for (const from of sim.graph.nodes) {
+    for (const to of sim.graph.nodes) {
+      const path = sim.graph.path(from.idx, to.idx, ['std'], humanPass);
+      if (path && path.length >= 2) {
+        fixture = { from: from.idx, to: to.idx };
+        break;
+      }
+    }
+    if (fixture) break;
+  }
+  assert.ok(fixture, 'laggard arrival fixture needs rooms more than one hop apart');
+  const squad = addSquad(sim, fixture.from, 2);
+  const leader = sim.byId.get(squad.members[0]);
+  const room = sim.graph.node(fixture.to);
+  leader.node = leader.pnode = fixture.to;
+  leader.deck = room.deck;
+  leader.x = room.x;
+  leader.y = room.y;
+  leader.move = null;
+  leader.path = [];
+  squad.objective = { kind: 'pursuit', node: fixture.to };
+  sim.firstSweepCleared = true;
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  assert.notEqual(squad.objective?.kind, 'pursuit',
+    'a distant laggard must not pin a clear point-marine objective');
+}
+
+// Patrols clear the pursuit memory itself on arrival; otherwise the per-tick
+// chase path immediately recreates the completed objective.
+{
+  const sim = emptySim('marine-patrol-pursuit-complete');
+  sim.squads = [];
+  const edge = openSameDeckEdge(sim);
+  const squad = addSquad(sim, edge.a, 2);
+  squad.patrol = true;
+  squad.patrolNo = 1;
+  squad.route = [edge.a, edge.b];
+  squad.leg = 0;
+  squad.pursuitNode = edge.a;
+  squad.pursuitTargetId = 999;
+  squad.pursuitTick = sim.tickCount;
+  squad.contactNode = edge.a;
+  squad.contactTick = sim.tickCount - 1;
+  squad.objective = { kind: 'pursuit', node: edge.a, targetId: 999 };
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  assert.notEqual(squad.objective?.kind, 'pursuit');
+  assert.equal(squad.pursuitNode, undefined,
+    'a completed patrol pursuit must clear its per-tick chase memory');
+  updateHumansTick(sim, sim.dt);
+  assert.notEqual(squad.objective?.kind, 'pursuit',
+    'the completed pursuit must not be recreated on the next human tick');
+}
+
+// Reaching a distress room with no visible contact releases a patrol even if
+// hidden ground-truth mass remains in the abstract room model.
+{
+  const sim = emptySim('marine-distress-visible-clear');
+  sim.squads = [];
+  const edge = openSameDeckEdge(sim);
+  const squad = addSquad(sim, edge.a, 2);
+  squad.patrol = true;
+  squad.patrolNo = 1;
+  squad.route = [edge.a, edge.b];
+  squad.leg = 0;
+  squad.respondingTo = 77;
+  squad.objective = { kind: 'distress', node: edge.a, callId: 77 };
+  const hidden = makeAgent(FACTION.COMBAT, edge.a, sim.graph);
+  sim.spawn(hidden);
+  sim.losFloodThreat = () => 0;
+  sim._refreshOccupancy();
+  strategicSquads(sim);
+  assert.notEqual(squad.objective?.kind, 'distress',
+    'unseen ground truth must not pin a patrol to a completed response');
+  assert.equal(squad.respondingTo, null);
 }
 
 // A hot crash cannot pin the ship's whole response indefinitely. At the

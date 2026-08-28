@@ -956,18 +956,29 @@ export class Sim {
     a.path = norm;
     return true;
   }
-  setPathTo(a, target, layers, passFn) {
+  pathFor(a, target, layers, passFn) {
     // SPORE-FOG DOCTRINE (user rule: fog tips the balance toward the flood):
     // a LINE marine will not walk into a spore-fogged room — the rank and
     // file have seen what comes out of that murk. ODSTs and the player's own
-    // fireteam (escort) still go wherever the mission goes. Only destination
-    // rooms are gated, so a marine standing in fog can always path OUT of it;
-    // a fogged objective simply becomes unreachable and the squad re-plans.
+    // fireteam (escort) still go wherever the mission goes. A line marine
+    // already caught inside a connected bank of fog may cross it to reach a
+    // clear destination; otherwise the old per-edge gate could trap him in
+    // the growth while every clear patrol objective looked unreachable.
     let pf = passFn;
     if (a.faction === FACTION.MARINE && !a.odst && !a.escort) {
-      pf = (l, from, to) => (!passFn || passFn(l, from, to)) && !this.fogAt(to);
+      const escapingFog = this.fogAt(a.node) && !this.fogAt(target);
+      // graph.path expands backward from the destination, so `from` here is
+      // the room a forward-moving marine would ENTER. The previous `to`
+      // check inverted the rule: fogged objectives looked safe while a
+      // marine already inside fog could not leave.
+      pf = (l, from, to) => (!passFn || passFn(l, from, to))
+        && (escapingFog || !this.fogAt(from));
     }
-    const path = this.graph.path(a.node, target, layers, pf);
+    return this.graph.path(a.node, target, layers, pf);
+  }
+
+  setPathTo(a, target, layers, passFn) {
+    const path = this.pathFor(a, target, layers, passFn);
     if (!path) return false;
     a.path = path;
     return true;
