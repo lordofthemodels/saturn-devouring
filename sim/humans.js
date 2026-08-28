@@ -249,6 +249,25 @@ function nearestFloodDist(sim, a) {
   return best;
 }
 
+function nearestVisibleFlood(sim, a) {
+  let best = null, bestDistance = Infinity;
+  for (const form of visibleFloodForms(sim, a)) {
+    const distance = Math.hypot(form.x - a.x, form.y - a.y);
+    if (distance < bestDistance) { best = form; bestDistance = distance; }
+  }
+  return best;
+}
+
+function reportDeckSighting(sim, a, contact) {
+  const contactNode = contact ? (contact.pnode ?? contact.node) : undefined;
+  // Re-arm when sight is lost, and report again when the contact crosses into
+  // another room. emitCall coalesces different sentries seeing that incident.
+  if (contactNode !== undefined && contactNode !== a.deckContactNode && a.hasRadio) {
+    sim.emitCall(a, { node: contactNode, deckSighting: true });
+  }
+  a.deckContactNode = contactNode;
+}
+
 // --- armed humans (§5.2) ---
 function updateArmed(sim, a, dt) {
   const P = sim.P;
@@ -348,9 +367,10 @@ function updateMarineTick(sim, a, dt) {
   // garrison for force accounting, but their one-Marine squads may answer a
   // same-deck distress call and therefore continue through normal squad AI.
   if (a.garrison && !a.deckGuard) {
-    a.state = sim.losFloodThreat(a) > 0 ? STATE.FIGHT : STATE.IDLE;
+    const contact = nearestVisibleFlood(sim, a);
+    a.state = contact ? STATE.FIGHT : STATE.IDLE;
     a.path = []; a.move = null;
-    if (a.state === STATE.FIGHT && a.hasRadio && sim.tickCount % 60 === 0) sim.emitCall(a);
+    reportDeckSighting(sim, a, contact);
     return;
   }
 
@@ -395,10 +415,16 @@ function updateMarineTick(sim, a, dt) {
       squad.pursuitTick = sim.tickCount;
     }
     sim.floodKnown = true;
-    if (a.hasRadio && !squad.calledContact) {
+    if (squad.deckGuard) {
+      // Command-deck room sentries are the reliable local alarm network. A
+      // live sighting always redirects the two nearest available floaters.
+      reportDeckSighting(sim, a, contact);
+    } else if (a.hasRadio && !squad.calledContact) {
       squad.calledContact = true;
       if (sim.rng.chance(sim.P.radio.marineCallReliability)) sim.emitCall(a);
     }
+  } else if (squad.deckGuard) {
+    reportDeckSighting(sim, a, null);
   }
   if (threat > 0) {
     // stand and fight ON CONTACT, where you physically are — a marine does
@@ -839,7 +865,10 @@ function deckGuardPlan(sim, squad, leader) {
     squad.objective = { kind: 'distress', node: call.node, callId: call.id };
     squad.respondingTo = call.id;
     leader.path = [];
-    sim.log('radio', `Deck 1 sentry responding to distress in ${sim.graph.node(call.node).name}`);
+    if (nearest[0]?.id === squad.id) {
+      const noun = nearest.length === 1 ? 'sentry' : 'sentries';
+      sim.log('radio', `Deck 1 net redirects ${nearest.length} ${noun} to ${sim.graph.node(call.node).name}`, call.node);
+    }
     return;
   }
 

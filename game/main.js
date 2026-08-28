@@ -2061,6 +2061,13 @@ function gameLogView(e) {
       if (msg.includes('souls heard the call') || msg.includes('stragglers')) {
         return rx(e, { deck: 1 }, msg, { spk: 'CIC' });
       }
+      {
+        const d1 = msg.match(/^Deck 1 net redirects (\d+) sentr(?:y|ies) to (.+)$/);
+        if (d1) {
+          return rx(e, { deck: 1, callsign: null },
+            `${d1[1]} sentries moving to ${d1[2]}`, { spk: 'D1 NET' });
+        }
+      }
       if (msg.includes('missed a distress call')) return null; // non-receipt IS silence now
       if (msg.includes('word of the outbreak')) return null;   // omniscient narration
       if (msg.startsWith('squad') || msg.startsWith('patrol')) {
