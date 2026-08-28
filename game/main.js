@@ -664,13 +664,6 @@ for (let i = 0; i < sim.fires.length; i++) {
   const [fx2, fz2] = world.simToWorld(f.x, f.y, f.deck);
   fire.add(`sim${i}`, fx2, fz2, elevOf(f.deck), f.scale);
 }
-// burning jammed doors carry a faint ember heat in the scorched panel
-// material (the visible damage itself is the scorch texture + buckle +
-// guttering amber lamp — no more flat red slab)
-if (world.doorPanelsBad) {
-  world.doorPanelsBad.material.emissive.setHex(0xff5510);
-  world.doorPanelsBad.material.emissiveIntensity = 0.14;
-}
 // DAMAGE THROUGH THE SHIP (user: small high-fidelity fires + glow where it's
 // dark, sparking junctions): render-only sites seeded per run — the portal
 // event rattled the whole hull, so every deck carries a few small smolders
@@ -971,7 +964,9 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
       // Hung WELL below each visible strip: the throw pools on the deck and
       // walls while the ceiling above stays near-black. The renderer owns the
       // fixture layout, so a source can never exist without matching hardware.
-      for (const fixture of L.fixtures) {
+      // The fallback keeps a hot local reload safe if the browser briefly
+      // pairs this module with a cached pre-layout World instance.
+      for (const fixture of L.fixtures ?? [L]) {
         // A ceiling strip is an AREA source. Approximating it with a compact
         // inverse-square point made anyone directly beneath it clip white,
         // while the rest of the room stayed dark. The softer curve and lower

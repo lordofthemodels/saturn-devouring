@@ -1406,7 +1406,7 @@ export class World {
   }
 
   // ---- sliding doors (user note): panels that open for ANY movement near
-  // them and close behind it; locked doors stay shut and read red ----
+  // them and close behind it; broken doors stay shut, scorched and buckled ----
   // COVER & CLUTTER (review P1): crates, consoles and tables sized to the
   // room's role, hugging the walls so the sim's center-of-room traffic stays
   // clear. Each prop is REAL: it blocks bullets (wallMeshes) and blocks the
