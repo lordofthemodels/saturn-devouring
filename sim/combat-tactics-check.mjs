@@ -272,6 +272,38 @@ for (const form of [surgeForm, ...reinforcements]) {
   assert.equal(form.task.surge, true, 'the renewed response must remain one shared surge');
 }
 
+// A prior target allocation cannot swallow a later, real hit. The wounded
+// form temporarily pursues the shooter across the opening while retaining its
+// stable assignment for after the aggression window.
+const lockedShotSim = new Sim('locked-doorway-provocation-check');
+for (const agent of lockedShotSim.agents) agent.dead = true;
+const lockedShotDoor = openEscapeDoor(lockedShotSim);
+assert.ok(lockedShotDoor, 'locked-shot fixture needs a visible doorway');
+const oldTargetRoom = [...lockedShotSim.graph.neighbors(lockedShotDoor.a, ['std'], (edge) => !edge.locked)]
+  .find(({ to }) => to !== lockedShotDoor.b)?.to;
+assert.notEqual(oldTargetRoom, undefined, 'locked-shot fixture needs a distinct prior target room');
+const lockedShotForm = makeAgent(FACTION.COMBAT, lockedShotDoor.a, lockedShotSim.graph);
+const doorwayPlayer = makeAgent(FACTION.ARMED, lockedShotDoor.b, lockedShotSim.graph);
+const oldTarget = makeAgent(FACTION.MARINE, oldTargetRoom, lockedShotSim.graph);
+doorwayPlayer.isPlayer = true;
+lockedShotSim.spawn(lockedShotForm);
+lockedShotSim.spawn(doorwayPlayer);
+lockedShotSim.spawn(oldTarget);
+lockedShotForm.task = { kind: TASK.ATTACK, node: oldTargetRoom, targetId: oldTarget.id };
+lockedShotSim.hive.allIn = true;
+lockedShotSim.tickCount = 1;
+lockedShotSim.t = lockedShotSim.dt;
+lockedShotSim._refreshOccupancy();
+lockedShotForm.lastHurtBy = doorwayPlayer.id;
+lockedShotForm.lastHurtTick = lockedShotSim.tickCount;
+lockedShotSim._spatialSteer(lockedShotForm, lockedShotSim.dt);
+assert.equal(lockedShotForm.task.targetId, oldTarget.id,
+  'doorway provocation must not destroy the stable long-term target allocation');
+assert.equal(lockedShotForm.task.surge, true,
+  'a viable pack must visibly surge when its appendage is shot');
+assert.equal(lockedShotForm.path.at(-1)?.to, lockedShotDoor.b,
+  'the wounded form must immediately route through the doorway toward its shooter');
+
 // One appendage being shot gives the whole visible pack one response. Every
 // member abandons its stale destination, pursues the shared nearest marine,
 // and keeps the charge multiplier through the intervening doorway.

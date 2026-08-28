@@ -77565,8 +77565,8 @@ var init_sim = __esm({
           const source = shotAt ? this.byId.get(a2.lastHurtBy) : null;
           const locked = this.hive.lockedCombatTarget(a2);
           const immediate = this.hive.immediateCombatTarget(a2, P2.combat.lungeRiskM);
-          let best = immediate ?? locked ?? this.hive.nearestCombatTarget(a2);
-          if (!best && source && !source.dead && source.hp > 0) best = source;
+          const provoker = source && !source.dead && source.hp > 0 ? source : null;
+          let best = immediate ?? provoker ?? locked ?? this.hive.nearestCombatTarget(a2);
           if (this.hive.isRetreating(a2)) {
             const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
             const step3 = committed ? null : a2.move ? { to: a2.move.to, link: a2.move.link } : a2.path[0];
@@ -77584,9 +77584,10 @@ var init_sim = __esm({
             }
             return false;
           }
-          if (!locked) {
-            const provoked = shotAt || !!a2.task?.surge;
-            if (!this.hive.respondToCombat(a2, best, provoked)) return false;
+          if (provoker) {
+            if (!this.hive.respondToCombat(a2, provoker, true)) return false;
+          } else if (!locked) {
+            if (!this.hive.respondToCombat(a2, best, !!a2.task?.surge)) return false;
             best = this.hive.lockedCombatTarget(a2);
           }
           if (!best || best.dead || best.hp <= 0) return false;
