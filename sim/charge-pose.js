@@ -32,3 +32,16 @@ export function combatChargeArmPose(side, phase, id, out) {
     + Math.sin(phase * 2.33 + side + seed * 0.23) * 0.03;
   return out;
 }
+
+// The melee thrash shares the charge's hard anatomical rule: neither rigid
+// limb may rotate through the body's centre plane. The old positive X swing
+// raised both arms inward, so the long Flood limbs crossed above the sternum.
+// Keep the lift outward and keep the smaller yaw offset on the same side;
+// foreAft still supplies the violent two-beat lash in the attack plane.
+export function combatAttackArmPose(side, phase, id, foreAft, out) {
+  const envelope = Math.sin(phase * Math.PI);
+  out.x = -side * envelope * 0.7;
+  out.y = side * (0.10 + Math.sin(phase * Math.PI * 4.4 + id) * 0.05) * envelope;
+  out.z = foreAft;
+  return out;
+}

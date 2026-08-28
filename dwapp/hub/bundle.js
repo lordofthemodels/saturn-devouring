@@ -75581,6 +75581,13 @@ function combatChargeArmPose(side, phase, id, out) {
   out.z = -0.1 + Math.sin(phase * 0.97 - side * 0.8 + seed2 * 0.71) * 0.06 + Math.sin(phase * 2.33 + side + seed2 * 0.23) * 0.03;
   return out;
 }
+function combatAttackArmPose(side, phase, id, foreAft, out) {
+  const envelope = Math.sin(phase * Math.PI);
+  out.x = -side * envelope * 0.7;
+  out.y = side * (0.1 + Math.sin(phase * Math.PI * 4.4 + id) * 0.05) * envelope;
+  out.z = foreAft;
+  return out;
+}
 var init_charge_pose = __esm({
   "sim/charge-pose.js"() {
   }
@@ -82859,12 +82866,18 @@ var init_agents3d = __esm({
               this._mRot.makeRotationFromEuler(this._eHold);
             } else if (feral) {
               const u2 = Math.max(0, Math.min(1, animT / 0.74));
-              const envelope = Math.sin(u2 * Math.PI);
               const side = part === "armR" ? 1 : -1;
+              const pose = combatAttackArmPose(
+                side,
+                u2,
+                id,
+                ang,
+                this._attackArmPose ??= { x: 0, y: 0, z: 0 }
+              );
               (this._eHold ??= new Euler()).set(
-                add3 + side * envelope * 0.95,
-                side * Math.sin(u2 * Math.PI * 4.4 + id) * envelope * 0.75,
-                ang
+                add3 + pose.x,
+                pose.y,
+                pose.z
               );
               this._mRot.makeRotationFromEuler(this._eHold);
             } else if (add3) {
