@@ -2367,7 +2367,12 @@ export class Sim {
 
       const source = shotAt ? this.byId.get(a.lastHurtBy) : null;
       const locked = this.hive.lockedCombatTarget(a);
-      let best = locked ?? this.hive.nearestCombatTarget(a);
+      // A long-lived hive assignment prevents room-wide target oscillation,
+      // but it cannot make a form ignore a body already inside lunge range.
+      // Keep the strategic lock intact and temporarily steer through the
+      // immediate threat; once contact breaks, the form resumes its assignment.
+      const immediate = this.hive.immediateCombatTarget(a, P.combat.lungeRiskM);
+      let best = immediate ?? locked ?? this.hive.nearestCombatTarget(a);
       // A landed round reveals its source for the short aggression window even
       // if the shooter has just side-stepped behind the edge of the opening.
       // The shared task carries that revelation to packmates following behind.

@@ -770,6 +770,7 @@ for (const agent of playerTargetSim.agents) agent.dead = true;
 const playerRoom = playerTargetSim.graph.nodes.find((node) => node.w >= 10 && node.d >= 6);
 assert.ok(playerRoom, 'player target fixture needs an open room');
 const playerHunter = makeAgent(FACTION.COMBAT, playerRoom.idx, playerTargetSim.graph);
+playerHunter.hostArmed = true;
 const closePlayer = makeAgent(FACTION.ARMED, playerRoom.idx, playerTargetSim.graph);
 const farMarine = makeAgent(FACTION.MARINE, playerRoom.idx, playerTargetSim.graph);
 playerHunter.x = playerRoom.x - 1;
@@ -799,6 +800,45 @@ const marineHpBefore = farMarine.hp;
 resolveCombat(playerTargetSim, playerTargetSim.dt);
 assert.ok(closePlayer.hp < playerHp, 'the nearest player must receive the combat-form swipe');
 assert.equal(farMarine.hp, marineHpBefore, 'the farther marine must not absorb the player\'s attack');
+assert.equal(playerHunter.hostShotTick, playerTargetSim.tickCount,
+  'a hosted weapon must stamp the exact form that fired');
+assert.equal(playerHunter.hostShotTargetId, closePlayer.id,
+  'a hosted weapon must stamp the target combat actually resolved');
+
+// A strategic target remains sticky at range, but cannot create a point-blank
+// immunity bubble around a player who crosses its path. The physical contact
+// is handled now; the original assignment survives and resumes afterward.
+const lockedTargetSim = new Sim('point-blank-lock-override-check');
+for (const agent of lockedTargetSim.agents) agent.dead = true;
+const lockedRoom = lockedTargetSim.graph.nodes.find((node) => node.w >= 10 && node.d >= 6);
+const lockedHunter = makeAgent(FACTION.COMBAT, lockedRoom.idx, lockedTargetSim.graph);
+const crossingPlayer = makeAgent(FACTION.ARMED, lockedRoom.idx, lockedTargetSim.graph);
+const assignedMarine = makeAgent(FACTION.MARINE, lockedRoom.idx, lockedTargetSim.graph);
+lockedHunter.x = lockedRoom.x - 2;
+lockedHunter.y = lockedRoom.y;
+crossingPlayer.x = lockedHunter.x + lockedTargetSim.P.combat.meleeRangeM * 0.7;
+crossingPlayer.y = lockedHunter.y;
+crossingPlayer.hp = crossingPlayer.maxHp = 45;
+crossingPlayer.isPlayer = true;
+assignedMarine.x = lockedRoom.x + 3;
+assignedMarine.y = lockedRoom.y;
+assignedMarine.hp = assignedMarine.maxHp = 45;
+lockedTargetSim.spawn(lockedHunter);
+lockedTargetSim.spawn(crossingPlayer);
+lockedTargetSim.spawn(assignedMarine);
+lockedHunter.task = { kind: TASK.ATTACK, targetId: assignedMarine.id, node: lockedRoom.idx };
+lockedTargetSim.tickCount = 1;
+lockedTargetSim.t = lockedTargetSim.dt;
+lockedTargetSim._refreshOccupancy();
+const crossingHp = crossingPlayer.hp;
+const assignedHp = assignedMarine.hp;
+resolveCombat(lockedTargetSim, lockedTargetSim.dt);
+assert.ok(crossingPlayer.hp < crossingHp,
+  'a combat form must swipe a player already inside reach despite a farther sticky assignment');
+assert.equal(assignedMarine.hp, assignedHp,
+  'the farther assignment must not absorb a point-blank player swipe');
+assert.equal(lockedHunter.task.targetId, assignedMarine.id,
+  'the contact override must preserve the strategic assignment instead of restarting target oscillation');
 
 // A grand stair is one open volume. Its combat sightline works in both
 // directions, and traversal never gives an agent coordinates from one deck

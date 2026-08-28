@@ -1,7 +1,7 @@
 import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import { hurtFloodForm } from '../sim/combat.js';
 import { makeAgent } from '../sim/init.js';
-import { PROTOCOL_VERSION, peerNumber, validGamePacket } from './protocol.js';
+import { PROTOCOL_VERSION, validGamePacket } from './protocol.js';
 import {
   advanceAuthority, AUTHORITY_ARRIVAL_GRACE_MS, authorityIsPresent, mergeAuthorityElection,
   packetMatchesAuthority,
@@ -80,6 +80,8 @@ function agentRow(agent) {
     pack(agent.respawnReadyAt ?? -1),
     agent.wasArmed ? 1 : 0,
     agent.ammoRounds ?? 0,
+    agent.hostShotTick ?? -1,
+    agent.hostShotTargetId ?? -1,
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === 'melee') row.push(
@@ -115,14 +117,14 @@ function snapshotState(sim, cache, full) {
 }
 
 function validSnapshotRow(row, graph) {
-  // 25 fields, or 31 with a melee death impulse on the tail. The two at
+  // 27 fields, or 33 with a melee death impulse on the tail. The two at
   // 17/18 are the leap arc, 20 is hidden transit, and 21/22 carry each
   // player's physical afterlife target and authority-owned revive clock;
   // positional
   // layout changes are why
   // PROTOCOL_VERSION moved — a peer on the old shape rejects every row rather
   // than misreading one.
-  return Array.isArray(row) && (row.length === 25 || row.length === 31)
+  return Array.isArray(row) && (row.length === 27 || row.length === 33)
     && packedIntegers(row.slice(0, 12))
     && Number.isSafeInteger(row[0]) && row[0] > 0
     && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6
@@ -143,7 +145,9 @@ function validSnapshotRow(row, graph) {
     && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE
     && (row[23] === 0 || row[23] === 1)
     && Number.isSafeInteger(row[24]) && row[24] >= 0 && row[24] <= 1_000
-    && row.slice(25).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+    && Number.isSafeInteger(row[25]) && row[25] >= -1
+    && Number.isSafeInteger(row[26]) && row[26] >= -1
+    && row.slice(27).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 
 export function createGameSync({
@@ -277,7 +281,8 @@ export function createGameSync({
     for (const row of rows) {
       const [id, faction, state, node, x, y, deck, hp, maxHp, damage,
         heading, animTime, dead, downed, helpless, panicked, meleeUntil, hoverY, leaping, armor,
-        hiddenTransit, afterlifeId, respawnReadyAt, wasArmed, ammoRounds] = row;
+        hiddenTransit, afterlifeId, respawnReadyAt, wasArmed, ammoRounds,
+        hostShotTick, hostShotTargetId] = row;
       live.add(id);
       let agent = sim.byId.get(id);
       if (!agent) {
@@ -315,9 +320,11 @@ export function createGameSync({
       agent.respawnReadyAt = unpack(respawnReadyAt);
       agent.wasArmed = wasArmed === 1;
       agent.ammoRounds = ammoRounds;
-      agent.deathImpulse = row.length === 31 ? {
-        kind: 'melee', dirX: unpack(row[25]), dirY: unpack(row[26]),
-        speed: unpack(row[27]), up: unpack(row[28]), spin: unpack(row[29]), kick: unpack(row[30]),
+      agent.hostShotTick = hostShotTick;
+      agent.hostShotTargetId = hostShotTargetId;
+      agent.deathImpulse = row.length === 33 ? {
+        kind: 'melee', dirX: unpack(row[27]), dirY: unpack(row[28]),
+        speed: unpack(row[29]), up: unpack(row[30]), spin: unpack(row[31]), kick: unpack(row[32]),
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -458,6 +465,7 @@ export function createGameSync({
       if (!target || target.dead || ![3, 4, 5].includes(target.faction)) return;
       if (!Number.isSafeInteger(packet.damage)) return;
       const sender = playerAgents.get(packet.from);
+      if (!sender) return;
       const [wx, wz] = world.simToWorld(target.x, target.y, target.deck);
       targetPoint.set(wx, target.faction === 3 ? 0.35 : target.downed ? 0.35 : 0.9, wz);
       // LAG IS NOT CHEATING (user: "their bullets don't seem to do damage").
@@ -477,12 +485,12 @@ export function createGameSync({
         const body = target.faction === 3 ? 0.8 : target.faction === 5 ? 1.3 : 1;
         ok = pointNearSegment(targetPoint, shotStart, shotEnd, body + LAG_SLACK_M);
       }
-      if (!ok && sender && sender.deck === target.deck) {
+      if (!ok && sender.deck === target.deck) {
         // point-blank: a rifle butt or a shotgunned form at arm's reach
         ok = Math.hypot(sender.x - target.x, sender.y - target.y) <= MELEE_SLACK_M;
       }
       if (!ok) return;
-      hurtFloodForm(sim, target, Math.max(0, Math.min(80, unpack(packet.damage))), false, peerNumber(packet.from));
+      hurtFloodForm(sim, target, Math.max(0, Math.min(80, unpack(packet.damage))), false, sender.id);
     } else if (packet.kind === 'medkit') {
       // a peer pressed E at a med pack. All the checks that matter live in
       // playerUseMedkit itself: real live agent, actually hurt, an unspent
@@ -514,7 +522,7 @@ export function createGameSync({
       if (!sender || sender.deck !== packet.deck || Math.hypot(sender.x - x, sender.y - y) > 60) return;
       const radius = Math.max(0, Math.min(12, unpack(packet.radius)));
       const damage = Math.max(0, Math.min(250, unpack(packet.damage)));
-      sim.explodeAt(packet.deck, x, y, radius, damage, peerNumber(packet.from));
+      sim.explodeAt(packet.deck, x, y, radius, damage, sender.id);
       const [wx, wz] = world.simToWorld(x, y, packet.deck);
       agents.noteExplosion(packet.deck, wx, wz, radius);
     }
