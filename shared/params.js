@@ -155,6 +155,7 @@ export const PARAMS = {
                                   //  armed officers, and lower-deck maintenance crew.)
     civilianCallReliability: 0.35,// PLACEHOLDER
     callFadeSec: 60,
+    deckSightingDedupeSec: 3, // one Deck 1 net report per contact area, not one per sentry
   },
   rampage: {
     threshold: 1.5,      // local flood:human strength ratio to flip aggressive

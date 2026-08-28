@@ -66,7 +66,7 @@ export class Sim {
     this.buffer = new AgentBuffer(512);
     this.commands = new CommandQueue();
     this.events = [];
-    this.calls = [];   // distress calls {id, node, t, faction, rolled:Set}
+    this.calls = [];   // distress calls {id, node, t, faction, rolled:Set, deckSighting?}
     this.callSeq = 0;
     this.grenades = []; // live NPC throws awaiting detonation
     this.grenadeDrops = []; // remaining marine frags, persistent after the body is consumed
@@ -718,12 +718,26 @@ export class Sim {
       : `the survivor arms up at the armory (you — ${this.armoryStock} rifles left)`);
   }
 
-  emitCall(agent) {
-    const call = { id: this.callSeq++, node: agent.node, t: this.t, faction: agent.faction, byId: agent.id, rolled: new Set() };
+  emitCall(agent, { node = agent.node, deckSighting = false } = {}) {
+    if (deckSighting) {
+      // A sighting is a shared net incident, not six independent radio calls.
+      // Coalesce simultaneous reports by the contact's actual compartment so
+      // the log stays readable and every sentry responds to the same target.
+      for (let i = this.calls.length - 1; i >= 0; i--) {
+        const prior = this.calls[i];
+        if (this.t - prior.t > this.P.radio.deckSightingDedupeSec) break;
+        if (prior.deckSighting && prior.node === node) return prior;
+      }
+    }
+    const call = {
+      id: this.callSeq++, node, t: this.t, faction: agent.faction,
+      byId: agent.id, rolled: new Set(), deckSighting,
+    };
     this.calls.push(call);
     this.stats.distressCalls++;
     this.floodKnown = true;
-    this.log('radio', `distress call from ${this.graph.node(agent.node).name}`, agent.node);
+    this.log('radio', `distress call from ${this.graph.node(node).name}`, node);
+    return call;
   }
 
   // `x`/`y` are the EXACT sim-space spot the event happened at, when the

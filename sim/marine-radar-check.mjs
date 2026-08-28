@@ -100,6 +100,69 @@ function openSameDeckEdge(sim) {
     'Deck 1 sentries must ignore distress calls from every other deck');
 }
 
+// A room sentry's own sighting uses the reliable Deck 1 net, independent of
+// the damaged cross-deck radio roll used by ordinary squads.
+{
+  const sim = new Sim('deck-one-room-sighting', { radio: { marineCallReliability: 0 } });
+  const sentry = sim.agents.find((agent) => agent.deckGuard);
+  for (const agent of sim.agents) agent.dead = agent.id !== sentry.id;
+  const form = makeAgent(FACTION.COMBAT, sentry.node, sim.graph);
+  sim.spawn(form);
+  sim._refreshOccupancy();
+  updateHumansTick(sim, sim.dt);
+  assert.equal(sim.calls.length, 1,
+    'a Deck 1 room sentry must always report a visible Flood contact');
+  assert.equal(sim.calls[0].deckSighting, true,
+    'the room sentry report must use the floor-wide sighting channel');
+  assert.equal(sim.calls[0].node, sentry.node,
+    'the sighting must direct responders to the contact room');
+}
+
+// Fixed garrison units share one contact report, and every Deck 1 sighting
+// reliably redirects the mobile sentries even when ordinary radio rolls fail.
+{
+  const sim = new Sim('deck-one-contact-net', { radio: { marineCallReliability: 0 } });
+  for (const agent of sim.agents) {
+    if (agent.faction !== FACTION.MARINE) agent.dead = true;
+  }
+  const garrison = sim.agents.filter((agent) => agent.garrison && !agent.deckGuard);
+  assert.ok(garrison.length > 1, 'contact-net fixture needs the fixed garrison');
+  const node = garrison[0].node;
+  const form = makeAgent(FACTION.COMBAT, node, sim.graph);
+  sim.spawn(form);
+  sim._refreshOccupancy();
+  updateHumansTick(sim, sim.dt);
+
+  const alerts = sim.calls.filter((call) => call.deckSighting && call.node === node);
+  assert.equal(alerts.length, 1,
+    'simultaneous garrison sightings in one room must become one net incident');
+  assert.equal(sim.events.filter((event) => event.type === 'radio'
+    && event.msg.startsWith('distress call')).length, 1,
+    'a shared sighting must print one contact report');
+
+  strategicSquads(sim);
+  const responders = sim.squads.filter((squad) => squad.deckGuard
+    && squad.objective?.kind === 'distress' && squad.objective.callId === alerts[0].id);
+  assert.equal(responders.length, 2,
+    'a Deck 1 sighting must redirect the nearest two available sentries');
+  assert.equal(sim.events.filter((event) => event.msg.startsWith('Deck 1 net redirects')).length, 1,
+    'the sentry response must print once for the incident, not once per unit');
+
+  form.dead = true;
+  sim.t += sim.dt;
+  sim.tickCount++;
+  sim._refreshOccupancy();
+  updateHumansTick(sim, sim.dt);
+  sim.t += sim.P.radio.deckSightingDedupeSec + sim.dt;
+  sim.tickCount += Math.ceil(sim.P.radio.deckSightingDedupeSec * sim.P.sim.tickHz) + 1;
+  const second = makeAgent(FACTION.COMBAT, node, sim.graph);
+  sim.spawn(second);
+  sim._refreshOccupancy();
+  updateHumansTick(sim, sim.dt);
+  assert.equal(sim.calls.filter((call) => call.deckSighting && call.node === node).length, 2,
+    'a cleared contact must re-arm so the next sighting is always reported');
+}
+
 // A visibly retreating form leaves a shared last-seen trail. The first clear
 // tick turns that memory into movement without waiting for a strategic roll.
 {
