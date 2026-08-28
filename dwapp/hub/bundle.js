@@ -73178,7 +73178,7 @@ var init_hive = __esm({
           `${C2} combat forms overwhelm the hive's estimate of ${this.marinesBelieved} marines — caution ends`
         );
         const wasAggro = this.posture === "AGGRESSIVE";
-        this.posture = K2 >= 2 && S2 <= 1.05 || this.allIn || this.marinesBelieved <= 2 ? "AGGRESSIVE" : "EVASIVE";
+        this.posture = K2 >= 2 && S2 <= 1.05 || this.combatDominant || this.allIn || this.marinesBelieved <= 2 ? "AGGRESSIVE" : "EVASIVE";
         this.stats = {
           I: I2,
           C: C2,
@@ -73690,11 +73690,15 @@ var init_hive = __esm({
         if (sim2.t < (this._breedUntil ?? 0)) wantK = Math.min(6, wantK + 2);
         const seedingK = combat.reduce((count, form) => count + (form.task?.kind === TASK.TRANSFORM || form.task?.seed ? 1 : 0), 0);
         const plannedK = K2 + seedingK;
-        if (bodies.some((body) => !body.claimed)) wantK = Math.max(wantK, K2 + 1);
-        if (plannedK < wantK && (C2 > K2 || K2 === 0)) {
+        const freeBodies = bodies.reduce((count, body) => count + (!body.claimed ? 1 : 0), 0);
+        if (freeBodies > 0) {
+          const bodyBackedK = Math.min(Math.ceil(C2 / P2.carrier.maxInfectionForms), K2 + freeBodies);
+          wantK = Math.max(wantK, bodyBackedK);
+        }
+        if (seedingK === 0 && plannedK < wantK && (C2 > K2 || K2 === 0)) {
           const target = this.bestCarrierNode();
           if (target !== -1) {
-            const spares = combat.filter((c3) => !c3.fromPlayer && !this.isCombatCommitted(c3) && (!c3.task || c3.task.kind === TASK.GUARD && c3.task.muster === void 0 || c3.task.kind === TASK.ATTACK));
+            const spares = combat.filter((c3) => !c3.fromPlayer && !this.isCombatCommitted(c3) && (!c3.task || c3.task.kind === TASK.GUARD && c3.task.muster === void 0 || c3.task.kind === TASK.ATTACK || c3.task.kind === TASK.SCOUT));
             const c2 = this.nearest(spares, target, ["std"], this.bigPass);
             if (c2) {
               if (c2.node === target && !c2.move && this.localThreat(target) < 0.5) this.assign(c2, { kind: TASK.TRANSFORM });

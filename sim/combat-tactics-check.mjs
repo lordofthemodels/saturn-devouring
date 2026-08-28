@@ -651,6 +651,7 @@ assert.ok(dominanceForms.filter((form) => form.task?.kind === TASK.TRANSFORM).le
 // its last confident contact decayed, leaving isolated survivors untouched.
 const staleAttack = dominanceForms[0];
 dominanceSim.hive.searchingAll = true;
+dominanceSim.hive.allIn = false;
 dominanceSim.hive.believedHumanStr.fill(0);
 dominanceSim.hive.believedHardness.fill(0);
 staleAttack.task = { kind: TASK.ATTACK, node: staleAttack.node };
@@ -793,19 +794,30 @@ assert.equal(uncertainSim.hive.allIn, false,
   'topology search must not manufacture combat dominance');
 assert.ok(uncertainForms.some((form) => form.task?.kind === TASK.SCOUT && form.task.sweep),
   'free combat forms must receive distributed search work from the strategic tick');
+uncertainSim.hive.marinesBelieved = 4;
+uncertainSim.hive.strategicTick();
+assert.equal(uncertainSim.hive.searchingAll, true,
+  'combat dominance must preserve the lost-contact topology search');
+assert.equal(uncertainSim.hive.allIn, false,
+  'unknown survivor positions must remain search objectives rather than fake attack targets');
+assert.equal(uncertainSim.hive.posture, 'AGGRESSIVE',
+  'a combat-dominant search must end evasive behavior before contact is reacquired');
 
-// Bodies keep the reproductive pipeline open beyond the ordinary carrier cap,
-// with only one new seed drafted at a time while the prior one is still rooting.
+// Bodies scale the reproductive pipeline beyond the ordinary carrier cap.
+// Searchers remain eligible for that investment, but only one seed is drafted
+// at a time while the prior one is still walking or rooting.
 const bodyCarrierSim = new Sim('body-backed-carrier-check');
 for (const agent of bodyCarrierSim.agents) agent.dead = true;
 const carrierNode = bodyCarrierSim.graph.nodes.find((node) => node.idx !== bodyCarrierSim.graph.breachNode);
 assert.ok(carrierNode, 'body-backed carrier fixture needs a second room');
-const bodyCombat = Array.from({ length: 7 }, () =>
+const bodyCombat = Array.from({ length: 74 }, () =>
   makeAgent(FACTION.COMBAT, bodyCarrierSim.graph.breachNode, bodyCarrierSim.graph));
 const bodyCarriers = Array.from({ length: 5 }, () =>
   makeAgent(FACTION.CARRIER, carrierNode.idx, bodyCarrierSim.graph));
-const freeBody = makeAgent(FACTION.CORPSE, bodyCarrierSim.graph.breachNode, bodyCarrierSim.graph);
-for (const form of [...bodyCombat, ...bodyCarriers, freeBody]) bodyCarrierSim.spawn(form);
+const freeBodies = Array.from({ length: 20 }, () =>
+  makeAgent(FACTION.CORPSE, bodyCarrierSim.graph.breachNode, bodyCarrierSim.graph));
+for (const form of [...bodyCombat, ...bodyCarriers, ...freeBodies]) bodyCarrierSim.spawn(form);
+for (const form of bodyCombat) form.task = { kind: TASK.SCOUT, node: carrierNode.idx, sweep: true };
 bodyCarrierSim.hive.bestCarrierNode = () => bodyCarrierSim.graph.breachNode;
 bodyCarrierSim.hive.opening = false;
 bodyCarrierSim.hive.searchingAll = true;
@@ -813,11 +825,11 @@ bodyCarrierSim.hive.allIn = false;
 bodyCarrierSim._refreshOccupancy();
 bodyCarrierSim._computeInfluence();
 const runBodyCarrierPlan = () => bodyCarrierSim.hive.steadyState([], bodyCombat,
-  bodyCarriers, [freeBody], 0, bodyCombat.length, bodyCarriers.length,
+  bodyCarriers, freeBodies, 0, bodyCombat.length, bodyCarriers.length,
   bodyCarrierSim.hive.scarcity(bodyCarriers.length * 2));
 runBodyCarrierPlan();
 assert.equal(bodyCombat.filter((form) => form.task?.kind === TASK.TRANSFORM || form.task?.seed).length, 1,
-  'an unclaimed body must keep one new carrier in production beyond the normal cap');
+  'a body-rich combat population must grow carriers beyond the old fixed cap');
 runBodyCarrierPlan();
 assert.equal(bodyCombat.filter((form) => form.task?.kind === TASK.TRANSFORM || form.task?.seed).length, 1,
   'an unfinished carrier seed must prevent repeated drafting for the same free body');
