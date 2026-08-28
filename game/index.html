@@ -14,9 +14,32 @@
   #topbar { top: 12px; left: 14px; }
   #topbar b { color: #e8eef7; font-size: 15px; }
   #room { color: #7fd1a0; font-size: 15px; font-weight: 700; }
-  #vitals { top: 12px; right: 14px; text-align: right; }
-  #hp { font-size: 16px; font-weight: 700; color: #7fd1a0; }
-  #hp.low { color: #ff6a4d; }
+  #vitals {
+    top: 10px; left: 50%; transform: translateX(-50%);
+    width: clamp(310px, 35vw, 500px); padding: 5px 12px 7px;
+    background: linear-gradient(90deg, transparent, rgba(5,10,17,.66) 12%, rgba(5,10,17,.66) 88%, transparent);
+  }
+  #equipmentHud { top: 12px; right: 14px; text-align: right; }
+  #strengthHud {
+    top: 47px; left: 14px; width: 205px; padding: 7px 9px 8px;
+    background: rgba(5,9,14,.58); border-left: 1px solid rgba(120,145,175,.4);
+  }
+  .strength-row + .strength-row { margin-top: 7px; }
+  .strength-label {
+    display: block; margin-bottom: 3px; color: #8290a2;
+    font-size: 9px; line-height: 1; letter-spacing: .16em;
+  }
+  .strength-track {
+    height: 6px; overflow: hidden; background: rgba(14,20,29,.9);
+    border: 1px solid rgba(68,83,103,.65);
+    clip-path: polygon(0 0, 100% 0, 96% 100%, 0 100%);
+  }
+  .strength-track i {
+    display: block; width: 100%; height: 100%; transform: scaleX(0); transform-origin: left;
+    transition: transform .35s ease-out;
+  }
+  #shipStrengthBar { background: linear-gradient(90deg, #426f9d, #83b8e8); }
+  #infectionStrengthBar { background: linear-gradient(90deg, #592c27, #c15843); }
   /* CE AR reticle (ported from first-strike): circle of 4 arcs + dot,
      blooming with weapon spread via --sp (set per frame from spreadDeg) */
   #crosshair {
@@ -181,6 +204,7 @@
     color: #b8c9dc; letter-spacing: .1em; font-size: 10px;
   }
   body.player-dead #vitals,
+  body.player-dead #equipmentHud,
   body.player-dead #crosshair,
   body.player-dead #tracker,
   body.player-dead #frags,
@@ -188,14 +212,28 @@
   body.player-dead #hint,
   body.player-dead #pinned,
   body.player-dead #nameplate { display: none !important; }
-  #vitals .bar {
-    width: 170px; height: 9px; margin: 3px 0 0 auto;
-    background: rgba(20,26,36,0.8); border: 1px solid #2a3547; border-radius: 2px;
-    overflow: hidden;
+  #vitals .vital-row {
+    display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 8px;
   }
-  #armorBar { height: 100%; width: 100%; background: #6fb0f0; transition: width 0.1s; }
-  #healthBar { height: 100%; width: 100%; background: #d8574a; transition: width 0.1s; }
-  #hpText { color: #8fb5e8; font-size: 12px; margin-top: 2px; }
+  #vitals .vital-row + .vital-row { margin-top: 4px; }
+  #vitals .vital-label {
+    color: #758397; font-size: 8px; line-height: 1; letter-spacing: .16em; text-align: right;
+  }
+  #vitals .bar {
+    height: 10px; overflow: hidden; background: rgba(10,16,24,.88);
+    border: 1px solid rgba(74,94,120,.82);
+    clip-path: polygon(1.2% 0, 100% 0, 98.8% 100%, 0 100%);
+  }
+  #vitals .bar > div {
+    height: 100%; width: 100%; transform-origin: left; transition: transform .1s;
+  }
+  #armorBar {
+    background: repeating-linear-gradient(90deg, #72b8f1 0, #72b8f1 calc(12.5% - 2px), #315679 calc(12.5% - 2px), #315679 12.5%);
+    box-shadow: 0 0 9px rgba(104,180,240,.45);
+  }
+  #healthBar {
+    background: repeating-linear-gradient(90deg, #cf574e 0, #cf574e calc(10% - 2px), #642f31 calc(10% - 2px), #642f31 10%);
+  }
   /* which weapon is up, over the ammo readout it belongs to. The swap has
      always been on Q and the user never found it, so this line NAMES the gun
      in hand and carries the key the moment you have two of them. Colour-coded
@@ -256,6 +294,12 @@
   #order {
     position: absolute; right: 16px; bottom: 22px; color: #6a8fb5;
     font: 11px/1 "SF Mono", Menlo, monospace; letter-spacing: 1px; text-align: right;
+  }
+  @media (max-width: 1100px) {
+    #topbar .ship-name { display: none; }
+    #vitals { width: clamp(280px, 40vw, 390px); }
+    #strengthHud { width: 175px; }
+    #equipmentHud { top: 54px; }
   }
   /* MARINE TACNET map view (M): the ops picture — schematic always known,
      contents only where marine teams have eyes */
@@ -429,11 +473,16 @@ npm run build:dwapp</pre></article>
   </div>
   <canvas id="c"></canvas>
   <button id="audioGate" type="button" hidden>TAP SCREEN OR PRESS A KEY FOR AUDIO</button>
-  <div class="hud" id="topbar"><b>UNSC SATURN DEVOURING</b> · <span id="clock">0:00</span> · <span id="room">—</span></div>
+  <div class="hud" id="topbar"><span class="ship-name"><b>UNSC SATURN DEVOURING</b> · </span><span id="clock">0:00</span> · <span id="room">—</span></div>
   <div class="hud" id="vitals">
-    <div class="bar"><div id="armorBar"></div></div>
-    <div class="bar"><div id="healthBar"></div></div>
-    <div id="hpText">50 | 45</div>
+    <div class="vital-row"><span class="vital-label">ARMOR</span><div class="bar"><div id="armorBar"></div></div></div>
+    <div class="vital-row"><span class="vital-label">HEALTH</span><div class="bar"><div id="healthBar"></div></div></div>
+  </div>
+  <div class="hud" id="strengthHud" aria-label="Shipwide combat strength">
+    <div class="strength-row"><span class="strength-label">SHIP STRENGTH</span><div class="strength-track"><i id="shipStrengthBar"></i></div></div>
+    <div class="strength-row"><span class="strength-label">INFECTION STRENGTH</span><div class="strength-track"><i id="infectionStrengthBar"></i></div></div>
+  </div>
+  <div class="hud" id="equipmentHud">
     <div id="deckLabel">DECK —</div>
     <div id="weaponName">MA5 ASSAULT RIFLE</div>
     <div id="ammo">60 / 240</div>
