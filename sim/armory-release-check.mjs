@@ -5,8 +5,8 @@ import { Sim } from './sim.js';
 const releases = [];
 for (let index = 0; index < 32; index++) {
   const sim = new Sim(`armory-release-${index}`);
-  assert.ok(sim.armoryReleaseAt >= 5 * 60 && sim.armoryReleaseAt < 8 * 60,
-    `seed ${index} must release between five and eight minutes`);
+  assert.ok(sim.armoryReleaseAt >= 6.5 * 60 && sim.armoryReleaseAt < 9.5 * 60,
+    `seed ${index} must release between 6:30 and 9:30`);
   releases.push(sim.armoryReleaseAt);
 }
 assert.ok(Math.max(...releases) - Math.min(...releases) > 2 * 60,
