@@ -50,12 +50,14 @@ const sync = createGameSync({
 const target = sim.agents.find((agent) => agent.faction === FACTION.INFECTION && !agent.dead);
 assert.ok(target, 'fixture needs a live infection form');
 
-const row = (hiddenTransit, agent = target, wasArmed = 0, ammoRounds = 0) => [
+const row = (hiddenTransit, agent = target, wasArmed = 0, ammoRounds = 0,
+  hostShotTick = -1, hostShotTargetId = -1) => [
   agent.id, agent.faction, agent.state, agent.node,
   Math.round(agent.x * 1_000), Math.round(agent.y * 1_000), agent.deck,
   Math.round(agent.hp * 1_000), Math.round(agent.maxHp * 1_000), Math.round(agent.damage * 1_000),
   Math.round(agent.heading * 1_000), Math.round(agent.animTime * 1_000),
   0, 0, 0, 0, -1_000, 0, 0, 0, hiddenTransit, -1, -1_000, wasArmed, ammoRounds,
+  hostShotTick, hostShotTargetId,
 ];
 const direct = listeners.get('direct');
 assert.equal(typeof direct, 'function', 'game sync must subscribe to direct packets');
@@ -178,6 +180,28 @@ assert.equal(remoteCorpse.wasArmed, true,
 assert.equal(remoteCorpse.ammoRounds, 120,
   'authority snapshots must preserve the marine two-magazine drop');
 
+direct({
+  from: 'did:a',
+  data: {
+    v: PROTOCOL_VERSION,
+    kind: 'snapshot',
+    from: 'did:a',
+    authority: 'did:a',
+    authorityTerm: 1,
+    seq: 6,
+    tick: sim.tickCount + 1,
+    t: Math.round((sim.t + sim.dt) * 1_000),
+    full: false,
+    complete: true,
+    agents: [row(0, target, 0, 0, sim.tickCount, players.get('did:b').id)],
+    removed: [],
+  },
+});
+assert.equal(target.hostShotTick, sim.tickCount - 1,
+  'a peer must retain the authority tick of a hosted Flood shot');
+assert.equal(target.hostShotTargetId, players.get('did:b').id,
+  'a peer must render hosted Flood fire toward its real resolved target');
+
 sync.close();
 
 const authorityListeners = new Map();
@@ -237,6 +261,25 @@ assert.equal(ammoCorpse.wasArmed, false,
   'authority must validate and consume a remote marine-ammo pickup');
 assert.equal(ammoCorpse.ammoRounds, 0,
   'a remote marine-ammo pickup cannot be collected twice');
+const remoteHitTarget = authoritySim.agents.find((agent) => agent.faction === FACTION.INFECTION && !agent.dead);
+assert.ok(remoteHitTarget, 'authority fixture needs a Flood target');
+remoteHitTarget.node = remote.node;
+remoteHitTarget.pnode = remote.node;
+remoteHitTarget.deck = remote.deck;
+remoteHitTarget.x = remote.x;
+remoteHitTarget.y = remote.y;
+authorityListeners.get('direct')({
+  from: 'did:b',
+  data: {
+    v: PROTOCOL_VERSION, kind: 'hit', from: 'did:b',
+    authority: 'did:a', authorityTerm: 1, seq: 3,
+    targetId: remoteHitTarget.id, damage: 5_000,
+  },
+});
+assert.equal(remoteHitTarget.dead, true,
+  'authority must accept a plausible point-blank hit from a remote player');
+assert.equal(remoteHitTarget.lastHurtBy, remote.id,
+  'remote damage must identify the real player agent so Flood retaliation can find its source');
 authoritySync.close();
 
 console.log('multiplayer hidden transit ✓');

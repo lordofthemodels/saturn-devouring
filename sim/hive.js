@@ -594,6 +594,19 @@ export class Hive {
     return target && isLivingHuman(target) ? target : null;
   }
 
+  immediateCombatTarget(form, rangeM = this.sim.P.combat.meleeRangeM) {
+    let best = null, bestDistance = Infinity;
+    for (const human of this.sim.lineOfSightAgents(form, isLivingHuman, rangeM)) {
+      const distance = this.sim.agentDistance(form, human);
+      if (distance < bestDistance - 1e-9
+        || (Math.abs(distance - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
+        best = human;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   combatTargetLoad(targetId, excludeId = -1) {
     let load = 0;
     for (const attacker of this.sim.agents) {

@@ -1754,49 +1754,43 @@ export class Agents3D {
     pos.needsUpdate = seg > 0;
 
     // flood gunfire (user note: armed forms should be VISIBLY shooting) —
-    // hostArmed combat forms firing their stolen rifles at humans in the room
+    // render only the shooter/target pair that combat actually resolved.
+    // Room-level gunfire is shared sensory state and cannot identify either;
+    // using it here made every armed form in a hot room shoot arbitrary people.
     const fpos = this.floodTracers.geometry.attributes.position;
     let fseg = 0;
     counts.floodFlash = 0;
-    for (let n = 0; n < g.n && fseg < 125; n++) {
-      if (sim.tickCount - sim.gunfireTick[n] > 2) continue;
-      const occ = sim.occupants(n);
-      const shooters = occ.filter((a) => a.hp > 0 && !a.dead && !a.downed &&
-        a.faction === FACTION.COMBAT && a.hostArmed);
-      // the player is a legitimate target too — incoming fire should be
-      // VISIBLE (tracers converging on you), not silent hp loss
-      const targets = occ.filter((a) => !a.dead && a.hp > 0 &&
-        (a.faction === FACTION.MARINE || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN));
-      if (!shooters.length || !targets.length) continue;
-      for (const sh of shooters) {
-        if (fseg >= 125) break;
-        if ((sh.id + sim.tickCount) % 3 === 0) continue;
-        const t = targets[(sh.id + (sim.tickCount >> 1)) % targets.length];
-        const sr = this.rpos.get(sh.id), tr = this.rpos.get(t.id);
-        if (!sr || !tr) continue;
-        const [sx, sz] = this.world.simToWorld(sr.x, sr.y, sr.deck);
-        let [tx, tz] = this.world.simToWorld(tr.x, tr.y, tr.deck);
-        const ey = elevOf(sr.deck) + 1.05;
-        let ty = elevOf(tr.deck) + 0.9;
-        // a host's weapon fired one-handed sprays WIDE (lore: suppressive
-        // noise, not marksmanship) — big visible scatter
-        const fdx = tx - sx, fdz = tz - sz;
-        const frange = Math.hypot(fdx, fdz) || 1;
-        const fsp = 0.5 + frange * 0.07;
-        const finv = 1 / frange;
-        const fj1 = shotJitter(sh.id, sim.tickCount, 3) * fsp;
-        const fj2 = shotJitter(sh.id, sim.tickCount, 4) * fsp * 0.7;
-        tx += -fdz * finv * fj1; tz += fdx * finv * fj1; ty += fj2;
-        fpos.setXYZ(fseg * 2, sx, ey, sz);
-        fpos.setXYZ(fseg * 2 + 1, tx, ty, tz);
-        fseg++;
-        if (counts.floodFlash < CAP) {
-          const dx = tx - sx, dz = tz - sz, dl = Math.hypot(dx, dz) || 1;
-          const fs = 0.7 + ((sh.id + sim.tickCount) % 2) * 0.5;
-          this._m.compose(this._p.set(sx + dx / dl * 0.6, ey, sz + dz / dl * 0.6),
-            this._q.identity(), this._s.set(fs, fs, fs));
-          this.floodFlash.setMatrixAt(counts.floodFlash++, this._m);
-        }
+    const shooters = sim.agents.filter((a) => a.hp > 0 && !a.dead && !a.downed
+      && a.faction === FACTION.COMBAT && a.hostArmed
+      && sim.tickCount - (a.hostShotTick ?? -999) <= 6);
+    for (const sh of shooters) {
+      if (fseg >= 125) break;
+      const t = sim.byId.get(sh.hostShotTargetId);
+      if (!t) continue;
+      const sr = this.rpos.get(sh.id), tr = this.rpos.get(t.id);
+      if (!sr || !tr) continue;
+      const [sx, sz] = this.world.simToWorld(sr.x, sr.y, sr.deck);
+      let [tx, tz] = this.world.simToWorld(tr.x, tr.y, tr.deck);
+      const ey = elevOf(sr.deck) + 1.05;
+      let ty = elevOf(tr.deck) + 0.9;
+      // a host's weapon fired one-handed sprays WIDE (lore: suppressive
+      // noise, not marksmanship) — big visible scatter
+      const fdx = tx - sx, fdz = tz - sz;
+      const frange = Math.hypot(fdx, fdz) || 1;
+      const fsp = 0.5 + frange * 0.07;
+      const finv = 1 / frange;
+      const fj1 = shotJitter(sh.id, sim.tickCount, 3) * fsp;
+      const fj2 = shotJitter(sh.id, sim.tickCount, 4) * fsp * 0.7;
+      tx += -fdz * finv * fj1; tz += fdx * finv * fj1; ty += fj2;
+      fpos.setXYZ(fseg * 2, sx, ey, sz);
+      fpos.setXYZ(fseg * 2 + 1, tx, ty, tz);
+      fseg++;
+      if (counts.floodFlash < CAP) {
+        const dx = tx - sx, dz = tz - sz, dl = Math.hypot(dx, dz) || 1;
+        const fs = 0.7 + ((sh.id + sim.tickCount) % 2) * 0.5;
+        this._m.compose(this._p.set(sx + dx / dl * 0.6, ey, sz + dz / dl * 0.6),
+          this._q.identity(), this._s.set(fs, fs, fs));
+        this.floodFlash.setMatrixAt(counts.floodFlash++, this._m);
       }
     }
     this.floodTracers.geometry.setDrawRange(0, fseg * 2);

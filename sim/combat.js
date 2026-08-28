@@ -423,11 +423,15 @@ export function resolveCombat(sim, dt) {
           || a.faction === FACTION.ARMED || a.faction === FACTION.CIVILIAN);
         if (victims.length) {
           const locked = sim.hive.lockedCombatTarget(f);
+          // A sticky squad allocation stops oscillation at range, but direct
+          // bodily contact wins. Otherwise a form can brush past the player
+          // without swiping because a farther marine still owns its task lock.
+          const immediate = sim.hive.immediateCombatTarget(f);
           // An allocated attacker hits only its chosen body. An overflow form
           // with a room-level ATTACK but no available slot waits for one; it
           // must not bypass the three-per-target cap in the damage layer.
-          let best = locked && victims.some((victim) => victim.id === locked.id)
-            ? locked : null;
+          let best = immediate ?? (locked && victims.some((victim) => victim.id === locked.id)
+            ? locked : null);
           if (f.task?.kind === TASK.ATTACK && !best) continue;
           let bestScore = Infinity;
           if (!best) {
@@ -460,6 +464,11 @@ export function resolveCombat(sim, dt) {
           // discrete wild shots, mostly missing
           if (f.hostArmed && sim.t >= (f.nextHostShotAt ?? 0)) {
             f.nextHostShotAt = sim.t + 1 / P.combat.hostGun.rof;
+            // Rendering must follow the shot that actually resolved. Inferring
+            // a shooter from generic room gunfire made unrelated armed forms
+            // appear to fire sideways while walking toward another objective.
+            f.hostShotTick = sim.tickCount;
+            f.hostShotTargetId = best.id;
             fired = true;
             const acc = range <= P.combat.rifleFalloffM ? P.combat.hostGun.accNear : P.combat.hostGun.accFar;
             if (sim.rng.chance(acc)) sim.hurtHuman(best, P.combat.hostGun.dmg, f.id);

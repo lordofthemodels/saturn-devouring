@@ -68926,22 +68926,13 @@ function shortPeer(did) {
   const text = String(did ?? "unknown");
   return text.length > 9 ? text.slice(-9) : text;
 }
-function peerNumber(did) {
-  let hash3 = 2166136261 >>> 0;
-  const text = String(did);
-  for (let index = 0; index < text.length; index++) {
-    hash3 ^= text.charCodeAt(index);
-    hash3 = Math.imul(hash3, 16777619);
-  }
-  return hash3 >>> 0;
-}
 function validGamePacket(packet) {
   return !!packet && packet.v === PROTOCOL_VERSION && GAME_KINDS.has(packet.kind) && typeof packet.from === "string" && packet.from.length <= 160 && typeof packet.authority === "string" && packet.authority.length > 0 && packet.authority.length <= 160 && Number.isSafeInteger(packet.authorityTerm) && packet.authorityTerm >= 1 && Number.isSafeInteger(packet.seq) && packet.seq > 0 && packet.seq <= 2147483647;
 }
 var PROTOCOL_VERSION, MAX_PLAYERS, QUICKPLAY_ROOM, ROOM_PREFIX, SAFE_CODE, PUBLIC_LOBBY, GAME_KINDS, bytesToHex, hexToBytes;
 var init_protocol = __esm({
   "multiplayer/protocol.js"() {
-    PROTOCOL_VERSION = 16;
+    PROTOCOL_VERSION = 17;
     MAX_PLAYERS = 4;
     QUICKPLAY_ROOM = `charon:quickplay:v${PROTOCOL_VERSION}`;
     ROOM_PREFIX = `charon:v${PROTOCOL_VERSION}:`;
@@ -72772,6 +72763,17 @@ var init_hive = __esm({
         const target = this.sim.byId.get(form.task.targetId);
         return target && isLivingHuman(target) ? target : null;
       }
+      immediateCombatTarget(form, rangeM = this.sim.P.combat.meleeRangeM) {
+        let best = null, bestDistance = Infinity;
+        for (const human of this.sim.lineOfSightAgents(form, isLivingHuman, rangeM)) {
+          const distance3 = this.sim.agentDistance(form, human);
+          if (distance3 < bestDistance - 1e-9 || Math.abs(distance3 - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity)) {
+            best = human;
+            bestDistance = distance3;
+          }
+        }
+        return best;
+      }
       combatTargetLoad(targetId, excludeId = -1) {
         let load = 0;
         for (const attacker of this.sim.agents) {
@@ -75084,7 +75086,8 @@ function resolveCombat(sim2, dt) {
         const victims = sim2.lineOfSightAgents(f2, (a2) => a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED || a2.faction === FACTION.CIVILIAN);
         if (victims.length) {
           const locked = sim2.hive.lockedCombatTarget(f2);
-          let best = locked && victims.some((victim) => victim.id === locked.id) ? locked : null;
+          const immediate = sim2.hive.immediateCombatTarget(f2);
+          let best = immediate ?? (locked && victims.some((victim) => victim.id === locked.id) ? locked : null);
           if (f2.task?.kind === TASK.ATTACK && !best) continue;
           let bestScore = Infinity;
           if (!best) {
@@ -75111,6 +75114,8 @@ function resolveCombat(sim2, dt) {
           }
           if (f2.hostArmed && sim2.t >= (f2.nextHostShotAt ?? 0)) {
             f2.nextHostShotAt = sim2.t + 1 / P2.combat.hostGun.rof;
+            f2.hostShotTick = sim2.tickCount;
+            f2.hostShotTargetId = best.id;
             fired = true;
             const acc = range3 <= P2.combat.rifleFalloffM ? P2.combat.hostGun.accNear : P2.combat.hostGun.accFar;
             if (sim2.rng.chance(acc)) sim2.hurtHuman(best, P2.combat.hostGun.dmg, f2.id);
@@ -77559,7 +77564,8 @@ var init_sim = __esm({
           if (k2 === TASK.TRANSFORM || !shotAt && (k2 === TASK.DECOY || k2 === TASK.BAIT || k2 === TASK.DART)) return false;
           const source = shotAt ? this.byId.get(a2.lastHurtBy) : null;
           const locked = this.hive.lockedCombatTarget(a2);
-          let best = locked ?? this.hive.nearestCombatTarget(a2);
+          const immediate = this.hive.immediateCombatTarget(a2, P2.combat.lungeRiskM);
+          let best = immediate ?? locked ?? this.hive.nearestCombatTarget(a2);
           if (!best && source && !source.dead && source.hp > 0) best = source;
           if (this.hive.isRetreating(a2)) {
             const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
@@ -83457,9 +83463,9 @@ var init_agents3d = __esm({
         for (let n2 = 0; n2 < g2.n && seg < 250; n2++) {
           if (sim2.tickCount - sim2.gunfireTick[n2] > 2) continue;
           const occ = sim2.occupants(n2);
-          const shooters = occ.filter((a2) => a2.hp > 0 && !a2.dead && !a2.isPlayer && (a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED && a2.state === 5));
-          if (!shooters.length) continue;
-          for (const sh of shooters) {
+          const shooters2 = occ.filter((a2) => a2.hp > 0 && !a2.dead && !a2.isPlayer && (a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED && a2.state === 5));
+          if (!shooters2.length) continue;
+          for (const sh of shooters2) {
             if (seg >= 250) break;
             if ((sh.id + sim2.tickCount) % 3 === 0) continue;
             const targets = sim2.lineOfSightAgents(sh, (a2) => !a2.downed && (a2.faction === FACTION.COMBAT || a2.faction === FACTION.CARRIER || a2.faction === FACTION.INFECTION));
@@ -83514,44 +83520,38 @@ var init_agents3d = __esm({
         const fpos = this.floodTracers.geometry.attributes.position;
         let fseg = 0;
         counts.floodFlash = 0;
-        for (let n2 = 0; n2 < g2.n && fseg < 125; n2++) {
-          if (sim2.tickCount - sim2.gunfireTick[n2] > 2) continue;
-          const occ = sim2.occupants(n2);
-          const shooters = occ.filter((a2) => a2.hp > 0 && !a2.dead && !a2.downed && a2.faction === FACTION.COMBAT && a2.hostArmed);
-          const targets = occ.filter((a2) => !a2.dead && a2.hp > 0 && (a2.faction === FACTION.MARINE || a2.faction === FACTION.ARMED || a2.faction === FACTION.CIVILIAN));
-          if (!shooters.length || !targets.length) continue;
-          for (const sh of shooters) {
-            if (fseg >= 125) break;
-            if ((sh.id + sim2.tickCount) % 3 === 0) continue;
-            const t2 = targets[(sh.id + (sim2.tickCount >> 1)) % targets.length];
-            const sr = this.rpos.get(sh.id), tr = this.rpos.get(t2.id);
-            if (!sr || !tr) continue;
-            const [sx, sz] = this.world.simToWorld(sr.x, sr.y, sr.deck);
-            let [tx, tz] = this.world.simToWorld(tr.x, tr.y, tr.deck);
-            const ey = elevOf(sr.deck) + 1.05;
-            let ty = elevOf(tr.deck) + 0.9;
-            const fdx = tx - sx, fdz = tz - sz;
-            const frange = Math.hypot(fdx, fdz) || 1;
-            const fsp = 0.5 + frange * 0.07;
-            const finv = 1 / frange;
-            const fj1 = shotJitter(sh.id, sim2.tickCount, 3) * fsp;
-            const fj2 = shotJitter(sh.id, sim2.tickCount, 4) * fsp * 0.7;
-            tx += -fdz * finv * fj1;
-            tz += fdx * finv * fj1;
-            ty += fj2;
-            fpos.setXYZ(fseg * 2, sx, ey, sz);
-            fpos.setXYZ(fseg * 2 + 1, tx, ty, tz);
-            fseg++;
-            if (counts.floodFlash < CAP) {
-              const dx = tx - sx, dz = tz - sz, dl = Math.hypot(dx, dz) || 1;
-              const fs = 0.7 + (sh.id + sim2.tickCount) % 2 * 0.5;
-              this._m.compose(
-                this._p.set(sx + dx / dl * 0.6, ey, sz + dz / dl * 0.6),
-                this._q.identity(),
-                this._s.set(fs, fs, fs)
-              );
-              this.floodFlash.setMatrixAt(counts.floodFlash++, this._m);
-            }
+        const shooters = sim2.agents.filter((a2) => a2.hp > 0 && !a2.dead && !a2.downed && a2.faction === FACTION.COMBAT && a2.hostArmed && sim2.tickCount - (a2.hostShotTick ?? -999) <= 6);
+        for (const sh of shooters) {
+          if (fseg >= 125) break;
+          const t2 = sim2.byId.get(sh.hostShotTargetId);
+          if (!t2) continue;
+          const sr = this.rpos.get(sh.id), tr = this.rpos.get(t2.id);
+          if (!sr || !tr) continue;
+          const [sx, sz] = this.world.simToWorld(sr.x, sr.y, sr.deck);
+          let [tx, tz] = this.world.simToWorld(tr.x, tr.y, tr.deck);
+          const ey = elevOf(sr.deck) + 1.05;
+          let ty = elevOf(tr.deck) + 0.9;
+          const fdx = tx - sx, fdz = tz - sz;
+          const frange = Math.hypot(fdx, fdz) || 1;
+          const fsp = 0.5 + frange * 0.07;
+          const finv = 1 / frange;
+          const fj1 = shotJitter(sh.id, sim2.tickCount, 3) * fsp;
+          const fj2 = shotJitter(sh.id, sim2.tickCount, 4) * fsp * 0.7;
+          tx += -fdz * finv * fj1;
+          tz += fdx * finv * fj1;
+          ty += fj2;
+          fpos.setXYZ(fseg * 2, sx, ey, sz);
+          fpos.setXYZ(fseg * 2 + 1, tx, ty, tz);
+          fseg++;
+          if (counts.floodFlash < CAP) {
+            const dx = tx - sx, dz = tz - sz, dl = Math.hypot(dx, dz) || 1;
+            const fs = 0.7 + (sh.id + sim2.tickCount) % 2 * 0.5;
+            this._m.compose(
+              this._p.set(sx + dx / dl * 0.6, ey, sz + dz / dl * 0.6),
+              this._q.identity(),
+              this._s.set(fs, fs, fs)
+            );
+            this.floodFlash.setMatrixAt(counts.floodFlash++, this._m);
           }
         }
         this.floodTracers.geometry.setDrawRange(0, fseg * 2);
@@ -92585,7 +92585,9 @@ function agentRow(agent) {
     agent.afterlifeId ?? -1,
     pack(agent.respawnReadyAt ?? -1),
     agent.wasArmed ? 1 : 0,
-    agent.ammoRounds ?? 0
+    agent.ammoRounds ?? 0,
+    agent.hostShotTick ?? -1,
+    agent.hostShotTargetId ?? -1
   ];
   const hit = agent.deathImpulse;
   if (hit?.kind === "melee") row.push(
@@ -92624,7 +92626,7 @@ function snapshotState(sim2, cache3, full) {
   };
 }
 function validSnapshotRow(row, graph) {
-  return Array.isArray(row) && (row.length === 25 || row.length === 31) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && Number.isSafeInteger(row[21]) && row[21] >= -1 && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE && (row[23] === 0 || row[23] === 1) && Number.isSafeInteger(row[24]) && row[24] >= 0 && row[24] <= 1e3 && row.slice(25).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
+  return Array.isArray(row) && (row.length === 27 || row.length === 33) && packedIntegers(row.slice(0, 12)) && Number.isSafeInteger(row[0]) && row[0] > 0 && Number.isInteger(row[1]) && row[1] >= 0 && row[1] <= 6 && Number.isInteger(row[2]) && row[2] >= 0 && row[2] <= 11 && Number.isInteger(row[3]) && row[3] >= 0 && row[3] < graph.n && Math.abs(row[4]) <= SIM_BOUND * WIRE_SCALE && Math.abs(row[5]) <= SIM_BOUND * WIRE_SCALE && Number.isInteger(row[6]) && row[6] >= 1 && row[6] <= 5 && row[7] >= -1e3 * WIRE_SCALE && row[7] <= 1e4 * WIRE_SCALE && row[8] > 0 && row[8] <= 1e4 * WIRE_SCALE && row[9] >= 0 && row[9] <= 1e4 * WIRE_SCALE && row.slice(12, 16).every((flag) => flag === 0 || flag === 1) && Number.isSafeInteger(row[16]) && row[16] >= -WIRE_SCALE && row[16] <= 1e4 * WIRE_SCALE && Number.isSafeInteger(row[17]) && row[17] >= 0 && row[17] <= 100 * WIRE_SCALE && (row[18] === 0 || row[18] === 1) && Number.isSafeInteger(row[19]) && row[19] >= 0 && row[19] <= 1e3 * WIRE_SCALE && Number.isSafeInteger(row[20]) && row[20] >= 0 && row[20] <= 2 && Number.isSafeInteger(row[21]) && row[21] >= -1 && Number.isSafeInteger(row[22]) && row[22] >= -WIRE_SCALE && (row[23] === 0 || row[23] === 1) && Number.isSafeInteger(row[24]) && row[24] >= 0 && row[24] <= 1e3 && Number.isSafeInteger(row[25]) && row[25] >= -1 && Number.isSafeInteger(row[26]) && row[26] >= -1 && row.slice(27).every((value) => Number.isSafeInteger(value) && Math.abs(value) <= 100 * WIRE_SCALE);
 }
 function createGameSync({
   session: session2,
@@ -92759,7 +92761,9 @@ function createGameSync({
         afterlifeId,
         respawnReadyAt,
         wasArmed,
-        ammoRounds
+        ammoRounds,
+        hostShotTick,
+        hostShotTargetId
       ] = row;
       live.add(id);
       let agent = sim2.byId.get(id);
@@ -92796,14 +92800,16 @@ function createGameSync({
       agent.respawnReadyAt = unpack(respawnReadyAt);
       agent.wasArmed = wasArmed === 1;
       agent.ammoRounds = ammoRounds;
-      agent.deathImpulse = row.length === 31 ? {
+      agent.hostShotTick = hostShotTick;
+      agent.hostShotTargetId = hostShotTargetId;
+      agent.deathImpulse = row.length === 33 ? {
         kind: "melee",
-        dirX: unpack(row[25]),
-        dirY: unpack(row[26]),
-        speed: unpack(row[27]),
-        up: unpack(row[28]),
-        spin: unpack(row[29]),
-        kick: unpack(row[30])
+        dirX: unpack(row[27]),
+        dirY: unpack(row[28]),
+        speed: unpack(row[29]),
+        up: unpack(row[30]),
+        spin: unpack(row[31]),
+        kick: unpack(row[32])
       } : null;
       agent.dead = !!dead;
       agent.downed = !!downed;
@@ -92935,6 +92941,7 @@ function createGameSync({
       if (!target || target.dead || ![3, 4, 5].includes(target.faction)) return;
       if (!Number.isSafeInteger(packet.damage)) return;
       const sender = playerAgents.get(packet.from);
+      if (!sender) return;
       const [wx, wz] = world2.simToWorld(target.x, target.y, target.deck);
       targetPoint.set(wx, target.faction === 3 ? 0.35 : target.downed ? 0.35 : 0.9, wz);
       const shot = lastShots.get(packet.from);
@@ -92945,11 +92952,11 @@ function createGameSync({
         const body = target.faction === 3 ? 0.8 : target.faction === 5 ? 1.3 : 1;
         ok = pointNearSegment(targetPoint, shotStart, shotEnd, body + LAG_SLACK_M);
       }
-      if (!ok && sender && sender.deck === target.deck) {
+      if (!ok && sender.deck === target.deck) {
         ok = Math.hypot(sender.x - target.x, sender.y - target.y) <= MELEE_SLACK_M;
       }
       if (!ok) return;
-      hurtFloodForm(sim2, target, Math.max(0, Math.min(80, unpack(packet.damage))), false, peerNumber(packet.from));
+      hurtFloodForm(sim2, target, Math.max(0, Math.min(80, unpack(packet.damage))), false, sender.id);
     } else if (packet.kind === "medkit") {
       const sender = playerAgents.get(packet.from);
       if (sender) sim2.playerUseMedkit(sender);
@@ -92973,7 +92980,7 @@ function createGameSync({
       if (!sender || sender.deck !== packet.deck || Math.hypot(sender.x - x2, sender.y - y2) > 60) return;
       const radius = Math.max(0, Math.min(12, unpack(packet.radius)));
       const damage = Math.max(0, Math.min(250, unpack(packet.damage)));
-      sim2.explodeAt(packet.deck, x2, y2, radius, damage, peerNumber(packet.from));
+      sim2.explodeAt(packet.deck, x2, y2, radius, damage, sender.id);
       const [wx, wz] = world2.simToWorld(x2, y2, packet.deck);
       agents2.noteExplosion(packet.deck, wx, wz, radius);
     }
