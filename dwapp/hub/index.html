@@ -12,7 +12,6 @@
   #c { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .hud { position: absolute; z-index: 5; pointer-events: none; }
   #topbar { top: 12px; left: 14px; }
-  #topbar b { color: #e8eef7; font-size: 15px; }
   #room { color: #7fd1a0; font-size: 15px; font-weight: 700; }
   #vitals {
     top: 10px; left: 50%; transform: translateX(-50%);
@@ -297,7 +296,6 @@
     font: 11px/1 "SF Mono", Menlo, monospace; letter-spacing: 1px; text-align: right;
   }
   @media (max-width: 1100px) {
-    #topbar .ship-name { display: none; }
     #vitals { width: clamp(280px, 40vw, 390px); }
     #strengthHud { width: 175px; }
     #equipmentHud { top: 54px; }
@@ -474,7 +472,7 @@ npm run build:dwapp</pre></article>
   </div>
   <canvas id="c"></canvas>
   <button id="audioGate" type="button" hidden>TAP SCREEN OR PRESS A KEY FOR AUDIO</button>
-  <div class="hud" id="topbar"><span class="ship-name"><b>UNSC SATURN DEVOURING</b> · </span><span id="clock">0:00</span> · <span id="room">—</span></div>
+  <div class="hud" id="topbar"><span id="clock">0:00</span> · <span id="room">—</span></div>
   <div class="hud" id="vitals">
     <div class="vital-row"><span class="vital-label">ARMOR</span><div class="bar"><div id="armorBar"></div></div></div>
     <div class="vital-row"><span class="vital-label">HEALTH</span><div class="bar"><div id="healthBar"></div></div></div>
