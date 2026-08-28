@@ -6,6 +6,7 @@ import {
   insideHullPoint,
   observationSideForRoom,
   observationWindowForRun,
+  roomLightFixtureLayout,
 } from './world.js';
 
 for (let deck = 1; deck <= 5; deck++) {
@@ -57,5 +58,17 @@ assert.equal(exteriorObservationSpan(graph, cic, 'S', cic.x - 2, cic.x + 2), fal
   'an outboard compartment must block an interior room observation wall');
 assert.equal(observationSideForRoom(graph.node(graph.byId.get('reactor'))), null,
   'hazard and power compartments must keep solid hull plating');
+
+const archer = graph.node(graph.byId.get('archerPort'));
+const archerFixtures = roomLightFixtureLayout(archer);
+assert.equal(archerFixtures.length, 3, 'a forty-metre compartment needs three visible fixtures');
+assert.deepEqual(archerFixtures.map((fixture) => fixture.dz), [0, 0, 0],
+  'wide-room fixtures must follow the room axis');
+assert.ok(archerFixtures[0].dx < 0 && archerFixtures[2].dx > 0,
+  'large-room fixtures must cover both ends around a center strip');
+
+const smallRoom = graph.nodes.find((room) => Math.max(room.w, room.d) <= 14);
+assert.equal(roomLightFixtureLayout(smallRoom).length, 1,
+  'small rooms must retain one centered fixture');
 
 console.log('world connectors and observation windows ✓');
