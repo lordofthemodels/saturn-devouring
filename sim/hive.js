@@ -1039,7 +1039,7 @@ export class Hive {
     // No confident position does not mean no prey. Once every contact is lost,
     // free appendages search the topology whether or not the hive is strong
     // enough for an all-in assault. Production and carrier guards remain
-    // committed; searching is information gathering, not aggression.
+    // committed; dominance still ends caution even before prey is reacquired.
     const searchAll = believedAlive === 0 && this.beliefs.size > 0;
     this.searchingAll = searchAll;
     this.allIn = (believedAlive > 0 && this.combatDominant)
@@ -1059,7 +1059,8 @@ export class Hive {
     // AGGRESSIVE and the rampage/muster hunt comes online. Modeled on allIn.
     // A garrison the counter says is broken flips it aggressive outright.
     const wasAggro = this.posture === 'AGGRESSIVE';
-    this.posture = ((K >= 2 && S <= 1.05) || this.allIn || this.marinesBelieved <= 2) ? 'AGGRESSIVE' : 'EVASIVE';
+    this.posture = ((K >= 2 && S <= 1.05) || this.combatDominant
+      || this.allIn || this.marinesBelieved <= 2) ? 'AGGRESSIVE' : 'EVASIVE';
     // DEBUG READOUT (user: a flood strength/number indicator). Every one of
     // these already drives a decision above — mass gates allIn, S gates the
     // posture flip, believedAlive is the denominator of the mass ratio, and
@@ -1697,11 +1698,17 @@ export class Hive {
     const seedingK = combat.reduce((count, form) => count
       + (form.task?.kind === TASK.TRANSFORM || form.task?.seed ? 1 : 0), 0);
     const plannedK = K + seedingK;
-    // An unclaimed body is stored growth. Keep one additional carrier in the
-    // pipeline while that food remains, but count walking/rooting seeds so a
-    // single corpse cannot draft a new carrier every strategic tick.
-    if (bodies.some((body) => !body.claimed)) wantK = Math.max(wantK, K + 1);
-    if (plannedK < wantK && (C > K || K === 0)) {
+    // Unclaimed bodies are stored growth. While food remains, scale the
+    // production line with the combat population: one carrier can replenish
+    // roughly its own full rupture of fighters. Body count caps that extra
+    // investment, and walking/rooting seeds count so the planner drafts only
+    // one replacement at a time instead of stripping the search wave.
+    const freeBodies = bodies.reduce((count, body) => count + (!body.claimed ? 1 : 0), 0);
+    if (freeBodies > 0) {
+      const bodyBackedK = Math.min(Math.ceil(C / P.carrier.maxInfectionForms), K + freeBodies);
+      wantK = Math.max(wantK, bodyBackedK);
+    }
+    if (seedingK === 0 && plannedK < wantK && (C > K || K === 0)) {
       const target = this.bestCarrierNode();
       if (target !== -1) {
         // a form raised from the PLAYER never roots into a carrier (game rule);
@@ -1711,7 +1718,7 @@ export class Hive {
         const spares = combat.filter((c) => !c.fromPlayer
           && !this.isCombatCommitted(c)
           && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined)
-            || c.task.kind === TASK.ATTACK));
+            || c.task.kind === TASK.ATTACK || c.task.kind === TASK.SCOUT));
         const c = this.nearest(spares, target, ['std'], this.bigPass);
         if (c) {
           if (c.node === target && !c.move && this.localThreat(target) < 0.5) this.assign(c, { kind: TASK.TRANSFORM });
