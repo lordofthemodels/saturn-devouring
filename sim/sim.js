@@ -690,20 +690,34 @@ export class Sim {
     return Math.min(P.tankUnits, have + P.armoryRefill);
   }
 
-  // Your trigger is down and the stream is landing at (x, y) in `node`. Marks
-  // the room as burning exactly the way an NPC flamer does, so the hive's
-  // pathing avoids it and the renderer draws fire where the fuel went.
-  // Path-cache invalidation is gated on the node not ALREADY burning: this is
-  // called at frame rate, and invalidating every frame would thrash a cache
-  // the whole hive reads.
-  playerFlame(node, x, y) {
+  // One bounded, physical fuel pool. The graph bit remains the cheap strategic
+  // pathing signal; the site is the authoritative contact patch for damage and
+  // rendering. A source can leave one patch per room, so sweeping a stream
+  // through a doorway does not teleport the old room's fire into the new one.
+  igniteFlame(node, x, y, source = 'flame', scale = 1.2) {
     if (node < 0) return;
     const g = this.graph;
     const wasBurning = g.burningUntil[node] > this.t;
-    g.burningUntil[node] = this.t + this.P.flamethrower.burnNodeSec;
+    const expiresAt = this.t + this.P.flamethrower.burnNodeSec;
+    g.burningUntil[node] = Math.max(g.burningUntil[node], expiresAt);
     g.burnX[node] = x; g.burnY[node] = y;
     g.noteBurn(node);
     if (!wasBurning) g.invalidatePathCache();
+    const key = `${source}:${node}`;
+    let site = this.fires.find((f) => f.key === key);
+    if (!site) {
+      site = { key, deck: g.node(node).deck, node, x, y, scale, expiresAt };
+      this.fires.push(site);
+    } else {
+      site.x = x; site.y = y; site.scale = scale; site.expiresAt = expiresAt;
+    }
+    return site;
+  }
+
+  // The player is kept separate from the NPC equipment flag so the sim does
+  // not double-fire on top of the aimed game-side stream.
+  playerFlame(node, x, y, sourceId = 0) {
+    return this.igniteFlame(node, x, y, `player:${sourceId}`);
   }
 
   // the player takes up a rifle — from the armory rack or from a corpse
@@ -1055,6 +1069,14 @@ export class Sim {
     // up to ~64 flow fields from scratch). Lock/vent/belief mutators all
     // invalidate at their own write sites.
     this.graph.sweepBurns(this.t);
+    // Dynamic fuel pools expire independently of the permanent breach and
+    // damaged-door fires. Removing them here keeps both damage and snapshots
+    // bounded even after a long flamethrower-heavy game.
+    for (let i = this.fires.length - 1; i >= 0; i--) {
+      if (this.fires[i].expiresAt !== undefined && this.fires[i].expiresAt <= this.t) {
+        this.fires.splice(i, 1);
+      }
+    }
 
     this._refreshOccupancy();
     this._refreshMarineMotion();
@@ -3100,6 +3122,7 @@ export class Sim {
   _fireDamage(dt) {
     const F = this.P.fire;
     for (const f of this.fires) {
+      if (f.expiresAt !== undefined && f.expiresAt <= this.t) continue;
       for (const a of this.agents) {
         if (a.dead || a.deck !== f.deck) continue;
         const dx = a.x - f.x, dy = a.y - f.y;
@@ -3126,6 +3149,7 @@ export class Sim {
   _fireAvoid(dt) {
     const F = this.P.fire;
     for (const f of this.fires) {
+      if (f.expiresAt !== undefined && f.expiresAt <= this.t) continue;
       const R = F.radiusM * f.scale + 1.0;
       for (const a of this.agents) {
         if (a.dead || a.isPlayer || a.deck !== f.deck || a.faction === FACTION.CORPSE) continue;

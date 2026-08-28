@@ -1,15 +1,16 @@
 // Fire effects — REWORKED (user: flames were basic and low-res). Each site
-// is now a real shader flame: two crossed billboarded quads running an fbm
-// noise flame shader (scrolling turbulence shaped into tongues, black-body
-// color ramp), an ember fountain, a scorch decal burned into the deck, and
+// is now a real shader flame: a ray-marched turbulent volume with a black-body
+// profile, an ember fountain, a scorch decal burned into the deck, and
 // a guttering warm light. Sites come from the sim (breach blaze, burning
-// doors, flamethrower burns) plus seeded small damage smolders. Render-only;
-// the sim never sees any of it.
+// doors, flamethrower burns) plus seeded small damage smolders. The sim owns
+// the damaging sites; this module only turns those coordinates into pixels.
 
 import * as THREE from './vendor/three.webgpu.module.js';
 import {
   Fn, uv, float, vec2, vec3, vec4,
   fract, sin, dot, floor, mix, smoothstep, abs, clamp, Loop, userData,
+  texture, normalize, sqrt, length, cameraPosition, positionWorld,
+  modelWorldMatrixInverse, modelScale, mx_noise_float, select, time,
 } from './vendor/three.tsl.module.js';
 
 // TSL flame — the same fbm value-noise tongue shader as the old GLSL, term
@@ -35,37 +36,85 @@ const fbm2 = Fn(([pIn]) => {
   return v;
 });
 
-// ONE material serves every flame card in the game (review swarm: a fresh
-// Fn() graph per material misses the node-builder cache by design — its key
-// is the node instance id — so each ignition paid two full TSL builds
-// mid-frame). Per-card time/seed ride on the MESH's userData via userData()
-// nodes, which the node system uploads per rendered object.
-let _flameMat = null;
+// Volumetric pool fire adapted from typeWolffo/THREE.Fire's MIT-licensed TSL
+// ray-marching approach. It replaces the two intersecting cards whose flat
+// silhouette was obvious from doorways. We keep one shared 12-step/2-octave
+// graph and a generated 128px profile, avoiding a dependency, network texture,
+// or per-ignition shader build. Attribution: engine/vendor/three-fire-NOTICE.txt.
+let _fireProfile = null, _flameMat = null;
+function fireProfileTexture() {
+  if (_fireProfile) return _fireProfile;
+  const size = 128, canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(size, size);
+  for (let y = 0; y < size; y++) {
+    const h = 1 - y / (size - 1);
+    for (let x = 0; x < size; x++) {
+      const radius = x / (size - 1);
+      const envelope = Math.max(0, 1 - radius * (1.05 + h * 1.35));
+      const base = Math.min(1, h / 0.08);
+      const tip = Math.min(1, (1 - h) / 0.18);
+      const density = Math.pow(envelope, 1.45) * base * tip;
+      const heat = Math.min(1, density * 1.7 + (1 - h) * 0.2);
+      const i = (y * size + x) * 4;
+      image.data[i] = 255;
+      image.data[i + 1] = Math.round(45 + heat * 190);
+      image.data[i + 2] = Math.round(4 + heat * heat * 105);
+      image.data[i + 3] = Math.round(density * 255);
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  _fireProfile = new THREE.CanvasTexture(canvas);
+  _fireProfile.colorSpace = THREE.SRGBColorSpace;
+  _fireProfile.minFilter = THREE.LinearFilter;
+  _fireProfile.magFilter = THREE.LinearFilter;
+  _fireProfile.wrapS = _fireProfile.wrapT = THREE.ClampToEdgeWrapping;
+  return _fireProfile;
+}
+
 function flameMaterial() {
   if (_flameMat) return _flameMat;
-  const uT = userData('fireT', 'float');
-  const uSeed = userData('fireSeed', 'float');
+  const seed = userData('fireSeed', 'float');
+  const profile = fireProfileTexture();
+  const turbulence = Fn(([pIn]) => {
+    const p = vec3(pIn).toVar();
+    const sum = float(0).toVar();
+    const freq = float(1).toVar();
+    const amp = float(1).toVar();
+    Loop(2, () => {
+      sum.addAssign(abs(mx_noise_float(p.mul(freq))).mul(amp));
+      freq.mulAssign(2.0);
+      amp.mulAssign(0.5);
+    });
+    return sum;
+  });
+  const sampleFire = Fn(([local]) => {
+    const st = vec2(sqrt(dot(local.xz, local.xz)), local.y).toVar();
+    const p = vec3(local).toVar();
+    p.y.subAssign(seed.add(time).mul(0.42));
+    p.assign(p.mul(vec3(1.1, 2.1, 1.1)));
+    st.y.addAssign(sqrt(st.y.max(0)).mul(1.24).mul(turbulence(p)));
+    const outside = st.x.lessThanEqual(0).or(st.x.greaterThanEqual(1))
+      .or(st.y.lessThanEqual(0)).or(st.y.greaterThanEqual(1));
+    return select(outside, vec4(0), texture(profile, st));
+  });
   const mat = new THREE.MeshBasicNodeMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide, fog: false,
+    transparent: true, depthWrite: false, depthTest: true,
+    blending: THREE.AdditiveBlending, side: THREE.BackSide, fog: false,
   });
   mat.colorNode = Fn(() => {
-    const uvN = uv();
-    // turbulence rises: sample noise scrolling DOWN so features rise
-    const n = fbm2(vec2(uvN.x.mul(3.0).add(uSeed.mul(17.0)), uvN.y.mul(4.0).sub(uT.mul(2.6))));
-    const n2 = fbm2(vec2(uvN.x.mul(7.0).sub(uSeed.mul(9.0)), uvN.y.mul(9.0).sub(uT.mul(4.1))));
-    // flame envelope: wide at the base, licking to a point, side falloff
-    const cx = uvN.x.sub(0.5).add(n.sub(0.5).mul(0.35).mul(uvN.y));
-    const body = smoothstep(0.0, uvN.y.mul(0.75).oneMinus().mul(0.42), abs(cx)).oneMinus();
-    const tongue = smoothstep(0.55, 1.0, uvN.y.add(n2.sub(0.5).mul(0.55))).oneMinus();
-    const f = clamp(body.mul(tongue).mul(n2.mul(0.55).add(0.65)).mul(1.35), 0.0, 1.0);
-    // black-body ramp: deep red -> orange -> yellow-white core
-    const col = mix(
-      mix(vec3(0.55, 0.08, 0.0), vec3(1.0, 0.45, 0.05), smoothstep(0.1, 0.55, f)),
-      vec3(1.0, 0.92, 0.6), smoothstep(0.65, 1.0, f));
-    // additive blending: alpha scales the contribution, near-zero adds nothing
-    // (the old shader's discard was only a blending shortcut)
-    return vec4(col.mul(n2.mul(0.5).add(0.8)), f.mul(0.92));
+    const ray = vec3(positionWorld).toVar();
+    const direction = normalize(ray.sub(cameraPosition));
+    const step = float(0.045).mul(length(modelScale));
+    const color = vec4(0).toVar();
+    Loop(12, () => {
+      ray.addAssign(direction.mul(step));
+      const local = modelWorldMatrixInverse.mul(vec4(ray, 1)).xyz.toVar();
+      local.x.mulAssign(2.0); local.z.mulAssign(2.0);
+      color.addAssign(sampleFire(local).mul(0.18));
+    });
+    return vec4(color.rgb, clamp(color.a, 0, 0.94));
   })();
   _flameMat = mat;
   return mat;
@@ -85,8 +134,8 @@ export class FireFX {
     this.pool = lightPool; // fire light goes through the global pool (perf)
     this.camera = null;    // main.js sets this; embers billboard to its quaternion
     this.fires = new Map();
-    this._quadGeo = new THREE.PlaneGeometry(1, 1);
-    this._quadGeo.translate(0, 0.5, 0); // pivot at the base of the flame
+    this._volumeGeo = new THREE.BoxGeometry(1, 1, 1);
+    this._volumeGeo.translate(0, 0.5, 0); // pivot at the pool on the deck
     this._scorchTex = FireFX._makeScorchTex();
     this._spotTex = FireFX._makeSpotTex();
     // shared across fires: ember quad + material, scorch geometry + material
@@ -140,19 +189,12 @@ export class FireFX {
   add(key, x, z, elev, scale = 1) {
     if (this.fires.has(key)) return;
     const group = new THREE.Group();
-    // two crossed flame cards, billboarded toward the player per-frame (Y-only)
-    const cards = [];
-    for (let k = 0; k < 2; k++) {
-      const card = new THREE.Mesh(this._quadGeo, flameMaterial());
-      card.userData.fireT = 0;
-      card.userData.fireSeed = (x * 7.3 + z * 3.1 + k * 13.7) % 10;
-      card.scale.set(1.15 * scale, 1.7 * scale, 1);
-      card.position.set(x, elev + 0.02, z);
-      card.rotation.y = k * Math.PI / 2;
-      card.renderOrder = 4;
-      group.add(card);
-      cards.push(card);
-    }
+    const volume = new THREE.Mesh(this._volumeGeo, flameMaterial());
+    volume.userData.fireSeed = Math.abs((x * 7.3 + z * 3.1) % 19.19);
+    volume.scale.set(1.55 * scale, 2.25 * scale, 1.55 * scale);
+    volume.position.set(x, elev + 0.02, z);
+    volume.renderOrder = 4;
+    group.add(volume);
     // embers: a sparse fountain of hot instanced billboard quads
     const N = 26;
     const seeds = new Float32Array(N);
@@ -181,16 +223,30 @@ export class FireFX {
     group.add(scorch);
     this.scene.add(group);
     this.fires.set(key, {
-      group, cards, embers, x, z, elev, scale,
+      group, volume, scorch, embers, x, z, elev, scale,
       t: (x * 7 + z * 3) % 10, seeds, lum: 5 * scale, // pooled guttering light
     });
+  }
+
+  // A live stream continually refines its contact point. Moving the pooled
+  // render object is cheap and, critically, keeps the visible pool on the same
+  // coordinates used by damage instead of freezing at its first frame.
+  move(key, x, z, elev, scale = 1) {
+    const f = this.fires.get(key);
+    if (!f) return;
+    f.x = x; f.z = z; f.elev = elev; f.scale = scale;
+    f.volume.position.set(x, elev + 0.02, z);
+    f.volume.scale.set(1.55 * scale, 2.25 * scale, 1.55 * scale);
+    f.scorch.position.set(x, elev + 0.012, z);
+    f.scorch.scale.setScalar(2.4 * scale);
+    f.embers.geometry.boundingSphere?.center.set(x, elev + 2, z);
   }
 
   remove(key) {
     const f = this.fires.get(key);
     if (!f) return;
     this.scene.remove(f.group);
-    // cards/scorch use shared material+geometry (never disposed); the only
+    // volume/scorch use shared material+geometry (never disposed); the only
     // per-fire GPU resource is the ember instance buffer (review swarm: the
     // old remove() leaked ember/scorch geometry and materials)
     f.embers.dispose();
@@ -227,13 +283,6 @@ export class FireFX {
       const vis = d2 <= 55 * 55 && (pElev === null || Math.abs(f.elev - pElev) < 6.3);
       f.group.visible = vis;
       if (!vis) continue;
-      // advance the flame shader + billboard the cards toward the player
-      const face = Math.atan2(px - f.x, pz - f.z);
-      for (let k = 0; k < f.cards.length; k++) {
-        const c = f.cards[k];
-        c.userData.fireT = f.t;
-        c.rotation.y = face + (k === 0 ? 0 : Math.PI / 2);
-      }
       // embers rise and die — instanced quads billboarded to the camera
       const q = this.camera?.quaternion ?? _IDENT_Q;
       _scl.setScalar(0.085 * f.scale);

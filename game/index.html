@@ -43,7 +43,7 @@
   /* CE AR reticle (ported from first-strike): circle of 4 arcs + dot,
      blooming with weapon spread via --sp (set per frame from spreadDeg) */
   #crosshair {
-    --sp: 14px;
+    --sp: 14px; --xh: rgba(140,215,255,0.95);
     top: 50%; left: 50%; width: 0; height: 0;
     filter: drop-shadow(0 0 2px rgba(10,30,70,0.9));
   }
@@ -51,7 +51,7 @@
     position: absolute;
     width: calc(26px + 2 * var(--sp)); height: calc(26px + 2 * var(--sp));
     left: calc(-13px - var(--sp)); top: calc(-13px - var(--sp));
-    border: 1.5px solid rgba(140,215,255,0.95);
+    border: 1.5px solid var(--xh);
     border-radius: 50%;
     -webkit-mask: conic-gradient(from 20deg,
       #000 0 50deg, transparent 50deg 90deg,
@@ -67,8 +67,9 @@
   #crosshair .dot {
     position: absolute; width: 2.4px; height: 2.4px;
     left: -1.2px; top: -1.2px; border-radius: 50%;
-    background: rgba(140,215,255,0.95);
+    background: var(--xh);
   }
+  #crosshair.flame-hot { --xh: rgba(255,76,58,0.98); filter: drop-shadow(0 0 3px rgba(120,0,0,.9)); }
   /* the radio log: bottom half of the right edge only — the top half stays
      clear glass so the panel costs less field of view (user note) */
   #logwrap {

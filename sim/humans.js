@@ -434,8 +434,26 @@ function updateMarineTick(sim, a, dt) {
     // wins standing. A real pack is not — he keeps shooting and gives ground,
     // and once they are in his face with room behind him he breaks for the
     // next compartment and re-forms the line there.
-    const forms = visibleFloodForms(sim, a).length;
+    const visible = visibleFloodForms(sim, a);
+    const forms = visible.length;
     a.givingGround = forms > P.morale.marineHoldForms;
+    // A flamethrower is not a rifle: when the nearest visible contact is
+    // outside the fuel stream, advance its stable firing post toward it. The
+    // normal room clamp/door geometry still owns movement, so this is range
+    // awareness rather than a special-case teleport or room transition.
+    if (a.flamer && a.fuel > 0 && visible.length) {
+      let nearest = visible[0], nearestD = Infinity;
+      for (const form of visible) {
+        const d = Math.hypot(form.x - a.x, form.y - a.y);
+        if (d < nearestD) { nearest = form; nearestD = d; }
+      }
+      if (nearestD > P.flamethrower.rangeM * 0.88) {
+        const dx = nearest.x - a.x, dy = nearest.y - a.y;
+        const d = Math.hypot(dx, dy) || 1;
+        const advance = nearestD - P.flamethrower.rangeM * 0.82;
+        a.firePost = [a.x + dx / d * advance, a.y + dy / d * advance];
+      }
+    }
     if (a.givingGround && nearestFloodDist(sim, a) < P.morale.breakContactM) {
       const next = fleeStep(sim, a);
       if (next !== null && next !== -1) {
@@ -567,17 +585,11 @@ function updateMarineTick(sim, a, dt) {
           corpse.damage = 100;
           a.fuel -= sim.P.flamethrower.fuelPerCorpse;
           sim.stats.corpsesBurned++;
-          // gate like playerFlame: extending a live burn flips no
-          // passability predicate — don't thrash the path cache
-          const wasBurning = sim.graph.burningUntil[a.node] > sim.t;
-          sim.graph.burningUntil[a.node] = sim.t + sim.P.flamethrower.burnNodeSec;
-          sim.graph.noteBurn(a.node);
           // the fuel goes onto THAT body, not into the middle of the room —
           // and the trigger is down for the length of the squirt (see FLAMING)
-          sim.graph.burnX[a.node] = corpse.x;
-          sim.graph.burnY[a.node] = corpse.y;
+          sim.igniteFlame(a.node, corpse.x, corpse.y, `marine:${a.id}`, 0.85);
+          a.flameAimX = corpse.x; a.flameAimY = corpse.y; a.flameAimDeck = corpse.deck;
           a.flamingT = sim.t;
-          if (!wasBurning) sim.graph.invalidatePathCache(); // burning nodes gate hive pathing
           if (sim.stats.corpsesBurned % 10 === 1) sim.log('burn', `flamethrower burning bodies in ${nd.name} (fuel ${a.fuel.toFixed(0)})`, a.node);
         }
       }

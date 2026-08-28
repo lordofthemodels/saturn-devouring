@@ -87,7 +87,8 @@ export function makeAgent(kind, node, graph) {
     madeSure: undefined, deathImpulse: undefined,
     // fire & flamer
     flamingT: undefined, burnTimer: undefined, hadFlamer: undefined,
-    flamerFuel: undefined, wasArmed: undefined, ammoRounds: undefined, hostArmed: undefined,
+    flamerFuel: undefined, flameAimX: undefined, flameAimY: undefined, flameAimDeck: undefined,
+    wasArmed: undefined, ammoRounds: undefined, hostArmed: undefined,
     // escort / marine kit & posts (humans.js)
     callsign: undefined, escort: undefined, mags: undefined, rounds: undefined,
     lowCalled: undefined, dryCalled: undefined, odst: undefined,

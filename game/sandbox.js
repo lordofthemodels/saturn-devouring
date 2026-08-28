@@ -218,9 +218,10 @@ const SPAWNS = [
   ['flamethrower', FACTION.MARINE, (a) => {
     a.flamer = true; a.fuel = 100;
     a.flamingT = sim.t;
-    sim.graph.burningUntil[a.node] = sim.t + 12;
-    sim.graph.burnX[a.node] = a.x + Math.cos(a.heading) * 5;
-    sim.graph.burnY[a.node] = a.y + Math.sin(a.heading) * 5;
+    a.flameAimX = a.x + Math.cos(a.heading) * 5;
+    a.flameAimY = a.y + Math.sin(a.heading) * 5;
+    a.flameAimDeck = a.deck;
+    sim.igniteFlame(a.node, a.flameAimX, a.flameAimY, `sandbox:${a.id}`);
   }],
   ['ODST', FACTION.MARINE, (a) => { a.odst = true; }],
   ['crew (armed)', FACTION.ARMED, null],
@@ -327,10 +328,11 @@ renderer.setAnimationLoop(() => {
   lightPool.frame();
   for (let n = 0; n < sim.graph.n; n++) {
     const key = `burn${n}`, burning = sim.graph.burningUntil[n] > sim.t;
-    if (burning && !fire.fires.has(key)) {
+    if (burning) {
       const nd = sim.graph.node(n);
       const [bx, bz] = world.simToWorld(sim.graph.burnX[n], sim.graph.burnY[n], nd.deck);
-      fire.add(key, bx, bz, elevOf(nd.deck), 1.2);
+      if (!fire.fires.has(key)) fire.add(key, bx, bz, elevOf(nd.deck), 1.2);
+      else fire.move(key, bx, bz, elevOf(nd.deck), 1.2);
     } else if (!burning && fire.fires.has(key)) fire.remove(key);
   }
   fire.update(dt, camera.position.x, camera.position.z);

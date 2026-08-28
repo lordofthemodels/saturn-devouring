@@ -69124,7 +69124,8 @@ var init_params = __esm({
         dps: 50,
         fuelPerSec: 2,
         fuelPerCorpse: 1,
-        burnNodeSec: 12,
+        rangeM: 9,
+        burnNodeSec: 15,
         // IN YOUR HANDS (user: "make the flamethrower something the player can
         // use"). Deliberately NOT the NPC numbers. A marine's flamer is an
         // abstraction that ticks a dps pool into a room; yours is aimed, so it
@@ -70943,6 +70944,9 @@ function makeAgent(kind, node, graph) {
     burnTimer: void 0,
     hadFlamer: void 0,
     flamerFuel: void 0,
+    flameAimX: void 0,
+    flameAimY: void 0,
+    flameAimDeck: void 0,
     wasArmed: void 0,
     ammoRounds: void 0,
     hostArmed: void 0,
@@ -71714,8 +71718,25 @@ function updateMarineTick(sim2, a2, dt) {
     a2.state = STATE.FIGHT;
     a2.path = [];
     a2.move = null;
-    const forms = visibleFloodForms(sim2, a2).length;
+    const visible = visibleFloodForms(sim2, a2);
+    const forms = visible.length;
     a2.givingGround = forms > P2.morale.marineHoldForms;
+    if (a2.flamer && a2.fuel > 0 && visible.length) {
+      let nearest = visible[0], nearestD = Infinity;
+      for (const form of visible) {
+        const d2 = Math.hypot(form.x - a2.x, form.y - a2.y);
+        if (d2 < nearestD) {
+          nearest = form;
+          nearestD = d2;
+        }
+      }
+      if (nearestD > P2.flamethrower.rangeM * 0.88) {
+        const dx = nearest.x - a2.x, dy = nearest.y - a2.y;
+        const d2 = Math.hypot(dx, dy) || 1;
+        const advance = nearestD - P2.flamethrower.rangeM * 0.82;
+        a2.firePost = [a2.x + dx / d2 * advance, a2.y + dy / d2 * advance];
+      }
+    }
     if (a2.givingGround && nearestFloodDist(sim2, a2) < P2.morale.breakContactM) {
       const next = fleeStep(sim2, a2);
       if (next !== null && next !== -1) {
@@ -71811,13 +71832,11 @@ function updateMarineTick(sim2, a2, dt) {
           corpse.damage = 100;
           a2.fuel -= sim2.P.flamethrower.fuelPerCorpse;
           sim2.stats.corpsesBurned++;
-          const wasBurning = sim2.graph.burningUntil[a2.node] > sim2.t;
-          sim2.graph.burningUntil[a2.node] = sim2.t + sim2.P.flamethrower.burnNodeSec;
-          sim2.graph.noteBurn(a2.node);
-          sim2.graph.burnX[a2.node] = corpse.x;
-          sim2.graph.burnY[a2.node] = corpse.y;
+          sim2.igniteFlame(a2.node, corpse.x, corpse.y, `marine:${a2.id}`, 0.85);
+          a2.flameAimX = corpse.x;
+          a2.flameAimY = corpse.y;
+          a2.flameAimDeck = corpse.deck;
           a2.flamingT = sim2.t;
-          if (!wasBurning) sim2.graph.invalidatePathCache();
           if (sim2.stats.corpsesBurned % 10 === 1) sim2.log("burn", `flamethrower burning bodies in ${nd.name} (fuel ${a2.fuel.toFixed(0)})`, a2.node);
         }
       }
@@ -74906,25 +74925,25 @@ function resolveCombat(sim2, dt) {
     if (shooters.length) {
       let anyFire = false;
       const flamer2 = shooters.find((s2) => s2.flamer && s2.fuel > 0);
-      const targets = [...combatForms, ...carriers].sort((a2, b2) => a2.id - b2.id);
+      const targets = flamer2 ? sim2.lineOfSightAgents(
+        flamer2,
+        (t2) => t2.faction === FACTION.COMBAT && !t2.downed || t2.faction === FACTION.INFECTION || t2.faction === FACTION.CARRIER,
+        P2.flamethrower.rangeM
+      ).sort((a2, b2) => {
+        const ad = (a2.x - flamer2.x) ** 2 + (a2.y - flamer2.y) ** 2;
+        const bd = (b2.x - flamer2.x) ** 2 + (b2.y - flamer2.y) ** 2;
+        return ad - bd || a2.id - b2.id;
+      }) : [];
       if (flamer2 && targets.length) {
         anyFire = true;
         flamer2.fuel = Math.max(0, flamer2.fuel - P2.flamethrower.fuelPerSec * dt);
-        const wasBurning = sim2.graph.burningUntil[node] > sim2.t;
-        sim2.graph.burningUntil[node] = sim2.t + P2.flamethrower.burnNodeSec;
-        sim2.graph.noteBurn(node);
-        let aim = targets[0], aimD = Infinity;
-        for (const t2 of targets) {
-          const d2 = (t2.x - flamer2.x) ** 2 + (t2.y - flamer2.y) ** 2;
-          if (d2 < aimD - 1e-9) {
-            aimD = d2;
-            aim = t2;
-          }
-        }
-        sim2.graph.burnX[node] = aim.x;
-        sim2.graph.burnY[node] = aim.y;
+        const aim = targets[0];
+        const aimNode = aim.pnode ?? aim.node;
+        sim2.igniteFlame(aimNode, aim.x, aim.y, `marine:${flamer2.id}`, 1);
+        flamer2.flameAimX = aim.x;
+        flamer2.flameAimY = aim.y;
+        flamer2.flameAimDeck = sim2.graph.node(aimNode).deck;
         flamer2.flamingT = sim2.t;
-        if (!wasBurning) sim2.graph.invalidatePathCache();
         let flamePool = P2.flamethrower.dps * dt;
         for (const t2 of targets) {
           if (flamePool <= 0) break;
@@ -76206,21 +76225,37 @@ var init_sim = __esm({
         this.armoryFuelCans--;
         return Math.min(P2.tankUnits, have + P2.armoryRefill);
       }
-      // Your trigger is down and the stream is landing at (x, y) in `node`. Marks
-      // the room as burning exactly the way an NPC flamer does, so the hive's
-      // pathing avoids it and the renderer draws fire where the fuel went.
-      // Path-cache invalidation is gated on the node not ALREADY burning: this is
-      // called at frame rate, and invalidating every frame would thrash a cache
-      // the whole hive reads.
-      playerFlame(node, x2, y2) {
+      // One bounded, physical fuel pool. The graph bit remains the cheap strategic
+      // pathing signal; the site is the authoritative contact patch for damage and
+      // rendering. A source can leave one patch per room, so sweeping a stream
+      // through a doorway does not teleport the old room's fire into the new one.
+      igniteFlame(node, x2, y2, source = "flame", scale2 = 1.2) {
         if (node < 0) return;
         const g2 = this.graph;
         const wasBurning = g2.burningUntil[node] > this.t;
-        g2.burningUntil[node] = this.t + this.P.flamethrower.burnNodeSec;
+        const expiresAt = this.t + this.P.flamethrower.burnNodeSec;
+        g2.burningUntil[node] = Math.max(g2.burningUntil[node], expiresAt);
         g2.burnX[node] = x2;
         g2.burnY[node] = y2;
         g2.noteBurn(node);
         if (!wasBurning) g2.invalidatePathCache();
+        const key = `${source}:${node}`;
+        let site = this.fires.find((f2) => f2.key === key);
+        if (!site) {
+          site = { key, deck: g2.node(node).deck, node, x: x2, y: y2, scale: scale2, expiresAt };
+          this.fires.push(site);
+        } else {
+          site.x = x2;
+          site.y = y2;
+          site.scale = scale2;
+          site.expiresAt = expiresAt;
+        }
+        return site;
+      }
+      // The player is kept separate from the NPC equipment flag so the sim does
+      // not double-fire on top of the aimed game-side stream.
+      playerFlame(node, x2, y2, sourceId = 0) {
+        return this.igniteFlame(node, x2, y2, `player:${sourceId}`);
       }
       // the player takes up a rifle — from the armory rack or from a corpse
       // that died holding one (game rule: the survivor can fight back)
@@ -76517,6 +76552,11 @@ var init_sim = __esm({
         this.tickCount++;
         this.t = this.tickCount * dt;
         this.graph.sweepBurns(this.t);
+        for (let i2 = this.fires.length - 1; i2 >= 0; i2--) {
+          if (this.fires[i2].expiresAt !== void 0 && this.fires[i2].expiresAt <= this.t) {
+            this.fires.splice(i2, 1);
+          }
+        }
         this._refreshOccupancy();
         this._refreshMarineMotion();
         for (const entry of this.commands.collect(this.tickCount)) {
@@ -78143,6 +78183,7 @@ var init_sim = __esm({
       _fireDamage(dt) {
         const F2 = this.P.fire;
         for (const f2 of this.fires) {
+          if (f2.expiresAt !== void 0 && f2.expiresAt <= this.t) continue;
           for (const a2 of this.agents) {
             if (a2.dead || a2.deck !== f2.deck) continue;
             const dx = a2.x - f2.x, dy = a2.y - f2.y;
@@ -78167,6 +78208,7 @@ var init_sim = __esm({
       _fireAvoid(dt) {
         const F2 = this.P.fire;
         for (const f2 of this.fires) {
+          if (f2.expiresAt !== void 0 && f2.expiresAt <= this.t) continue;
           const R2 = F2.radiusM * f2.scale + 1;
           for (const a2 of this.agents) {
             if (a2.dead || a2.isPlayer || a2.deck !== f2.deck || a2.faction === FACTION.CORPSE) continue;
@@ -82922,7 +82964,12 @@ var init_agents3d = __esm({
         const oz = wz + fz * mz.f + fx * cfg.right + dz * over;
         let len = 5;
         const g2 = this.sim.graph;
-        if (g2.burningUntil[nodeIdx] > this.sim.t) {
+        const live = this.sim.byId.get(id);
+        const aimDeck = live?.flameAimDeck ?? deck;
+        if (live?.flameAimX !== void 0 && (live.flamingT ?? -Infinity) >= this.sim.t - this.sim.dt * 1.5) {
+          const [bwx, bwz] = this.world.simToWorld(live.flameAimX, live.flameAimY, aimDeck);
+          len = Math.hypot(bwx - ox, bwz - oz) / 0.85;
+        } else if (g2.burningUntil[nodeIdx] > this.sim.t) {
           const [bwx, bwz] = this.world.simToWorld(g2.burnX[nodeIdx], g2.burnY[nodeIdx], deck);
           len = Math.hypot(bwx - ox, bwz - oz) / 0.85;
         }
@@ -82933,7 +82980,7 @@ var init_agents3d = __esm({
         r2.dx = dx;
         r2.dy = dy;
         r2.dz = dz;
-        r2.len = Math.max(2.2, Math.min(9, len));
+        r2.len = Math.max(2.2, Math.min(this.sim.P.flamethrower.rangeM, len));
         r2.seed = id;
         this.flameJetN++;
       }
@@ -85148,31 +85195,82 @@ var init_audio2 = __esm({
 });
 
 // engine/fx.js
+function fireProfileTexture() {
+  if (_fireProfile) return _fireProfile;
+  const size = 128, canvas2 = document.createElement("canvas");
+  canvas2.width = canvas2.height = size;
+  const ctx = canvas2.getContext("2d");
+  const image = ctx.createImageData(size, size);
+  for (let y2 = 0; y2 < size; y2++) {
+    const h2 = 1 - y2 / (size - 1);
+    for (let x2 = 0; x2 < size; x2++) {
+      const radius = x2 / (size - 1);
+      const envelope = Math.max(0, 1 - radius * (1.05 + h2 * 1.35));
+      const base = Math.min(1, h2 / 0.08);
+      const tip = Math.min(1, (1 - h2) / 0.18);
+      const density = Math.pow(envelope, 1.45) * base * tip;
+      const heat = Math.min(1, density * 1.7 + (1 - h2) * 0.2);
+      const i2 = (y2 * size + x2) * 4;
+      image.data[i2] = 255;
+      image.data[i2 + 1] = Math.round(45 + heat * 190);
+      image.data[i2 + 2] = Math.round(4 + heat * heat * 105);
+      image.data[i2 + 3] = Math.round(density * 255);
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  _fireProfile = new CanvasTexture(canvas2);
+  _fireProfile.colorSpace = SRGBColorSpace;
+  _fireProfile.minFilter = LinearFilter;
+  _fireProfile.magFilter = LinearFilter;
+  _fireProfile.wrapS = _fireProfile.wrapT = ClampToEdgeWrapping;
+  return _fireProfile;
+}
 function flameMaterial() {
   if (_flameMat) return _flameMat;
-  const uT = userData2("fireT", "float");
-  const uSeed = userData2("fireSeed", "float");
+  const seed2 = userData2("fireSeed", "float");
+  const profile = fireProfileTexture();
+  const turbulence = Fn2(([pIn]) => {
+    const p2 = vec32(pIn).toVar();
+    const sum = float2(0).toVar();
+    const freq = float2(1).toVar();
+    const amp = float2(1).toVar();
+    Loop2(2, () => {
+      sum.addAssign(abs2(mx_noise_float2(p2.mul(freq))).mul(amp));
+      freq.mulAssign(2);
+      amp.mulAssign(0.5);
+    });
+    return sum;
+  });
+  const sampleFire = Fn2(([local]) => {
+    const st = vec22(sqrt2(dot2(local.xz, local.xz)), local.y).toVar();
+    const p2 = vec32(local).toVar();
+    p2.y.subAssign(seed2.add(time2).mul(0.42));
+    p2.assign(p2.mul(vec32(1.1, 2.1, 1.1)));
+    st.y.addAssign(sqrt2(st.y.max(0)).mul(1.24).mul(turbulence(p2)));
+    const outside = st.x.lessThanEqual(0).or(st.x.greaterThanEqual(1)).or(st.y.lessThanEqual(0)).or(st.y.greaterThanEqual(1));
+    return select2(outside, vec42(0), texture2(profile, st));
+  });
   const mat = new MeshBasicNodeMaterial({
     transparent: true,
     depthWrite: false,
+    depthTest: true,
     blending: AdditiveBlending,
-    side: DoubleSide,
+    side: BackSide,
     fog: false
   });
   mat.colorNode = Fn2(() => {
-    const uvN = uv2();
-    const n2 = fbm2(vec22(uvN.x.mul(3).add(uSeed.mul(17)), uvN.y.mul(4).sub(uT.mul(2.6))));
-    const n22 = fbm2(vec22(uvN.x.mul(7).sub(uSeed.mul(9)), uvN.y.mul(9).sub(uT.mul(4.1))));
-    const cx = uvN.x.sub(0.5).add(n2.sub(0.5).mul(0.35).mul(uvN.y));
-    const body = smoothstep3(0, uvN.y.mul(0.75).oneMinus().mul(0.42), abs2(cx)).oneMinus();
-    const tongue = smoothstep3(0.55, 1, uvN.y.add(n22.sub(0.5).mul(0.55))).oneMinus();
-    const f2 = clamp3(body.mul(tongue).mul(n22.mul(0.55).add(0.65)).mul(1.35), 0, 1);
-    const col = mix2(
-      mix2(vec32(0.55, 0.08, 0), vec32(1, 0.45, 0.05), smoothstep3(0.1, 0.55, f2)),
-      vec32(1, 0.92, 0.6),
-      smoothstep3(0.65, 1, f2)
-    );
-    return vec42(col.mul(n22.mul(0.5).add(0.8)), f2.mul(0.92));
+    const ray = vec32(positionWorld2).toVar();
+    const direction = normalize3(ray.sub(cameraPosition2));
+    const step3 = float2(0.045).mul(length2(modelScale2));
+    const color3 = vec42(0).toVar();
+    Loop2(12, () => {
+      ray.addAssign(direction.mul(step3));
+      const local = modelWorldMatrixInverse2.mul(vec42(ray, 1)).xyz.toVar();
+      local.x.mulAssign(2);
+      local.z.mulAssign(2);
+      color3.addAssign(sampleFire(local).mul(0.18));
+    });
+    return vec42(color3.rgb, clamp3(color3.a, 0, 0.94));
   })();
   _flameMat = mat;
   return mat;
@@ -85217,7 +85315,7 @@ function jetMaterial() {
   _jetMat = mat;
   return mat;
 }
-var hash22, noise2, fbm2, _flameMat, _m4, _pos, _scl, _IDENT_Q, FireFX, _jetMat, _xA, _yA, _zA, _nY, _toCam, _mBasis, FlameJetFX, BloodFX, SparkFX;
+var hash22, noise2, fbm2, _fireProfile, _flameMat, _m4, _pos, _scl, _IDENT_Q, FireFX, _jetMat, _xA, _yA, _zA, _nY, _toCam, _mBasis, FlameJetFX, BloodFX, SparkFX;
 var init_fx = __esm({
   "engine/fx.js"() {
     init_three_webgpu_module();
@@ -85243,6 +85341,7 @@ var init_fx = __esm({
       });
       return v2;
     });
+    _fireProfile = null;
     _flameMat = null;
     _m4 = new Matrix4();
     _pos = new Vector3();
@@ -85254,8 +85353,8 @@ var init_fx = __esm({
         this.pool = lightPool2;
         this.camera = null;
         this.fires = /* @__PURE__ */ new Map();
-        this._quadGeo = new PlaneGeometry(1, 1);
-        this._quadGeo.translate(0, 0.5, 0);
+        this._volumeGeo = new BoxGeometry(1, 1, 1);
+        this._volumeGeo.translate(0, 0.5, 0);
         this._scorchTex = _FireFX._makeScorchTex();
         this._spotTex = _FireFX._makeSpotTex();
         this._emberGeo = new PlaneGeometry(1, 1);
@@ -85310,18 +85409,12 @@ var init_fx = __esm({
       add(key, x2, z2, elev, scale2 = 1) {
         if (this.fires.has(key)) return;
         const group = new Group();
-        const cards = [];
-        for (let k2 = 0; k2 < 2; k2++) {
-          const card = new Mesh(this._quadGeo, flameMaterial());
-          card.userData.fireT = 0;
-          card.userData.fireSeed = (x2 * 7.3 + z2 * 3.1 + k2 * 13.7) % 10;
-          card.scale.set(1.15 * scale2, 1.7 * scale2, 1);
-          card.position.set(x2, elev + 0.02, z2);
-          card.rotation.y = k2 * Math.PI / 2;
-          card.renderOrder = 4;
-          group.add(card);
-          cards.push(card);
-        }
+        const volume = new Mesh(this._volumeGeo, flameMaterial());
+        volume.userData.fireSeed = Math.abs((x2 * 7.3 + z2 * 3.1) % 19.19);
+        volume.scale.set(1.55 * scale2, 2.25 * scale2, 1.55 * scale2);
+        volume.position.set(x2, elev + 0.02, z2);
+        volume.renderOrder = 4;
+        group.add(volume);
         const N3 = 26;
         const seeds = new Float32Array(N3);
         for (let i2 = 0; i2 < N3; i2++) seeds[i2] = i2 * 0.61803398 % 1;
@@ -85347,7 +85440,8 @@ var init_fx = __esm({
         this.scene.add(group);
         this.fires.set(key, {
           group,
-          cards,
+          volume,
+          scorch,
           embers,
           x: x2,
           z: z2,
@@ -85358,6 +85452,22 @@ var init_fx = __esm({
           lum: 5 * scale2
           // pooled guttering light
         });
+      }
+      // A live stream continually refines its contact point. Moving the pooled
+      // render object is cheap and, critically, keeps the visible pool on the same
+      // coordinates used by damage instead of freezing at its first frame.
+      move(key, x2, z2, elev, scale2 = 1) {
+        const f2 = this.fires.get(key);
+        if (!f2) return;
+        f2.x = x2;
+        f2.z = z2;
+        f2.elev = elev;
+        f2.scale = scale2;
+        f2.volume.position.set(x2, elev + 0.02, z2);
+        f2.volume.scale.set(1.55 * scale2, 2.25 * scale2, 1.55 * scale2);
+        f2.scorch.position.set(x2, elev + 0.012, z2);
+        f2.scorch.scale.setScalar(2.4 * scale2);
+        f2.embers.geometry.boundingSphere?.center.set(x2, elev + 2, z2);
       }
       remove(key) {
         const f2 = this.fires.get(key);
@@ -85392,12 +85502,6 @@ var init_fx = __esm({
           const vis = d2 <= 55 * 55 && (pElev === null || Math.abs(f2.elev - pElev) < 6.3);
           f2.group.visible = vis;
           if (!vis) continue;
-          const face = Math.atan2(px2 - f2.x, pz2 - f2.z);
-          for (let k2 = 0; k2 < f2.cards.length; k2++) {
-            const c2 = f2.cards[k2];
-            c2.userData.fireT = f2.t;
-            c2.rotation.y = face + (k2 === 0 ? 0 : Math.PI / 2);
-          }
           const q2 = this.camera?.quaternion ?? _IDENT_Q;
           _scl.setScalar(0.085 * f2.scale);
           for (let i2 = 0; i2 < f2.embers.count; i2++) {
@@ -93692,10 +93796,11 @@ function syncBurnFires() {
   for (let n2 = 0; n2 < sim.graph.n; n2++) {
     const key = `burn${n2}`;
     const burning = sim.graph.burningUntil[n2] > sim.t;
-    if (burning && !fire.fires.has(key)) {
+    if (burning) {
       const nd = sim.graph.node(n2);
       const [wx, wz] = world.simToWorld(sim.graph.burnX[n2], sim.graph.burnY[n2], nd.deck);
-      fire.add(key, wx, wz, elevOf(nd.deck), 1.2);
+      if (!fire.fires.has(key)) fire.add(key, wx, wz, elevOf(nd.deck), 1.2);
+      else fire.move(key, wx, wz, elevOf(nd.deck), 1.2);
     } else if (!burning && fire.fires.has(key)) fire.remove(key);
   }
 }
@@ -94591,7 +94696,8 @@ function meleeStrike() {
   audio.play("tick", null, 0.5, "tick", 40);
   return true;
 }
-function flameTick(dt) {
+function solveFlameAim() {
+  if (_flameAimSolution) return _flameAimSolution;
   camera.getWorldDirection(_fdir);
   const origin = camera.position;
   wallRay.set(origin, _fdir);
@@ -94599,19 +94705,45 @@ function flameTick(dt) {
   wallRay.near = 0.05;
   const hits = wallRay.intersectObjects(solidsForShot(), false);
   const reach = hits.length ? Math.max(0.6, hits[0].distance - 0.35) : FLAME.rangeM;
-  flamerMesh.updateWorldMatrix(true, false);
-  _fmuzzle.set(0, -0.01, 0.5).applyMatrix4(flamerMesh.matrixWorld);
-  _fend.copy(origin).addScaledVector(_fdir, reach);
   const cosLimit = Math.cos(FLAME.coneDeg * Math.PI / 180);
-  const burn = FLAME.dps * dt;
-  let anyHit = false;
+  const victims = [];
+  let target = null, targetT = Infinity;
   for (const a2 of shotCandidates()) {
     const [wx, wz] = world.simToWorld(a2.x, a2.y, a2.deck);
     const cy = elevOf(a2.deck) + (a2.faction === 3 ? 0.35 : a2.downed ? 0.35 : 0.9) + (a2.hoverY || 0);
     _fto.set(wx, cy, wz).sub(origin);
     const d2 = _fto.length();
-    if (d2 < 0.2 || d2 > reach) continue;
-    if (_fto.dot(_fdir) / d2 < cosLimit) continue;
+    const along = _fto.dot(_fdir);
+    if (d2 < 0.2 || d2 > reach || along <= 0 || along / d2 < cosLimit) continue;
+    victims.push(a2);
+    if (along < targetT) {
+      targetT = along;
+      target = a2;
+    }
+  }
+  let impactDeck = player.deck, impactNode, bx, by;
+  if (target) {
+    impactDeck = target.deck;
+    impactNode = target.pnode ?? target.node;
+    bx = target.x;
+    by = target.y;
+  } else {
+    _fend.copy(origin).addScaledVector(_fdir, reach);
+    [bx, by] = world.worldToSim(_fend.x, _fend.z, impactDeck);
+    impactNode = world.roomAt(impactDeck, bx, by, player.agent.node);
+  }
+  _flameAimSolution = { reach, cosLimit, victims, target, impactNode, bx, by };
+  return _flameAimSolution;
+}
+function flameTick(dt) {
+  const solution = solveFlameAim();
+  const { reach } = solution;
+  const origin = camera.position;
+  flamerMesh.updateWorldMatrix(true, false);
+  _fmuzzle.set(0, -0.01, 0.5).applyMatrix4(flamerMesh.matrixWorld);
+  const burn = FLAME.dps * dt;
+  let anyHit = false;
+  for (const a2 of solution.victims) {
     hurtFloodForm(sim, a2, burn, true, player.agent.id);
     anyHit = true;
   }
@@ -94623,7 +94755,7 @@ function flameTick(dt) {
     _fto.set(wx, elevOf(a2.deck) + 0.9, wz).sub(origin);
     const d2 = _fto.length();
     if (d2 < 0.2 || d2 > reach) continue;
-    if (_fto.dot(_fdir) / d2 < cosLimit) continue;
+    if (_fto.dot(_fdir) / d2 < solution.cosLimit) continue;
     sim.hurtHuman(a2, burn, player.agent.id);
   }
   for (const a2 of sim.agents) {
@@ -94633,12 +94765,11 @@ function flameTick(dt) {
     _fto.set(wx, elevOf(a2.deck) + 0.25, wz).sub(origin);
     const d2 = _fto.length();
     if (d2 < 0.2 || d2 > reach) continue;
-    if (_fto.dot(_fdir) / d2 < cosLimit) continue;
+    if (_fto.dot(_fdir) / d2 < solution.cosLimit) continue;
     a2.damage = Math.min(100, a2.damage + burn * 2);
     anyHit = true;
   }
-  const [bx, by] = world.worldToSim(_fend.x, _fend.z, player.deck);
-  sim.playerFlame(player.agent.node, bx, by);
+  sim.playerFlame(solution.impactNode, solution.bx, solution.by, player.agent.id);
   sim.gunfireAt(player.agent.node);
   if (anyHit) hitFlash = Math.max(hitFlash, 0.35);
   _flameJet = _flameJet ?? {};
@@ -95163,6 +95294,7 @@ function frame(now) {
     else if (ev.t === "dry") audio.play("clack", null, 0.4);
   }
   _flameJet = null;
+  _flameAimSolution = null;
   if (hasFlamer) {
     const fevents = [];
     flamer.step(dtReal, { fireHeld: triggerLive && heldIsFlamer }, fevents);
@@ -95228,6 +95360,10 @@ function frame(now) {
       _hudCache["xh:sp"] = sp;
       el("crosshair").style.setProperty("--sp", sp);
     }
+    const hot = heldIsFlamer && !spectating && !!solveFlameAim().target;
+    const xh = el("crosshair");
+    const cls = hot ? "hud flame-hot" : "hud";
+    if (xh.className !== cls) xh.className = cls;
   }
   if (isSimAuthority()) ticker.add(dtReal);
   else {
@@ -95631,7 +95767,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, PLAYER_SPAWN_ID, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, shipMarines0, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, _strengthHudAt, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, PLAYER_SPAWN_ID, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, shipMarines0, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, _strengthHudAt, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, _flameAimSolution, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -96827,6 +96963,7 @@ var init_main = __esm({
     _fend = new Vector3();
     _flameJet = null;
     _flameSeed = 1;
+    _flameAimSolution = null;
     liveFrags = [];
     fragGeo = new SphereGeometry(0.09, 8, 6);
     fragMat = new MeshStandardMaterial({ color: 3753018, roughness: 0.5, metalness: 0.6 });

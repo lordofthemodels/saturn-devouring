@@ -171,32 +171,28 @@ export function resolveCombat(sim, dt) {
       // and reaction delays, a form sharing a dark room no longer makes the
       // room sound like a range the instant it steps in
       let anyFire = false;
-      // flamethrower: a continuous stream — kills are permanent, the node burns
+      // Flamethrower: finite-range LOS weapon. The carrier no longer burns
+      // every target in a compartment from any distance; it closes through
+      // the steering layer until a real contact is inside the stream.
       const flamer = shooters.find((s) => s.flamer && s.fuel > 0);
-      const targets = [...combatForms, ...carriers].sort((a, b) => a.id - b.id);
+      const targets = flamer ? sim.lineOfSightAgents(flamer, (t) =>
+        (t.faction === FACTION.COMBAT && !t.downed)
+        || t.faction === FACTION.INFECTION || t.faction === FACTION.CARRIER,
+      P.flamethrower.rangeM).sort((a, b) => {
+        const ad = (a.x - flamer.x) ** 2 + (a.y - flamer.y) ** 2;
+        const bd = (b.x - flamer.x) ** 2 + (b.y - flamer.y) ** 2;
+        return ad - bd || a.id - b.id;
+      }) : [];
       if (flamer && targets.length) {
         anyFire = true;
         flamer.fuel = Math.max(0, flamer.fuel - P.flamethrower.fuelPerSec * dt);
-        // read BEFORE the write extends the timer — extending a live burn
-        // changes no passability predicate, so wiping the path cache (and
-        // with it every hive route memo) each streaming tick was pure
-        // thrash; playerFlame has carried this exact gate all along
-        const wasBurning = sim.graph.burningUntil[node] > sim.t;
-        sim.graph.burningUntil[node] = sim.t + P.flamethrower.burnNodeSec;
-        sim.graph.noteBurn(node);
-        // ...AND WHERE. The stream lands on what he is burning, not at the
-        // room's centroid. `targets` is already id-sorted, so the nearest of
-        // them is a deterministic pick with no roll behind it.
-        let aim = targets[0], aimD = Infinity;
-        for (const t of targets) {
-          const d2 = (t.x - flamer.x) ** 2 + (t.y - flamer.y) ** 2;
-          if (d2 < aimD - 1e-9) { aimD = d2; aim = t; }
-        }
-        sim.graph.burnX[node] = aim.x;
-        sim.graph.burnY[node] = aim.y;
+        const aim = targets[0];
+        const aimNode = aim.pnode ?? aim.node;
+        sim.igniteFlame(aimNode, aim.x, aim.y, `marine:${flamer.id}`, 1.0);
+        flamer.flameAimX = aim.x; flamer.flameAimY = aim.y;
+        flamer.flameAimDeck = sim.graph.node(aimNode).deck;
         // trigger down this tick — renderers hang the jet off it (see FLAMING)
         flamer.flamingT = sim.t;
-        if (!wasBurning) sim.graph.invalidatePathCache(); // burning nodes gate hive pathing
         let flamePool = P.flamethrower.dps * dt;
         for (const t of targets) {
           if (flamePool <= 0) break;
