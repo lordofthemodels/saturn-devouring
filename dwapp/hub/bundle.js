@@ -80499,7 +80499,7 @@ var init_world = __esm({
         return out;
       }
       // ---- sliding doors (user note): panels that open for ANY movement near
-      // them and close behind it; locked doors stay shut and read red ----
+      // them and close behind it; broken doors stay shut, scorched and buckled ----
       // COVER & CLUTTER (review P1): crates, consoles and tables sized to the
       // room's role, hugging the walls so the sim's center-of-room traffic stays
       // clear. Each prop is REAL: it blocks bullets (wallMeshes) and blocks the
@@ -93731,7 +93731,7 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
         1.9
       );
     } else {
-      for (const fixture of L2.fixtures) {
+      for (const fixture of L2.fixtures ?? [L2]) {
         lightPool.add(
           fixture.x,
           fixture.y - 1.25,
@@ -96078,10 +96078,6 @@ var init_main = __esm({
       const f2 = sim.fires[i2];
       const [fx2, fz2] = world.simToWorld(f2.x, f2.y, f2.deck);
       fire.add(`sim${i2}`, fx2, fz2, elevOf(f2.deck), f2.scale);
-    }
-    if (world.doorPanelsBad) {
-      world.doorPanelsBad.material.emissive.setHex(16733456);
-      world.doorPanelsBad.material.emissiveIntensity = 0.14;
     }
     sparks = new SparkFX(scene, lightPool);
     jets = new FlameJetFX(scene, lightPool);
