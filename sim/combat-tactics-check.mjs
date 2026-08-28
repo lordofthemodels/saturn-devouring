@@ -304,6 +304,52 @@ assert.equal(lockedShotForm.task.surge, true,
 assert.equal(lockedShotForm.path.at(-1)?.to, lockedShotDoor.b,
   'the wounded form must immediately route through the doorway toward its shooter');
 
+// A sticky attack target stabilizes pursuit, but cannot overrule the hive's
+// explicit decision to withdraw from superior fire. Previously assign()
+// rejected the retreat while retreatCombatForm still installed its route;
+// spatial combat then replaced that route with a charge every frame and the
+// form stood motionless under sustained fire.
+const lockedRetreatSim = new Sim('locked-target-retreat-check');
+for (const agent of lockedRetreatSim.agents) agent.dead = true;
+const lockedRetreatDoor = openEscapeDoor(lockedRetreatSim);
+assert.ok(lockedRetreatDoor, 'locked-retreat fixture needs a visible doorway and an escape');
+const distantTargetRoom = lockedRetreatSim.graph.nodes.find((node) =>
+  lockedRetreatSim.graph.hops(lockedRetreatDoor.a, node.idx, ['std'], (edge) => !edge.locked) >= 2)?.idx;
+assert.notEqual(distantTargetRoom, undefined, 'locked-retreat fixture needs a prior target beyond the contact');
+const lockedRetreatForm = makeAgent(FACTION.COMBAT, lockedRetreatDoor.a, lockedRetreatSim.graph);
+const lockedRetreatTarget = makeAgent(FACTION.MARINE, distantTargetRoom, lockedRetreatSim.graph);
+const retreatShooters = [0, 1].map(() =>
+  makeAgent(FACTION.MARINE, lockedRetreatDoor.b, lockedRetreatSim.graph));
+lockedRetreatSim.spawn(lockedRetreatForm);
+lockedRetreatSim.spawn(lockedRetreatTarget);
+for (const shooter of retreatShooters) lockedRetreatSim.spawn(shooter);
+lockedRetreatForm.task = { kind: TASK.ATTACK, node: distantTargetRoom,
+  targetId: lockedRetreatTarget.id, surge: true };
+lockedRetreatSim.tickCount = 1;
+lockedRetreatSim.t = lockedRetreatSim.dt;
+lockedRetreatSim._refreshOccupancy();
+lockedRetreatForm.lastHurtBy = retreatShooters[0].id;
+lockedRetreatForm.lastHurtTick = lockedRetreatSim.tickCount;
+lockedRetreatSim._spatialSteer(lockedRetreatForm, lockedRetreatSim.dt);
+assert.equal(lockedRetreatForm.task.retreat, true,
+  'a sticky target must release when the shared combat decision is retreat');
+assert.ok(lockedRetreatForm.path.length,
+  'the retreat decision must retain one coherent escape route');
+assert.notEqual(lockedRetreatForm.path[0].to, lockedRetreatDoor.b,
+  'the escape route must lead away from the shooters');
+lockedRetreatSim._advanceMovement(lockedRetreatSim.dt);
+assert.ok(lockedRetreatForm.move,
+  'a locked form that withdraws must begin moving instead of oscillating in place');
+const retreatLeg = lockedRetreatForm.move;
+lockedRetreatSim.tickCount++;
+lockedRetreatSim.t += lockedRetreatSim.dt;
+lockedRetreatSim._refreshOccupancy();
+lockedRetreatSim._advanceMovement(lockedRetreatSim.dt);
+assert.equal(lockedRetreatForm.move, retreatLeg,
+  'incoming fire must not replace an already viable retreat leg');
+assert.ok(lockedRetreatForm.move.t > 0,
+  'the retreat leg must continue making physical progress under fire');
+
 // One appendage being shot gives the whole visible pack one response. Every
 // member abandons its stale destination, pursues the shared nearest marine,
 // and keeps the charge multiplier through the intervening doorway.

@@ -2562,7 +2562,13 @@ export class Hive {
     // then returns null and the next response may allocate a replacement.
     const lockedTarget = form.faction === FACTION.COMBAT
       ? this.lockedCombatTarget(form) : null;
-    if (lockedTarget && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
+    // A lock prevents target churn only while the hive is still attacking.
+    // It must never veto the binary combat decision above: when the shared
+    // odds say withdraw, retaining ATTACK while retreatCombatForm installs an
+    // escape path gives movement two opposite authorities and they overwrite
+    // each other every tick, leaving the body stationary under fire.
+    if (lockedTarget && !task.retreat
+      && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
     // re-issuing the SAME task must not wipe the path or restart progress —
     // the strategic round re-assigns standing orders every 2.5 s, and the
     // clear-repath cycle read as agents stuttering mid-corridor (user note:
