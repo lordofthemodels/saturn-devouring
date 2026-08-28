@@ -84151,7 +84151,7 @@ var init_fps_data = __esm({
       rpm: 900,
       damage: 8,
       mag: 60,
-      reserve: 720,
+      reserve: 360,
       reloadS: 2.3,
       spreadBaseDeg: 1.35,
       spreadMaxDeg: 6.2,

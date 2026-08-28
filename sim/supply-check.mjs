@@ -8,7 +8,7 @@ const sim = new Sim('supply-check');
 const cic = sim.graph.byId.get('cic');
 const player = sim.attachPlayer(cic, { odst: true });
 
-assert.equal(MA5.reserve, 720, 'the player starts with twelve reserve magazines');
+assert.equal(MA5.reserve, 360, 'the player starts with six reserve magazines');
 
 assert.equal(sim.armorPacks.filter((pack) => pack.id >= 300 && pack.id < 400).length, 3,
   'one player keeps three armory armor packs');
