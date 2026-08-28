@@ -71797,8 +71797,16 @@ function updateMarineTick(sim2, a2, dt) {
       const guardPass = squad.deckGuard ? deckOnePass(sim2) : humanPass;
       let ok = sim2.setPathTo(a2, target, ["std"], guardPass);
       if (!ok && !squad.deckGuard) ok = sim2.setPathTo(a2, target, ["std"], marinePass);
-      if (!ok) squad.objective = null;
-      else a2.state = STATE.MOVE;
+      if (ok) {
+        a2.state = STATE.MOVE;
+      } else {
+        const leader = squad.members.map((id) => sim2.byId.get(id)).find((member) => member && !member.dead && member.hp > 0);
+        if (leader?.id !== a2.id) {
+          if (leader && a2.node !== leader.node && sim2.setPathTo(a2, leader.node, ["std"], guardPass)) a2.state = STATE.MOVE;
+        } else {
+          releaseUnreachableObjective(sim2, squad);
+        }
+      }
     }
   }
   if (a2.flamer && a2.fuel > 0 && sim2.floodKnown && sim2.floodStrengthAt(a2.node) === 0) {
@@ -71844,6 +71852,31 @@ function setPursuitObjective(squad, node, targetId) {
     squad.pursuitResume = squad.objective;
   }
   squad.objective = { kind: "pursuit", node, targetId };
+}
+function releaseUnreachableObjective(sim2, squad) {
+  const kind = squad.objective?.kind;
+  if (kind === "motion") {
+    squad.objective = squad.radarResume ?? null;
+    squad.radarResume = null;
+    squad.radarSeenTick = void 0;
+    squad.radarCooldownUntil = sim2.t + sim2.P.marineDoctrine.radarCooldownSec;
+    return;
+  }
+  if (kind === "pursuit") {
+    endPursuit(squad);
+  } else {
+    squad.objective = null;
+  }
+  if (kind === "distress") squad.respondingTo = null;
+}
+function endPursuit(squad) {
+  squad.objective = squad.pursuitResume ?? null;
+  squad.pursuitResume = void 0;
+  squad.pursuitNode = void 0;
+  squad.pursuitTargetId = void 0;
+  squad.pursuitTick = void 0;
+  squad.contactNode = void 0;
+  squad.contactTick = void 0;
 }
 function securingCrash(sim2, squad) {
   return squad.phase1 && squad.reachedBreachAt !== void 0 && sim2.t - squad.reachedBreachAt < sim2.P.marineDoctrine.crashSecureSec;
@@ -71971,8 +72004,8 @@ function strategicSquads(sim2) {
     }
     if (applyMotionRadar(sim2, squad, leader, members)) continue;
     const objNode = squad.objective?.node;
-    const arrived = objNode !== void 0 && members.every((m2) => m2.node === objNode || sim2.graph.hops(m2.node, objNode, ["std"], marinePass) <= 1);
-    const clear = objNode !== void 0 && sim2.visibleNodes(objNode).every((n2) => sim2.floodStrengthAt(n2) === 0);
+    const arrived = objNode !== void 0 && leader.node === objNode && !leader.move;
+    const clear = objNode !== void 0 && members.every((member) => floodThreatVisible(sim2, member) === 0);
     if (!squad.objective || arrived && clear) {
       if (squad.objective?.kind === "breach") {
         const secureAt = (squad.reachedBreachAt ?? sim2.t) + P2.marineDoctrine.crashSecureSec;
@@ -71984,13 +72017,7 @@ function strategicSquads(sim2) {
         squad.phase1 = false;
         squad.objective = null;
       } else if (squad.objective?.kind === "pursuit") {
-        squad.objective = squad.pursuitResume ?? null;
-        squad.pursuitResume = void 0;
-        squad.pursuitNode = void 0;
-        squad.pursuitTargetId = void 0;
-        squad.pursuitTick = void 0;
-        squad.contactNode = void 0;
-        squad.contactTick = void 0;
+        endPursuit(squad);
         if (squad.objective) continue;
       }
       if (sim2.firstSweepCleared) {
@@ -72008,7 +72035,7 @@ function deckGuardPlan(sim2, squad, leader) {
   if (squad.objective?.kind === "distress") {
     const call3 = sim2.calls.find((entry) => entry.id === squad.objective.callId);
     const arrived = (leader.pnode ?? leader.node) === squad.objective.node;
-    const clear = sim2.visibleNodes(squad.objective.node).every((node) => sim2.floodStrengthAt(node) === 0);
+    const clear = floodThreatVisible(sim2, leader) === 0;
     const active2 = call3 && sim2.t - call3.t <= P2.radio.callFadeSec && sim2.graph.node(call3.node).deck === 1;
     if (active2 && (!arrived || !clear)) return;
     squad.respondingTo = null;
@@ -72048,6 +72075,13 @@ function patrolPlan(sim2, squad, leader) {
     return;
   }
   if (squad.order && applySquadOrder(sim2, squad, leader)) return;
+  const members = squad.members.map((id) => sim2.byId.get(id)).filter((member) => member && !member.dead && member.hp > 0);
+  if (squad.objective?.kind === "pursuit") {
+    const arrived = leader.node === squad.objective.node && !leader.move;
+    const clear = members.every((member) => floodThreatVisible(sim2, member) === 0);
+    if (!arrived || !clear) return;
+    endPursuit(squad);
+  }
   const callPolicy = squad.callPolicy ?? "auto";
   for (const call3 of callPolicy === "ignore" ? [] : sim2.calls) {
     if (sim2.t - call3.t > P2.radio.callFadeSec) continue;
@@ -72065,20 +72099,28 @@ function patrolPlan(sim2, squad, leader) {
       sim2.log("radio", `patrol ${squad.patrolNo} responding to distress in ${sim2.graph.node(call3.node).name}`);
     }
   }
-  const members = squad.members.map((id) => sim2.byId.get(id)).filter((member) => member && !member.dead && member.hp > 0);
   if (applyMotionRadar(sim2, squad, leader, members)) return;
   if (squad.objective?.kind === "distress") {
     const objNode = squad.objective.node;
-    const clear = sim2.visibleNodes(objNode).every((n2) => sim2.floodStrengthAt(n2) === 0);
+    const clear = members.every((member) => floodThreatVisible(sim2, member) === 0);
     if (leader.node === objNode && clear) {
       squad.objective = null;
       squad.respondingTo = null;
     } else return;
   }
-  if (leader.node === squad.route[squad.leg] && !leader.move && !leader.path.length) {
+  if (squad.objective?.kind === "patrol" && leader.node !== squad.objective.node && sim2.pathFor(leader, squad.objective.node, ["std"], marinePass)) return;
+  if (leader.node === squad.route[squad.leg]) squad.leg = (squad.leg + 1) % squad.route.length;
+  let target = -1;
+  for (let tries = 0; tries < squad.route.length; tries++) {
+    const candidate = squad.route[squad.leg];
+    if (candidate !== leader.node && sim2.pathFor(leader, candidate, ["std"], marinePass)) {
+      target = candidate;
+      break;
+    }
     squad.leg = (squad.leg + 1) % squad.route.length;
   }
-  squad.objective = { kind: "patrol", node: squad.route[squad.leg] };
+  if (target === -1) target = pickSweepTarget(sim2, leader);
+  squad.objective = target === -1 ? { kind: "hold", node: leader.node } : { kind: "patrol", node: target };
 }
 function applyMotionRadar(sim2, squad, leader, members) {
   if (squad.objective?.kind === "motion") {
@@ -72105,7 +72147,7 @@ function applyMotionRadar(sim2, squad, leader, members) {
   }
   if (best) {
     squad.radarResume = squad.objective;
-    const hold = best.score > members.length;
+    const hold = best.score > members.length || sim2.fogAt(best.node);
     squad.objective = {
       kind: "motion",
       node: hold ? leader.pnode ?? leader.node : best.node,
@@ -72155,8 +72197,9 @@ function pickSweepTarget(sim2, leader) {
     if (n2.type === "corridor" || n2.idx === leader.node) continue;
     if (n2.roles.includes("command")) continue;
     const staleness = sim2.t - sim2.sweptAt[n2.idx];
-    const d2 = g2.hops(leader.node, n2.idx, ["std"], marinePass);
-    if (d2 === -1) continue;
+    const path = sim2.pathFor(leader, n2.idx, ["std"], marinePass);
+    if (!path) continue;
+    const d2 = path.length;
     const breachDist = g2.hops(n2.idx, g2.breachNode, ["std"], marinePass);
     const score = d2 * 0.5 + (breachDist === -1 ? 8 : breachDist) * 0.9 - (n2.deck >= 4 ? 2.5 : 0) - Math.min(staleness, 300) * 0.01;
     const occupiedPenalty = taken.has(n2.idx) ? 100 : 0;
@@ -76394,12 +76437,16 @@ var init_sim = __esm({
         a2.path = norm2;
         return true;
       }
-      setPathTo(a2, target, layers, passFn) {
+      pathFor(a2, target, layers, passFn) {
         let pf = passFn;
         if (a2.faction === FACTION.MARINE && !a2.odst && !a2.escort) {
-          pf = (l2, from, to) => (!passFn || passFn(l2, from, to)) && !this.fogAt(to);
+          const escapingFog = this.fogAt(a2.node) && !this.fogAt(target);
+          pf = (l2, from, to) => (!passFn || passFn(l2, from, to)) && (escapingFog || !this.fogAt(from));
         }
-        const path = this.graph.path(a2.node, target, layers, pf);
+        return this.graph.path(a2.node, target, layers, pf);
+      }
+      setPathTo(a2, target, layers, passFn) {
+        const path = this.pathFor(a2, target, layers, passFn);
         if (!path) return false;
         a2.path = path;
         return true;
