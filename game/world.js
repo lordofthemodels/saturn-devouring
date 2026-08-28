@@ -73,6 +73,25 @@ export function armoryStations(room) {
   };
 }
 
+// One source of truth for both the visible ceiling strips and their pooled
+// light. Large compartments need several fixtures; previously only the light
+// points multiplied, leaving unexplained pools of illumination on the deck.
+export function roomLightFixtureLayout(room) {
+  const longSpan = Math.max(room.w, room.d);
+  const count = longSpan > 30 ? 3 : longSpan > 14 ? 2 : 1;
+  const alongX = room.w >= room.d;
+  const spacing = longSpan / (count + (count > 1 ? 0.2 : 1));
+  return Array.from({ length: count }, (_, index) => {
+    const offset = count === 1 ? 0 : (index - (count - 1) / 2) * spacing;
+    return {
+      dx: alongX ? offset : 0,
+      dz: alongX ? 0 : offset,
+      ry: alongX ? 0 : Math.PI / 2,
+      length: Math.min(3.4, longSpan * 0.55),
+    };
+  });
+}
+
 function segDist2(px, py, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
   const L2 = vx * vx + vy * vy;
@@ -615,8 +634,10 @@ export class World {
       for (const e of g.edges) {
         if (e.door && g.node(e.a).deck === g.node(e.b).deck) lampCap += 2;
       }
+      const stripCap = g.nodes.reduce((total, room) =>
+        total + roomLightFixtureLayout(room).length, 0);
       this._strips = new InstancedEmissiveFixtures({
-        geometry: new THREE.BoxGeometry(1, 0.07, 0.55), capacity: g.nodes.length,
+        geometry: new THREE.BoxGeometry(1, 0.07, 0.55), capacity: stripCap,
         color: 0x8fa4c8, emissive: 0xbfd8ff, gain: 1.25, roughness: 0.4, metalness: 0.3,
       });
       this._lamps = new InstancedEmissiveFixtures({
@@ -672,15 +693,20 @@ export class World {
       // costs the marines their aim (combat.js fixture-state penalties)
       {
         const mode = ['steady', 'soft', 'harsh', 'dead'][g.lightMode[n.idx]];
-        // per-room width bakes into the instance scale (the base box is 1 m)
-        const stripIdx = this._strips.place(wx, elev + roomH - 0.06, wz, {
-          sx: Math.min(3.4, n.w * 0.55),
-          // dead fixtures glow at 0.04/1.25 of gain; live ones start at full
-          level: mode === 'dead' ? 0.04 / 1.25 : 1,
-        });
+        const fixtureY = elev + roomH - 0.06;
+        const fixtures = roomLightFixtureLayout(n).map((slot) => ({
+          x: wx + slot.dx,
+          y: fixtureY,
+          z: wz + slot.dz,
+          stripIdx: this._strips.place(wx + slot.dx, fixtureY, wz + slot.dz, {
+            sx: slot.length, ry: slot.ry,
+            // dead fixtures glow at 0.04/1.25 of gain; live ones start at full
+            level: mode === 'dead' ? 0.04 / 1.25 : 1,
+          }),
+        }));
         this.roomLights[n.idx] = {
-          stripIdx, mode, phase: this._fxRng.range(0, 20), lvl: mode === 'dead' ? 0.04 : 1,
-          x: wx, y: elev + roomH - 0.06, z: wz, // fixture world position (light pool)
+          fixtures, mode, phase: this._fxRng.range(0, 20), lvl: mode === 'dead' ? 0.04 : 1,
+          x: wx, y: fixtureY, z: wz, // room center for proximity culling
         };
         // EMERGENCY LUMINAIRES (user rule: it's a DEAD SHIP on secondary
         // power — every room carries discrete emergency fixtures, not an
@@ -1834,7 +1860,8 @@ export class World {
       // levels are in GAIN units (emissive = level * 1.25). L.lvl stays the
       // raw intensity for the light pool / lightLevel consumers; dead rooms
       // write 0.04/1.25 so the fixture glows at exactly the old 0.04.
-      this._strips.setLevel(L.stripIdx, L.mode === 'dead' ? 0.04 / 1.25 : L.lvl);
+      const fixtureLevel = L.mode === 'dead' ? 0.04 / 1.25 : L.lvl;
+      for (const fixture of L.fixtures) this._strips.setLevel(fixture.stripIdx, fixtureLevel);
     }
     this._strips.commit();
   }
@@ -1871,7 +1898,10 @@ export class World {
       // an overgrown room's fixture dies with it — and its sign fades into
       // the dark instead of glowing through the murk
       const L = this.roomLights[n];
-      if (L && sim.darkAt(n)) { L.lvl = 0.02; this._strips.setLevel(L.stripIdx, 0.02 / 1.25); } // gain units: old raw 0.02
+      if (L && sim.darkAt(n)) {
+        L.lvl = 0.02;
+        for (const fixture of L.fixtures) this._strips.setLevel(fixture.stripIdx, 0.02 / 1.25);
+      }
       // even the battery lamps die when the growth takes the room
       if (L?.emSlots) {
         const lv = sim.darkAt(n) ? 0.04 : 2.4;

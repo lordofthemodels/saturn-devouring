@@ -79273,6 +79273,21 @@ function armoryStations(room) {
     flamer: { x: room.x + room.w / 2 - 1.1, y: room.y + room.d / 2 - 1.1 }
   };
 }
+function roomLightFixtureLayout(room) {
+  const longSpan = Math.max(room.w, room.d);
+  const count = longSpan > 30 ? 3 : longSpan > 14 ? 2 : 1;
+  const alongX = room.w >= room.d;
+  const spacing = longSpan / (count + (count > 1 ? 0.2 : 1));
+  return Array.from({ length: count }, (_2, index) => {
+    const offset = count === 1 ? 0 : (index - (count - 1) / 2) * spacing;
+    return {
+      dx: alongX ? offset : 0,
+      dz: alongX ? 0 : offset,
+      ry: alongX ? 0 : Math.PI / 2,
+      length: Math.min(3.4, longSpan * 0.55)
+    };
+  });
+}
 function segDist2(px2, py2, ax, ay, bx, by) {
   const vx = bx - ax, vy = by - ay;
   const L2 = vx * vx + vy * vy;
@@ -79793,9 +79808,10 @@ var init_world = __esm({
           for (const e2 of g2.edges) {
             if (e2.door && g2.node(e2.a).deck === g2.node(e2.b).deck) lampCap += 2;
           }
+          const stripCap = g2.nodes.reduce((total, room) => total + roomLightFixtureLayout(room).length, 0);
           this._strips = new InstancedEmissiveFixtures({
             geometry: new BoxGeometry(1, 0.07, 0.55),
-            capacity: g2.nodes.length,
+            capacity: stripCap,
             color: 9413832,
             emissive: 12572927,
             gain: 1.25,
@@ -79854,20 +79870,27 @@ var init_world = __esm({
           }
           {
             const mode = ["steady", "soft", "harsh", "dead"][g2.lightMode[n2.idx]];
-            const stripIdx = this._strips.place(wx, elev + roomH - 0.06, wz, {
-              sx: Math.min(3.4, n2.w * 0.55),
-              // dead fixtures glow at 0.04/1.25 of gain; live ones start at full
-              level: mode === "dead" ? 0.04 / 1.25 : 1
-            });
+            const fixtureY = elev + roomH - 0.06;
+            const fixtures = roomLightFixtureLayout(n2).map((slot) => ({
+              x: wx + slot.dx,
+              y: fixtureY,
+              z: wz + slot.dz,
+              stripIdx: this._strips.place(wx + slot.dx, fixtureY, wz + slot.dz, {
+                sx: slot.length,
+                ry: slot.ry,
+                // dead fixtures glow at 0.04/1.25 of gain; live ones start at full
+                level: mode === "dead" ? 0.04 / 1.25 : 1
+              })
+            }));
             this.roomLights[n2.idx] = {
-              stripIdx,
+              fixtures,
               mode,
               phase: this._fxRng.range(0, 20),
               lvl: mode === "dead" ? 0.04 : 1,
               x: wx,
-              y: elev + roomH - 0.06,
+              y: fixtureY,
               z: wz
-              // fixture world position (light pool)
+              // room center for proximity culling
             };
             {
               let anchor = null;
@@ -80950,7 +80973,8 @@ var init_world = __esm({
             const s2 = Math.sin(t2 * 13 + L2.phase) * Math.sin(t2 * 7.3 + L2.phase * 1.7);
             L2.lvl = s2 > -0.25 ? 0.55 + 0.45 * Math.abs(s2) : 0.05;
           }
-          this._strips.setLevel(L2.stripIdx, L2.mode === "dead" ? 0.04 / 1.25 : L2.lvl);
+          const fixtureLevel = L2.mode === "dead" ? 0.04 / 1.25 : L2.lvl;
+          for (const fixture of L2.fixtures) this._strips.setLevel(fixture.stripIdx, fixtureLevel);
         }
         this._strips.commit();
       }
@@ -80973,7 +80997,7 @@ var init_world = __esm({
           const L2 = this.roomLights[n2];
           if (L2 && sim2.darkAt(n2)) {
             L2.lvl = 0.02;
-            this._strips.setLevel(L2.stripIdx, 0.02 / 1.25);
+            for (const fixture of L2.fixtures) this._strips.setLevel(fixture.stripIdx, 0.02 / 1.25);
           }
           if (L2?.emSlots) {
             const lv = sim2.darkAt(n2) ? 0.04 : 2.4;
@@ -93707,17 +93731,11 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
         1.9
       );
     } else {
-      const nd2 = sim.graph.node(n2);
-      const longSpan = Math.max(nd2.w, nd2.d);
-      const nFix = longSpan > 30 ? 3 : longSpan > 14 ? 2 : 1;
-      const alongX = nd2.w >= nd2.d;
-      const stepW = longSpan / (nFix + (nFix > 1 ? 0.2 : 1));
-      for (let f2 = 0; f2 < nFix; f2++) {
-        const off = nFix === 1 ? 0 : (f2 - (nFix - 1) / 2) * stepW;
+      for (const fixture of L2.fixtures) {
         lightPool.add(
-          L2.x + (alongX ? off : 0),
-          L2.y - 1.25,
-          L2.z + (alongX ? 0 : off),
+          fixture.x,
+          fixture.y - 1.25,
+          fixture.z,
           12571890,
           L2.mode === "steady" ? 6 : 6.4 * L2.lvl,
           19 * leak,

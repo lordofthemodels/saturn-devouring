@@ -968,25 +968,16 @@ function updateRoomLightPool(inDark, pnode, pDeck, pX, pZ) {
       lightPool.add(L.em.x, L.em.y, L.em.z, 0xff4030,
         2.6 + Math.sin(performance.now() * 0.0011 + L.phase) * 0.5, 11 * leak, 1.9);
     } else {
-      // hung WELL below the plating: the throw pools on the deck and walls
-      // while the ceiling above stays near-black (user: bright ceilings
-      // ruin the darkness — light the room, not the overhead). LONG rooms
-      // (corridors, holds) emit up to three fixtures spaced down the long
-      // axis — one center light left 40m corridor ends pitch black even
-      // with the mains up (user: pitch-black regression).
-      const nd = sim.graph.node(n);
-      const longSpan = Math.max(nd.w, nd.d);
-      const nFix = longSpan > 30 ? 3 : longSpan > 14 ? 2 : 1;
-      const alongX = nd.w >= nd.d;
-      const stepW = longSpan / (nFix + (nFix > 1 ? 0.2 : 1));
-      for (let f = 0; f < nFix; f++) {
-        const off = nFix === 1 ? 0 : (f - (nFix - 1) / 2) * stepW;
+      // Hung WELL below each visible strip: the throw pools on the deck and
+      // walls while the ceiling above stays near-black. The renderer owns the
+      // fixture layout, so a source can never exist without matching hardware.
+      for (const fixture of L.fixtures) {
         // A ceiling strip is an AREA source. Approximating it with a compact
         // inverse-square point made anyone directly beneath it clip white,
         // while the rest of the room stayed dark. The softer curve and lower
         // candela keep the same level at 4 m, halve the near-field hotspot,
         // and spread the fixture more evenly across the compartment.
-        lightPool.add(L.x + (alongX ? off : 0), L.y - 1.25, L.z + (alongX ? 0 : off),
+        lightPool.add(fixture.x, fixture.y - 1.25, fixture.z,
           0xbfd4f2, L.mode === 'steady' ? 6 : 6.4 * L.lvl, 19 * leak, 1.3);
       }
     }
