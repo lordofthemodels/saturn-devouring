@@ -69232,7 +69232,9 @@ var init_params = __esm({
         //  armed officers, and lower-deck maintenance crew.)
         civilianCallReliability: 0.35,
         // PLACEHOLDER
-        callFadeSec: 60
+        callFadeSec: 60,
+        deckSightingDedupeSec: 3
+        // one Deck 1 net report per contact area, not one per sentry
       },
       rampage: {
         threshold: 1.5,
@@ -71572,6 +71574,24 @@ function nearestFloodDist(sim2, a2) {
   }
   return best;
 }
+function nearestVisibleFlood(sim2, a2) {
+  let best = null, bestDistance = Infinity;
+  for (const form of visibleFloodForms(sim2, a2)) {
+    const distance3 = Math.hypot(form.x - a2.x, form.y - a2.y);
+    if (distance3 < bestDistance) {
+      best = form;
+      bestDistance = distance3;
+    }
+  }
+  return best;
+}
+function reportDeckSighting(sim2, a2, contact) {
+  const contactNode = contact ? contact.pnode ?? contact.node : void 0;
+  if (contactNode !== void 0 && contactNode !== a2.deckContactNode && a2.hasRadio) {
+    sim2.emitCall(a2, { node: contactNode, deckSighting: true });
+  }
+  a2.deckContactNode = contactNode;
+}
 function updateArmed(sim2, a2, dt) {
   const P2 = sim2.P;
   const threat = floodThreatVisible(sim2, a2);
@@ -71655,10 +71675,11 @@ function maybeThrowFrag(sim2, a2, dt) {
 function updateMarineTick(sim2, a2, dt) {
   const P2 = sim2.P;
   if (a2.garrison && !a2.deckGuard) {
-    a2.state = sim2.losFloodThreat(a2) > 0 ? STATE.FIGHT : STATE.IDLE;
+    const contact = nearestVisibleFlood(sim2, a2);
+    a2.state = contact ? STATE.FIGHT : STATE.IDLE;
     a2.path = [];
     a2.move = null;
-    if (a2.state === STATE.FIGHT && a2.hasRadio && sim2.tickCount % 60 === 0) sim2.emitCall(a2);
+    reportDeckSighting(sim2, a2, contact);
     return;
   }
   if (a2.odst && sim2.armoryLocked) {
@@ -71689,10 +71710,14 @@ function updateMarineTick(sim2, a2, dt) {
       squad.pursuitTick = sim2.tickCount;
     }
     sim2.floodKnown = true;
-    if (a2.hasRadio && !squad.calledContact) {
+    if (squad.deckGuard) {
+      reportDeckSighting(sim2, a2, contact);
+    } else if (a2.hasRadio && !squad.calledContact) {
       squad.calledContact = true;
       if (sim2.rng.chance(sim2.P.radio.marineCallReliability)) sim2.emitCall(a2);
     }
+  } else if (squad.deckGuard) {
+    reportDeckSighting(sim2, a2, null);
   }
   if (threat > 0) {
     a2.state = STATE.FIGHT;
@@ -72008,7 +72033,10 @@ function deckGuardPlan(sim2, squad, leader) {
     squad.objective = { kind: "distress", node: call3.node, callId: call3.id };
     squad.respondingTo = call3.id;
     leader.path = [];
-    sim2.log("radio", `Deck 1 sentry responding to distress in ${sim2.graph.node(call3.node).name}`);
+    if (nearest[0]?.id === squad.id) {
+      const noun = nearest.length === 1 ? "sentry" : "sentries";
+      sim2.log("radio", `Deck 1 net redirects ${nearest.length} ${noun} to ${sim2.graph.node(call3.node).name}`, call3.node);
+    }
     return;
   }
   squad.objective = { kind: "guard", node: squad.postNode };
@@ -76155,12 +76183,28 @@ var init_sim = __esm({
         a2.hp = a2.maxHp = Math.max(a2.hp, this.P.combat.armed.hp);
         this.log("combat", corpse ? "the survivor takes a rifle from the dead (you)" : `the survivor arms up at the armory (you — ${this.armoryStock} rifles left)`);
       }
-      emitCall(agent) {
-        const call3 = { id: this.callSeq++, node: agent.node, t: this.t, faction: agent.faction, byId: agent.id, rolled: /* @__PURE__ */ new Set() };
+      emitCall(agent, { node = agent.node, deckSighting = false } = {}) {
+        if (deckSighting) {
+          for (let i2 = this.calls.length - 1; i2 >= 0; i2--) {
+            const prior = this.calls[i2];
+            if (this.t - prior.t > this.P.radio.deckSightingDedupeSec) break;
+            if (prior.deckSighting && prior.node === node) return prior;
+          }
+        }
+        const call3 = {
+          id: this.callSeq++,
+          node,
+          t: this.t,
+          faction: agent.faction,
+          byId: agent.id,
+          rolled: /* @__PURE__ */ new Set(),
+          deckSighting
+        };
         this.calls.push(call3);
         this.stats.distressCalls++;
         this.floodKnown = true;
-        this.log("radio", `distress call from ${this.graph.node(agent.node).name}`, agent.node);
+        this.log("radio", `distress call from ${this.graph.node(node).name}`, node);
+        return call3;
       }
       // `x`/`y` are the EXACT sim-space spot the event happened at, when the
       // caller knows it. Renderers stamp physical marks (blood) there instead of
@@ -93668,6 +93712,29 @@ function setStyle(id, prop, v2) {
     el(id).style[prop] = v2;
   }
 }
+function updateStrengthHud(now) {
+  if (now - _strengthHudAt < 250) return;
+  _strengthHudAt = now;
+  let infectionMass = 0, marinesAlive = 0;
+  for (const a2 of sim.agents) {
+    if (a2.dead || a2.hp <= 0) continue;
+    if (a2.faction === FACTION.INFECTION && !a2.downed) infectionMass++;
+    else if (a2.faction === FACTION.COMBAT && !a2.downed) infectionMass += 2;
+    else if (a2.faction === FACTION.CARRIER) infectionMass += 2;
+    else if (a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer) marinesAlive++;
+  }
+  const infectionScale = Math.max(1, sim.P.carrier.productionBackpressure);
+  setStyle(
+    "infectionStrengthBar",
+    "transform",
+    `scaleX(${Math.min(1, infectionMass / infectionScale).toFixed(3)})`
+  );
+  setStyle(
+    "shipStrengthBar",
+    "transform",
+    `scaleX(${Math.min(1, marinesAlive / Math.max(1, shipMarines0)).toFixed(3)})`
+  );
+}
 function dismissIntro() {
   governor.cancelPrewarm();
   introGone = true;
@@ -93955,6 +94022,17 @@ function gameLogView(e2) {
       }
       if (msg.includes("souls heard the call") || msg.includes("stragglers")) {
         return rx(e2, { deck: 1 }, msg, { spk: "CIC" });
+      }
+      {
+        const d1 = msg.match(/^Deck 1 net redirects (\d+) sentr(?:y|ies) to (.+)$/);
+        if (d1) {
+          return rx(
+            e2,
+            { deck: 1, callsign: null },
+            `${d1[1]} sentries moving to ${d1[2]}`,
+            { spk: "D1 NET" }
+          );
+        }
       }
       if (msg.includes("missed a distress call")) return null;
       if (msg.includes("word of the outbreak")) return null;
@@ -95282,9 +95360,12 @@ function frame(now) {
   setText("room", room ? room.name : "—");
   setText("deckLabel", `DECK ${povAgent.deck}`);
   const hp = Math.max(0, Math.ceil(povAgent.hp));
-  setStyle("healthBar", "width", `${spectating ? hp / (povAgent.maxHp || 1) * 100 : hp / 45 * 100}%`);
-  setStyle("armorBar", "width", `${spectating ? 0 : player.armor / 50 * 100}%`);
-  setText("hpText", spectating ? "" : `${Math.ceil(player.armor)} | ${hp}`);
+  setStyle("healthBar", "transform", `scaleX(${Math.max(0, Math.min(
+    1,
+    hp / (povAgent.maxHp || 1)
+  )).toFixed(3)})`);
+  setStyle("armorBar", "transform", `scaleX(${spectating ? 0 : Math.max(0, Math.min(1, player.armor / sim.P.player.armor)).toFixed(3)})`);
+  updateStrengthHud(now);
   setText("ammo", spectating ? "" : heldIsFlamer ? flamer.empty ? "TANK DRY" : `FUEL ${Math.ceil(flamer.frac * 100)}%` : weapon.reloading ? "RELOADING" : `${weapon.mag} / ${weapon.reserve}`);
   setText("frags", spectating ? "" : `FRAGS ${frags}`);
   setText("weaponName", spectating ? "" : `${heldIsFlamer ? "FLAMETHROWER" : MA5.name}${hasFlamer ? inputPrompt(" · Q / WHEEL SWAP", " · Y SWAP") : ""}`);
@@ -95487,7 +95568,7 @@ async function pulseAgentKey(code3, duration = 120) {
     player.keys.delete(code3);
   }
 }
-var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, PLAYER_SPAWN_ID, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
+var canvas, gamepad, inputMode, refreshInputModeCopy, inputPrompt, QP, HD, QTIER, renderer, _fatalShown, _renderFails, _renderStopped, scene, camera, post, lightPool, TEAM_TORCH_HEX, TEAM_TORCH_CD, teamTorches, teamSpotN, hemi, ambient, _fillX, _fillY, _fillZ, _fillI, torch, torchTarget, _torchRifleBase, _torchRifleTip, _torchRifleDirection, torchSpill, gunFill, _torchDir, fixedShadowSize, LAUNCH, seedFromUrl, seed, coopPlayers, PLAYER_SPAWN_ID, sim, briefing, world, sporeFX, agents, cic, networkPlayers, networkSquads, bodyFor, player, physics, fireteam, shipMarines0, gameSync, isSimAuthority, voiceMuted, voiceActive, voiceBlocked, gameVoice, marineMap, mapDeckButtons, mapOpen, audio, audioGate, ensureTrustedAudio, soundBoard, audioLog, floodHud, fire, blood, sparks, jets, motes, _moteM4, _moteV, _moteS, _shadowAt, RUNGS, PIXEL_BUDGET, rung, governor, applyRung, weapon, FLAME, flamer, hasFlamer, heldIsFlamer, SWAP_HINT_MS, swapHintAt, healFlash, medkitMeshes, armorPackMeshes, grenadeDropMeshes, grenadeDropGeo, grenadeDropMat, rifleMesh, viewmodel, flamerMesh, flamerModel, BUTT, muzzleFlash, wallSpark, wallRay, el, _hudCache, _strengthHudAt, overlay, intro, introHint, introScroll, introGone, afterlifeBody, livingTeammate, ended, KEYBOARD_CONTROLS, CONTROLLER_CONTROLS, VICTORY_RANKS, playerFellAt, lastEvent, _ominousAt, HUMAN_F, spkName, VOICES, say, _firstContacts, _npDir, _npVec, _npRay, _npSticky, _npAt, _npBest, MATE_COLORS, mates, commsRows, _commsAt, _mateVec, canvasW, canvasH, _vpW, _vpH, fireHeld, gamepadFireHeld, reloadPressed, meleePressed, gamepadPaused, gamepadMapNavX, gamepadOverlayNav, fragPressed, frags, _swapAt, _dryNear, _dryNearAt, _dir, _rt, _up, _hit, _shotSolids, bodyRadius, _mdir, _mto, _mray, _fdir, _fto, _fmuzzle, _fend, _flameJet, _flameSeed, liveFrags, fragGeo, fragMat, boomLight, shake, hitFlash, dmgFlash, damageTint, dmgAngle, lastPlayerHurtTick, lastPlayerArmor, lastPlayerHp, fragRay, _fragMove, _fragNormal, _fragVelocity, trk, trkState, chitterAt, gurgleAt, _morphed, _gibbed, aggroGlobalAt, _aggroAt, _carrierPos, _gunVoiced, _obstacleR, _obstacleRecs, _doorsOnDeck, _obstacleN, _obstacleKey, BARK_KEYS, barkState, scareState, physAcc, _trackerAt, _observeAt, _sweepAt, _lightingAt, _smYaw, _smPitch, _bobPhase, _bobAmp, reloadFlashJank, _fpsEma, _fpsWorst, _fpsShownAt, ticker, shownLost, deathStartedAt, deathFocusAgent, DEATH_REVIEW_MS, deathCamRay, deathFocus, deathDesired, deathDirection, last, agentDelay;
 var init_main = __esm({
   async "game/main.js?v=1"() {
     init_three_webgpu_module();
@@ -95679,6 +95760,7 @@ var init_main = __esm({
     }).catch((e2) => console.error("[charon] Rapier physics failed to initialise:", e2));
     agents.playerId = player.agent.id;
     fireteam = networkSquads.get(LAUNCH.session?.did) ?? sim.attachPlayerSquad(player.agent, 3);
+    shipMarines0 = sim.agents.filter((a2) => a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer).length;
     gameSync = createGameSync({
       session: LAUNCH.session,
       scene,
@@ -96183,6 +96265,7 @@ var init_main = __esm({
     wallRay = new Raycaster();
     el = (id) => document.getElementById(id);
     _hudCache = {};
+    _strengthHudAt = -Infinity;
     overlay = el("overlay");
     intro = el("intro");
     introHint = el("introHint");
@@ -96721,7 +96804,7 @@ var init_main = __esm({
       hist: [],
       // captured at module eval — the sim exists and no tick has run, so every
       // marine the ship will ever have is alive right now (none are minted later)
-      marines0: sim.agents.filter((a2) => a2.faction === 2 && !a2.isPlayer && !a2.fromPlayer).length
+      marines0: shipMarines0
     };
     physAcc = 0;
     _trackerAt = 0;

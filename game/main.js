@@ -5,7 +5,7 @@
 
 import * as THREE from '../engine/vendor/three.webgpu.module.js';
 import { Sim, fmtTime } from '../sim/sim.js';
-import { FLAG } from '../shared/agentBuffer.js';
+import { FACTION, FLAG } from '../shared/agentBuffer.js';
 import { combatMeleeImpulse, hurtFloodForm } from '../sim/combat.js';
 import { World, elevOf, DOOR_W } from './world.js';
 import { Agents3D } from './agents3d.js';
@@ -353,6 +353,11 @@ initRapier().then(() => {
 }).catch((e) => console.error('[charon] Rapier physics failed to initialise:', e));
 agents.playerId = player.agent.id;
 const fireteam = networkSquads.get(LAUNCH.session?.did) ?? sim.attachPlayerSquad(player.agent, 3);
+// Every rifle aboard exists before the first frame. This is the stable full
+// scale for the numberless ship-strength meter; players and converted player
+// bodies are deliberately not part of the ship's marine complement.
+const shipMarines0 = sim.agents.filter((a) => a.faction === FACTION.MARINE
+  && !a.isPlayer && !a.fromPlayer).length;
 const gameSync = createGameSync({
   session: LAUNCH.session,
   scene,
@@ -534,7 +539,7 @@ function toggleAudioLog() {
   audio.ensure();
   const d = document.createElement('div');
   d.className = 'hud';
-  // LEFT COLUMN. The right edge is #vitals (armor/health/ammo/FPS) from
+  // LEFT COLUMN. The right edge is #equipmentHud (ammo/room/FPS) from
   // top:12px down; a panel there lands on top of the numbers you play by.
   // Left is empty between #topbar and the tracker in the bottom corner.
   d.style.cssText = 'left:14px;top:250px;width:210px;z-index:8;'
@@ -1437,6 +1442,26 @@ function setText(id, s) {
 function setStyle(id, prop, v) {
   const k = id + ':' + prop;
   if (_hudCache[k] !== v) { _hudCache[k] = v; el(id).style[prop] = v; }
+}
+let _strengthHudAt = -Infinity;
+function updateStrengthHud(now) {
+  if (now - _strengthHudAt < 250) return;
+  _strengthHudAt = now;
+  let infectionMass = 0, marinesAlive = 0;
+  // Read the live entities rather than hive.stats: non-authority co-op peers
+  // receive these poses but do not run the hive's strategic tick locally.
+  for (const a of sim.agents) {
+    if (a.dead || a.hp <= 0) continue;
+    if (a.faction === FACTION.INFECTION && !a.downed) infectionMass++;
+    else if (a.faction === FACTION.COMBAT && !a.downed) infectionMass += 2;
+    else if (a.faction === FACTION.CARRIER) infectionMass += 2;
+    else if (a.faction === FACTION.MARINE && !a.isPlayer && !a.fromPlayer) marinesAlive++;
+  }
+  const infectionScale = Math.max(1, sim.P.carrier.productionBackpressure);
+  setStyle('infectionStrengthBar', 'transform',
+    `scaleX(${Math.min(1, infectionMass / infectionScale).toFixed(3)})`);
+  setStyle('shipStrengthBar', 'transform',
+    `scaleX(${Math.min(1, marinesAlive / Math.max(1, shipMarines0)).toFixed(3)})`);
 }
 const overlay = el('overlay');
 
@@ -3506,7 +3531,7 @@ const scareState = {
   spent: false, eligible: false, checkAt: 0, hist: [],
   // captured at module eval — the sim exists and no tick has run, so every
   // marine the ship will ever have is alive right now (none are minted later)
-  marines0: sim.agents.filter((a) => a.faction === 2 && !a.isPlayer && !a.fromPlayer).length,
+  marines0: shipMarines0,
 };
 function updateScare(now) {
   if (scareState.spent || now < scareState.checkAt) return;
@@ -4042,9 +4067,11 @@ function frame(now) {
   setText('room', room ? room.name : '—');
   setText('deckLabel', `DECK ${povAgent.deck}`);
   const hp = Math.max(0, Math.ceil(povAgent.hp));
-  setStyle('healthBar', 'width', `${spectating ? hp / (povAgent.maxHp || 1) * 100 : hp / 45 * 100}%`);
-  setStyle('armorBar', 'width', `${spectating ? 0 : player.armor / 50 * 100}%`);
-  setText('hpText', spectating ? '' : `${Math.ceil(player.armor)} | ${hp}`);
+  setStyle('healthBar', 'transform', `scaleX(${Math.max(0, Math.min(1,
+    hp / (povAgent.maxHp || 1))).toFixed(3)})`);
+  setStyle('armorBar', 'transform', `scaleX(${spectating ? 0
+    : Math.max(0, Math.min(1, player.armor / sim.P.player.armor)).toFixed(3)})`);
+  updateStrengthHud(now);
   // the ammo readout follows whichever weapon is up: rounds for the rifle,
   // a fuel percentage for the flamer (there is nothing to count in a tank)
   setText('ammo', spectating ? ''
