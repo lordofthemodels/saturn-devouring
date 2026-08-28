@@ -2372,11 +2372,11 @@ export class Sim {
       // Keep the strategic lock intact and temporarily steer through the
       // immediate threat; once contact breaks, the form resumes its assignment.
       const immediate = this.hive.immediateCombatTarget(a, P.combat.lungeRiskM);
-      let best = immediate ?? locked ?? this.hive.nearestCombatTarget(a);
+      const provoker = source && !source.dead && source.hp > 0 ? source : null;
+      let best = immediate ?? provoker ?? locked ?? this.hive.nearestCombatTarget(a);
       // A landed round reveals its source for the short aggression window even
       // if the shooter has just side-stepped behind the edge of the opening.
       // The shared task carries that revelation to packmates following behind.
-      if (!best && source && !source.dead && source.hp > 0) best = source;
       if (this.hive.isRetreating(a)) {
         // Keep a clean escape uninterrupted, but never preserve one whose
         // physical approach has become a run past a visible shooter. Re-plan
@@ -2400,9 +2400,16 @@ export class Sim {
         return false;
       }
 
-      if (!locked) {
-        const provoked = shotAt || !!a.task?.surge;
-        if (!this.hive.respondToCombat(a, best, provoked)) return false;
+      if (provoker) {
+        // A real hit is a new shared stimulus even when this appendage already
+        // owns a target. Reassess once for the whole pack: losing odds preserve
+        // or begin a retreat; viable odds promote the pack to a surge. The
+        // wounded form pursues the shooter for the short hurt window without
+        // replacing its sticky strategic target, so reaction cannot become
+        // target oscillation when the gunfire stops.
+        if (!this.hive.respondToCombat(a, provoker, true)) return false;
+      } else if (!locked) {
+        if (!this.hive.respondToCombat(a, best, !!a.task?.surge)) return false;
         best = this.hive.lockedCombatTarget(a);
       }
       if (!best || best.dead || best.hp <= 0) return false;
