@@ -239,8 +239,8 @@ export const PARAMS = {
     // own release time without consulting marine or Flood strength.
     odstSquadSize: 5,
     odstHp: 85,                // vs line marine 45 — hardened ODST plate
-    releaseMinSec: 5 * 60,
-    releaseMaxSec: 8 * 60,
+    releaseMinSec: 6.5 * 60,
+    releaseMaxSec: 9.5 * 60,
   },
   // MED PACKS (user: "a classic halo edition ... two per player in the med
   // bay, and 2 per player randomly scattered throughout the ship as part of
