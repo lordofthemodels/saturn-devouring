@@ -570,7 +570,7 @@ export class MarineMap {
     const rows = [];
     rows.push(`<div class="mrow mhead"><span>MARINES</span><b>${marinesAlive}/${this.marines0}</b></div>`);
     rows.push(`<div class="mrow mhead"><span>ROOMS W/ CONTACT</span><b>${contactRooms}</b></div>`);
-    for (const squad of sim.squads) {
+    for (const squad of sim.squads.filter((candidate) => !candidate.deckGuard)) {
       const members = alive(squad.members);
       const name = squad.id === this.fireteamId ? 'FIRETEAM (YOURS)'
         : squad.patrol ? `PATROL ${squad.patrolNo}` : `SQUAD ${squad.id + 1}`;
@@ -579,10 +579,21 @@ export class MarineMap {
       rows.push(`<div class="mrow"><span>${name} <b>${members.length}/${squad.size0}</b></span>`
         + `<span class="pips">${pips(members)}</span><div class="obj">${status}</div></div>`);
     }
-    const garrison = sim.agents.filter((a) => !a.dead && a.garrison);
-    const garrisonAlive = garrison.filter((a) => a.hp > 0);
-    if (garrison.length || garrisonAlive.length) {
-      rows.push(`<div class="mrow"><span>GARRISON <b>${garrisonAlive.length}</b></span>`
+    const sentries = sim.agents.filter((a) => a.deckGuard);
+    const sentriesAlive = sentries.filter((a) => !a.dead && a.hp > 0);
+    if (sentries.length) {
+      const responding = sim.squads.filter((squad) => squad.deckGuard
+        && squad.objective?.kind === 'distress' && alive(squad.members).length).length;
+      const status = sentriesAlive.length === 0 ? '<em>wiped out</em>'
+        : responding ? `${responding} responding · ${sentriesAlive.length - responding} on post`
+          : 'holding Deck 1 room posts';
+      rows.push(`<div class="mrow"><span>DECK 1 SENTRIES <b>${sentriesAlive.length}/${sentries.length}</b></span>`
+        + `<span class="pips">${pips(sentriesAlive)}</span><div class="obj">${status}</div></div>`);
+    }
+    const garrison = sim.agents.filter((a) => a.garrison && !a.deckGuard);
+    const garrisonAlive = garrison.filter((a) => !a.dead && a.hp > 0);
+    if (garrison.length) {
+      rows.push(`<div class="mrow"><span>GARRISON <b>${garrisonAlive.length}/${garrison.length}</b></span>`
         + `<span class="pips">${pips(garrisonAlive)}</span><div class="obj">holding Command Corridor</div></div>`);
     }
     this.sideEl.innerHTML = rows.join('');

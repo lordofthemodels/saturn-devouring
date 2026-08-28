@@ -150,7 +150,7 @@ let squadSelectorStamp = '';
 function updateSquadSelector(force = false) {
   const squadSel = document.getElementById('cmdSquad');
   const selected = squadSel.value;
-  const rows = sim.squads.map((s) => {
+  const rows = sim.squads.filter((s) => !s.deckGuard).map((s) => {
     const living = s.members.map((id) => sim.byId.get(id)).filter((a) => a && !a.dead && a.hp > 0);
     const room = living.length ? sim.graph.node(living[0].node).name : 'wiped out';
     return { s, living, room };
