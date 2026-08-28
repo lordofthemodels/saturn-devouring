@@ -92,5 +92,37 @@ let ok = true;
     `min gap=${r.minBodyGap.toFixed(3)} vs radii sum=${(bodyR + playerR).toFixed(3)}`);
 }
 
+// 4) doorway membership is discontinuous by design: bodies standing in the
+// throat are removed so they cannot wall the player out, then restored once
+// clear. Parking/restoring must be true teleports. A normal kinematic target
+// derives a velocity from (0,-1000) back to the live deck position — tens of
+// thousands of metres per second — and can sweep the player across the map.
+{
+  const world = new PhysicsWorld();
+  world.spawnPlayer(157, 0, 0);
+  const body = { id: 7, x: 156, y: 0.9, z: 0, radius: 0.48, half: 0.5 };
+  world.syncBodies([body]);
+  world.movePlayer(0, 0, 0);
+  world.step();
+
+  world.syncBodies([], 0);
+  world.movePlayer(0, 0, 0);
+  world.step();
+  const parkedVelocity = world._npc.get(body.id).body.linvel();
+
+  body.x = 157;
+  world.syncBodies([body]);
+  world.movePlayer(0, 0, 0);
+  world.step();
+  const restoredVelocity = world._npc.get(body.id).body.linvel();
+  const player = world.playerCenter();
+  const still = Math.abs(parkedVelocity.x) < 1e-5 && Math.abs(parkedVelocity.y) < 1e-5
+    && Math.abs(restoredVelocity.x) < 1e-5 && Math.abs(restoredVelocity.y) < 1e-5
+    && Math.abs(player.x - 157) < 1e-5;
+  ok &= assert('doorway obstacle parking cannot create a map-wide kinematic sweep', still,
+    `park=${Math.hypot(parkedVelocity.x, parkedVelocity.y).toFixed(1)}m/s `
+      + `restore=${Math.hypot(restoredVelocity.x, restoredVelocity.y).toFixed(1)}m/s player x=${player.x.toFixed(3)}`);
+}
+
 console.log(ok ? '\nphysics-check OK' : '\nphysics-check FAILED');
 process.exit(ok ? 0 : 1);

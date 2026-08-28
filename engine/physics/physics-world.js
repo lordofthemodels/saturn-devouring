@@ -159,13 +159,29 @@ export class PhysicsWorld {
         e = { body, col, parked: false };
         this._npc.set(a.id, e);
       }
-      e.parked = false;
-      e.body.setNextKinematicTranslation({ x: a.x, y: a.y, z: a.z });
+      const target = { x: a.x, y: a.y, z: a.z };
+      if (e.parked) {
+        // Reactivation is a change in collision membership, not a physical
+        // journey from the parking coordinate. setNext alone makes Rapier
+        // derive a one-frame velocity spanning the ship (and 1 km upward),
+        // so a doorway body reappearing beside the player can carry that
+        // impossible sweep into the character controller.
+        e.body.setTranslation(target, true);
+        e.body.setNextKinematicTranslation(target);
+        e.parked = false;
+      } else {
+        e.body.setNextKinematicTranslation(target);
+      }
     }
     for (const [id, e] of this._npc) {
       if (!seen.has(id) && !e.parked) {
         e.parked = true;
-        e.body.setNextKinematicTranslation({ x: 0, y: -1000, z: 0 });
+        // Parking is equally discontinuous. Hard-place both transforms so the
+        // removed body has zero velocity and cannot sweep across other rooms
+        // on its way out of the active collision set.
+        const parked = { x: 0, y: -1000, z: 0 };
+        e.body.setTranslation(parked, true);
+        e.body.setNextKinematicTranslation(parked);
       }
     }
   }

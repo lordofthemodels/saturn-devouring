@@ -91641,13 +91641,21 @@ var init_physics_world = __esm({
             e2 = { body, col, parked: false };
             this._npc.set(a2.id, e2);
           }
-          e2.parked = false;
-          e2.body.setNextKinematicTranslation({ x: a2.x, y: a2.y, z: a2.z });
+          const target = { x: a2.x, y: a2.y, z: a2.z };
+          if (e2.parked) {
+            e2.body.setTranslation(target, true);
+            e2.body.setNextKinematicTranslation(target);
+            e2.parked = false;
+          } else {
+            e2.body.setNextKinematicTranslation(target);
+          }
         }
         for (const [id, e2] of this._npc) {
           if (!seen.has(id) && !e2.parked) {
             e2.parked = true;
-            e2.body.setNextKinematicTranslation({ x: 0, y: -1e3, z: 0 });
+            const parked = { x: 0, y: -1e3, z: 0 };
+            e2.body.setTranslation(parked, true);
+            e2.body.setNextKinematicTranslation(parked);
           }
         }
       }
