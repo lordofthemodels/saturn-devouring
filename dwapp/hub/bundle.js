@@ -74293,7 +74293,7 @@ var init_hive = __esm({
           if (alive) return;
         }
         const lockedTarget = form.faction === FACTION.COMBAT ? this.lockedCombatTarget(form) : null;
-        if (lockedTarget && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
+        if (lockedTarget && !task.retreat && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
         const t2 = form.task;
         const same = t2 && t2.kind === task.kind && t2.node === task.node && t2.targetId === task.targetId && t2.corpseId === task.corpseId && t2.muster === task.muster;
         if (!same && t2) {
