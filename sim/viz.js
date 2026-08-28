@@ -857,11 +857,15 @@ export function renderStats(sim, el) {
     const room = living.length ? sim.graph.node(living[0].node).name : 'wiped out';
     return { squad, living, room };
   });
-  const guards = sim.agents.filter((a) => a.garrison && !a.dead && a.hp > 0);
+  const sentries = sim.agents.filter((a) => a.deckGuard);
+  const sentriesAlive = sentries.filter((a) => !a.dead && a.hp > 0);
+  const garrison = sim.agents.filter((a) => a.garrison && !a.deckGuard);
+  const garrisonAlive = garrison.filter((a) => !a.dead && a.hp > 0);
   const stamp = [Math.floor(s.t), s.outcome, s.civ, s.armed, s.marine, s.infection, s.combat,
     s.combatDowned, s.carrier, s.gestating, s.corpses, s.corpsesBurned, s.floodControlled,
     s.conversions, s.carriersSeated, s.formsMinted, s.distressCalls,
-    ...teamRows.flatMap(({ squad, living, room }) => [squad.id, living.length, room]), guards.length].join(':');
+    ...teamRows.flatMap(({ squad, living, room }) => [squad.id, living.length, room]),
+    sentriesAlive.length, garrisonAlive.length].join(':');
   if (el._stamp === stamp) return;
   el._stamp = stamp;
   const metric = (name, value) => `<div class="metric"><span>${name}</span><b>${value}</b></div>`;
@@ -871,11 +875,13 @@ export function renderStats(sim, el) {
       + `<span class="forceTag">${squadTag(squad)}</span><span class="forceCount">${living.length}/${squad.members.length}</span>`
       + `<span class="forceRoom">${escapeHtml(room)}</span></button>`;
   });
-  if (guards.length) {
-    const room = guards.some((guard) => guard.deckGuard)
-      ? 'Deck 1 coverage' : sim.graph.node(guards[0].node).name;
+  if (sentries.length) {
+    teams.push(`<div class="forceRow" style="--team:${GARRISON_COLOR}"><span class="forceTag">D1</span>`
+      + `<span class="forceCount">${sentriesAlive.length}/${sentries.length}</span><span class="forceRoom">room sentries</span></div>`);
+  }
+  if (garrison.length) {
     teams.push(`<div class="forceRow" style="--team:${GARRISON_COLOR}"><span class="forceTag">G</span>`
-      + `<span class="forceCount">${guards.length}</span><span class="forceRoom">${escapeHtml(room)}</span></div>`);
+      + `<span class="forceCount">${garrisonAlive.length}/${garrison.length}</span><span class="forceRoom">Command Corridor</span></div>`);
   }
   const phase = s.outcome ? s.outcome.toUpperCase() : s.opening ? 'OPENING · FIRST SWEEP' : 'STEADY STATE';
   const scarcity = s.scarcity > 2 ? 'hoarding' : s.scarcity <= 0.75 ? 'spending' : 'balanced';
