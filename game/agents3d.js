@@ -1048,11 +1048,16 @@ export class Agents3D {
     const oz = wz + fz * mz.f + fx * cfg.right + dz * over;
     let len = 5.0;
     const g = this.sim.graph;
-    if (g.burningUntil[nodeIdx] > this.sim.t) {
-      const [bwx, bwz] = this.world.simToWorld(g.burnX[nodeIdx], g.burnY[nodeIdx], deck);
+    const live = this.sim.byId.get(id);
+    const aimDeck = live?.flameAimDeck ?? deck;
+    if (live?.flameAimX !== undefined && (live.flamingT ?? -Infinity) >= this.sim.t - this.sim.dt * 1.5) {
+      const [bwx, bwz] = this.world.simToWorld(live.flameAimX, live.flameAimY, aimDeck);
       // ...over-reached by the fraction of the card the flame burns out before
       // (the shader spends the fuel by ~0.85 of the quad), so the VISIBLE end
       // of the stream lands on the fire instead of a metre short of it
+      len = Math.hypot(bwx - ox, bwz - oz) / 0.85;
+    } else if (g.burningUntil[nodeIdx] > this.sim.t) {
+      const [bwx, bwz] = this.world.simToWorld(g.burnX[nodeIdx], g.burnY[nodeIdx], deck);
       len = Math.hypot(bwx - ox, bwz - oz) / 0.85;
     }
     const r = this.flameJets[this.flameJetN] ?? (this.flameJets[this.flameJetN] = {});
@@ -1060,7 +1065,7 @@ export class Agents3D {
     r.dx = dx; r.dy = dy; r.dz = dz;
     // a stream has a range whatever it is pointed at: too short and it reads as
     // a blowtorch, too long and it is a laser
-    r.len = Math.max(2.2, Math.min(9, len));
+    r.len = Math.max(2.2, Math.min(this.sim.P.flamethrower.rangeM, len));
     r.seed = id;
     this.flameJetN++;
   }

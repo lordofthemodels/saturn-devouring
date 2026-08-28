@@ -1093,10 +1093,11 @@ function syncBurnFires() {
   for (let n = 0; n < sim.graph.n; n++) {
     const key = `burn${n}`;
     const burning = sim.graph.burningUntil[n] > sim.t;
-    if (burning && !fire.fires.has(key)) {
+    if (burning) {
       const nd = sim.graph.node(n);
       const [wx, wz] = world.simToWorld(sim.graph.burnX[n], sim.graph.burnY[n], nd.deck);
-      fire.add(key, wx, wz, elevOf(nd.deck), 1.2);
+      if (!fire.fires.has(key)) fire.add(key, wx, wz, elevOf(nd.deck), 1.2);
+      else fire.move(key, wx, wz, elevOf(nd.deck), 1.2);
     } else if (!burning && fire.fires.has(key)) fire.remove(key);
   }
 }
@@ -2920,43 +2921,61 @@ const _fdir = new THREE.Vector3(), _fto = new THREE.Vector3();
 const _fmuzzle = new THREE.Vector3(), _fend = new THREE.Vector3();
 let _flameJet = null;      // {ox,oy,oz,dx,dy,dz,len} for this frame, or null
 let _flameSeed = 1;
+let _flameAimSolution = null;
 
-function flameTick(dt) {
+function solveFlameAim() {
+  if (_flameAimSolution) return _flameAimSolution;
   camera.getWorldDirection(_fdir);
   const origin = camera.position;
-
-  // REACH: the stream stops at the first wall or closed door. Without this
-  // you burn the compartment on the other side of a bulkhead, and the fire
-  // lands in a room you cannot see.
   wallRay.set(origin, _fdir);
   wallRay.far = FLAME.rangeM;
   wallRay.near = 0.05;
   const hits = wallRay.intersectObjects(solidsForShot(), false);
-  // back off the wall slightly so the flame washes the face of it rather than
-  // vanishing into the geometry
   const reach = hits.length ? Math.max(0.6, hits[0].distance - 0.35) : FLAME.rangeM;
-
-  // the jet leaves the NOZZLE, carried through the viewmodel's real world
-  // transform (same treatment the MA5's muzzle flash gets)
-  flamerMesh.updateWorldMatrix(true, false);
-  _fmuzzle.set(0, -0.01, 0.50).applyMatrix4(flamerMesh.matrixWorld);
-  _fend.copy(origin).addScaledVector(_fdir, reach);
-
-  // COMBUSTION VOLUME: everything inside the cone, out to the reach. A pool
-  // split between targets (the way resolveCombat models a marine's flamer) is
-  // wrong for an aimed weapon — a cone does not divide itself between the
-  // things standing in it. Every body in the fire takes the full rate, and
-  // the tank is what stops you: 12.5 s of trigger, total.
   const cosLimit = Math.cos(FLAME.coneDeg * Math.PI / 180);
-  const burn = FLAME.dps * dt;
-  let anyHit = false;
+  const victims = [];
+  let target = null, targetT = Infinity;
   for (const a of shotCandidates()) {
     const [wx, wz] = world.simToWorld(a.x, a.y, a.deck);
     const cy = elevOf(a.deck) + (a.faction === 3 ? 0.35 : a.downed ? 0.35 : 0.9) + (a.hoverY || 0);
     _fto.set(wx, cy, wz).sub(origin);
     const d = _fto.length();
-    if (d < 0.2 || d > reach) continue;
-    if (_fto.dot(_fdir) / d < cosLimit) continue;
+    const along = _fto.dot(_fdir);
+    if (d < 0.2 || d > reach || along <= 0 || along / d < cosLimit) continue;
+    victims.push(a);
+    if (along < targetT) { targetT = along; target = a; }
+  }
+  let impactDeck = player.deck, impactNode, bx, by;
+  if (target) {
+    impactDeck = target.deck;
+    impactNode = target.pnode ?? target.node;
+    bx = target.x; by = target.y;
+  } else {
+    _fend.copy(origin).addScaledVector(_fdir, reach);
+    [bx, by] = world.worldToSim(_fend.x, _fend.z, impactDeck);
+    impactNode = world.roomAt(impactDeck, bx, by, player.agent.node);
+  }
+  _flameAimSolution = { reach, cosLimit, victims, target, impactNode, bx, by };
+  return _flameAimSolution;
+}
+
+function flameTick(dt) {
+  const solution = solveFlameAim();
+  const { reach } = solution;
+  const origin = camera.position;
+
+  // the jet leaves the NOZZLE, carried through the viewmodel's real world
+  // transform (same treatment the MA5's muzzle flash gets)
+  flamerMesh.updateWorldMatrix(true, false);
+  _fmuzzle.set(0, -0.01, 0.50).applyMatrix4(flamerMesh.matrixWorld);
+  // COMBUSTION VOLUME: everything inside the cone, out to the reach. A pool
+  // split between targets (the way resolveCombat models a marine's flamer) is
+  // wrong for an aimed weapon — a cone does not divide itself between the
+  // things standing in it. Every body in the fire takes the full rate, and
+  // the tank is what stops you: 12.5 s of trigger, total.
+  const burn = FLAME.dps * dt;
+  let anyHit = false;
+  for (const a of solution.victims) {
     hurtFloodForm(sim, a, burn, true, player.agent.id); // `true`: fire kills permanently
     anyHit = true;
   }
@@ -2971,7 +2990,7 @@ function flameTick(dt) {
     _fto.set(wx, elevOf(a.deck) + 0.9, wz).sub(origin);
     const d = _fto.length();
     if (d < 0.2 || d > reach) continue;
-    if (_fto.dot(_fdir) / d < cosLimit) continue;
+    if (_fto.dot(_fdir) / d < solution.cosLimit) continue;
     sim.hurtHuman(a, burn, player.agent.id); // blamed on you, like any friendly fire
   }
   // BODIES BURN. Corpses are deliberately NOT shotCandidates — bullets must
@@ -2987,15 +3006,15 @@ function flameTick(dt) {
     _fto.set(wx, elevOf(a.deck) + 0.25, wz).sub(origin);
     const d = _fto.length();
     if (d < 0.2 || d > reach) continue;
-    if (_fto.dot(_fdir) / d < cosLimit) continue;
+    if (_fto.dot(_fdir) / d < solution.cosLimit) continue;
     a.damage = Math.min(100, a.damage + burn * 2);
     anyHit = true;
   }
 
-  // the room is burning, and it is burning WHERE THE FUEL LANDED — the far
-  // end of the stream, not the room's centre
-  const [bx, by] = world.worldToSim(_fend.x, _fend.z, player.deck);
-  sim.playerFlame(player.agent.node, bx, by);
+  // The lingering pool uses the actual first contact — target or bulkhead —
+  // and resolves which room contains that point. It no longer inherits the
+  // shooter's room and then renders somewhere unrelated on a large deck.
+  sim.playerFlame(solution.impactNode, solution.bx, solution.by, player.agent.id);
   sim.gunfireAt(player.agent.node); // a flamethrower is not quiet
   if (anyHit) hitFlash = Math.max(hitFlash, 0.35);
 
@@ -3727,6 +3746,7 @@ function frame(now) {
   // and only re-declared while the stream is live, so it goes out the instant
   // you release — the same discipline the light pool and the NPC jets use.
   _flameJet = null;
+  _flameAimSolution = null;
   if (hasFlamer) {
     const fevents = [];
     // THE SWING DOES NOT RELEASE THE TRIGGER. Pushing fireHeld:false into the
@@ -3805,6 +3825,13 @@ function frame(now) {
       _hudCache['xh:sp'] = sp;
       el('crosshair').style.setProperty('--sp', sp);
     }
+    // With the flamethrower up, red means a visible Flood body is inside both
+    // the finite fuel reach and the current cone. Blue means close the range
+    // or clear the obstruction; it is not a generic enemy-awareness marker.
+    const hot = heldIsFlamer && !spectating && !!solveFlameAim().target;
+    const xh = el('crosshair');
+    const cls = hot ? 'hud flame-hot' : 'hud';
+    if (xh.className !== cls) xh.className = cls;
   }
 
   if (isSimAuthority()) ticker.add(dtReal); // multiplayer peers render host checkpoints; only the elected host advances the world

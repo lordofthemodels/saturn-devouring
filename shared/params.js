@@ -74,7 +74,8 @@ export const PARAMS = {
     reanimateTimeSec: 2,
   },
   flamethrower: {
-    fuelUnits: 100, dps: 50, fuelPerSec: 2, fuelPerCorpse: 1, burnNodeSec: 12,
+    fuelUnits: 100, dps: 50, fuelPerSec: 2, fuelPerCorpse: 1,
+    rangeM: 9, burnNodeSec: 15,
     // IN YOUR HANDS (user: "make the flamethrower something the player can
     // use"). Deliberately NOT the NPC numbers. A marine's flamer is an
     // abstraction that ticks a dps pool into a room; yours is aimed, so it
