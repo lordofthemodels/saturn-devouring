@@ -95395,7 +95395,7 @@ function frame(now) {
       _hudCache["xh:sp"] = sp;
       el("crosshair").style.setProperty("--sp", sp);
     }
-    const hot = heldIsFlamer && !spectating && !!solveFlameAim().target;
+    const hot = heldIsFlamer && !player.dead && !!solveFlameAim().target;
     const xh = el("crosshair");
     const cls = hot ? "hud flame-hot" : "hud";
     if (xh.className !== cls) xh.className = cls;
@@ -95664,6 +95664,9 @@ function frame(now) {
       const up = player.deck === trunk.lowerDeck;
       const kind = trunk.vertical ? "ladder" : "stairs";
       setText("hint", player.queuedTrunk === trunk ? "in line for the ladder — you go next" : trunk.edge?.type === "ladder" && sim.vertBusy(trunk.edge, player.agent.id) ? `${kind} busy — ${inputPrompt("E", "RB")} to take the next slot` : `${inputPrompt("E", "RB")} — climb ${kind} ${up ? "up" : "down"} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+      setStyle("hint", "display", "block");
+    } else if (!player.dead && !weapon.reloading && weapon.mag < weapon.def.mag && weapon.reserve > 0) {
+      setText("hint", `${inputPrompt("E", "RB")} — reload MA5`);
       setStyle("hint", "display", "block");
     } else setStyle("hint", "display", "none");
   }
@@ -96963,7 +96966,6 @@ var init_main = __esm({
         return;
       }
       if (e2.code === "KeyE" && !e2.repeat && singleActionPress(true, contextualActionAvailable()).reloadPressed) reloadPressed = true;
-      if (e2.code === "KeyR") reloadPressed = true;
       if (e2.code === "KeyF") meleePressed = true;
       if (e2.code === "KeyG") fragPressed = true;
       if (e2.code === "KeyK") toggleSoundBoard();

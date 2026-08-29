@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { StandardGamepad, halo3Actions, radialDeadzone, singleActionPress } from './gamepad.js';
 
 function button(pressed = false, value = pressed ? 1 : 0) {
@@ -84,6 +85,19 @@ assert.deepEqual(singleActionPress(true, true), { interactPressed: true, reloadP
   'the shared action resolver gives a live interaction priority over reload');
 assert.deepEqual(singleActionPress(true, false), { interactPressed: true, reloadPressed: true },
   'the shared action resolver reloads when no interaction is available');
+
+const mainSource = await readFile(new URL('./main.js', import.meta.url), 'utf8');
+const gamePage = await readFile(new URL('./index.html', import.meta.url), 'utf8');
+assert.doesNotMatch(mainSource, /e\.code === 'KeyR'/,
+  'keyboard reload has no second key that can drift from the shared E action');
+assert.match(mainSource, /inputPrompt\('E', 'RB'\).*reload MA5/s,
+  'the HUD teaches the shared action/reload control when the rifle can reload');
+assert.match(gamePage, /E pick up \/ use \/ climb \/ reload/,
+  'the keyboard control screen advertises E as the single action key');
+assert.match(gamePage, /RB reload \/ use \/ climb/,
+  'the controller control screen advertises RB as the same action key');
+assert.match(mainSource, /const hot = heldIsFlamer && !player\.dead/,
+  'equipping the flamethrower gates the reticle on live player state');
 
 let rumbleNow = 1000;
 const rumbleCalls = [];
