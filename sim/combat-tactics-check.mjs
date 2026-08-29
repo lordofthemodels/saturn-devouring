@@ -363,6 +363,95 @@ assert.ok(lockedRetreatForm.move.t > 0,
   'the retreat leg must continue making physical progress under fire');
 assert.ok(lockedRetreatForm.move.t > walkingProgress * 2,
   'an engaged retreat must advance materially faster than its walking pace');
+const retreatRouteLength = Math.hypot(retreatLeg.link.door.x - retreatLeg.sx,
+  retreatLeg.link.door.y - retreatLeg.sy)
+  + Math.hypot(retreatLeg.tx - retreatLeg.link.door.x,
+    retreatLeg.ty - retreatLeg.link.door.y);
+const retreatMaxMps = lockedRetreatSim.P.movement.baseMps
+  * lockedRetreatSim._speedMult(lockedRetreatForm)
+  * lockedRetreatSim.P.speed.chargeMult;
+assert.ok(retreatLeg.travelSec >= retreatRouteLength / retreatMaxMps - 1e-9,
+  'an engaged retreat must never exceed the established combat run speed');
+
+// Forms on opposite sides of one doorway share the same tactical cell. A
+// single outmatched response must therefore move both appendages to retreat,
+// rather than leaving the second half walking into the firing line.
+const cohesionSim = new Sim('cohesive-retreat-check');
+for (const agent of cohesionSim.agents) agent.dead = true;
+const cohesionDoor = openEscapeDoor(cohesionSim);
+assert.ok(cohesionDoor, 'cohesion fixture needs a visible doorway');
+const cohesionA = makeAgent(FACTION.COMBAT, cohesionDoor.a, cohesionSim.graph);
+const cohesionB = makeAgent(FACTION.COMBAT, cohesionDoor.b, cohesionSim.graph);
+const cohesionShooters = [0, 1, 2].map(() => makeAgent(FACTION.MARINE, cohesionDoor.b, cohesionSim.graph));
+cohesionSim.spawn(cohesionA); cohesionSim.spawn(cohesionB);
+for (const shooter of cohesionShooters) cohesionSim.spawn(shooter);
+cohesionSim.tickCount = 1;
+cohesionSim.t = cohesionSim.dt;
+cohesionSim._refreshOccupancy();
+assert.equal(cohesionSim.hive.combatPack(cohesionA).length, 2,
+  'forms sharing adjacent rooms must share one local tactical cell');
+cohesionSim.hive.respondToCombat(cohesionA, cohesionShooters[0], true);
+assert.ok(cohesionA.task?.retreat && cohesionB.task?.retreat,
+  'one losing contact must send the whole adjacent pack into retreat');
+
+// A retreating appendage that reaches a quiet room with a civilian should
+// take the safe body instead of continuing a blind route across the ship.
+const preySim = new Sim('retreat-prey-check');
+for (const agent of preySim.agents) agent.dead = true;
+const preyRoom = preySim.graph.nodes.find((node) => node.w >= 8 && node.d >= 5);
+assert.ok(preyRoom, 'retreat-prey fixture needs a usable room');
+const preyForm = makeAgent(FACTION.COMBAT, preyRoom.idx, preySim.graph);
+const prey = makeAgent(FACTION.CIVILIAN, preyRoom.idx, preySim.graph);
+const staleTargetRoom = preySim.graph.nodes.find((node) =>
+  preySim.graph.hops(preyRoom.idx, node.idx, ['std'], (edge) => !edge.locked) >= 3);
+assert.ok(staleTargetRoom, 'retreat-prey fixture needs a stale target beyond the sense cell');
+const staleTarget = makeAgent(FACTION.MARINE, staleTargetRoom.idx, preySim.graph);
+preyForm.x = preyRoom.x - 1; prey.x = preyRoom.x + 1;
+preySim.spawn(preyForm); preySim.spawn(prey); preySim.spawn(staleTarget);
+const preyStepLink = preySim.graph.edges.find((edge) =>
+  edge.kind === 'std' && (edge.a === preyRoom.idx || edge.b === preyRoom.idx));
+assert.ok(preyStepLink, 'retreat-prey fixture needs an exit');
+const preyDestination = preyStepLink.a === preyRoom.idx ? preyStepLink.b : preyStepLink.a;
+preyForm.task = { kind: TASK.ATTACK, node: staleTargetRoom.idx, targetId: staleTarget.id, retreat: true };
+preySim.setPath(preyForm, [{ to: preyDestination, link: preyStepLink, layer: 'std' }]);
+preySim._refreshOccupancy();
+preySim._spatialSteer(preyForm, preySim.dt);
+assert.equal(preyForm.task.kind, TASK.ATTACK,
+  'a quiet-room retreat must switch to a safe civilian target');
+assert.equal(preyForm.task.targetId, prey.id,
+  'the opportunistic retreat target must be the local civilian body');
+
+// A bait runner turns once when it is hit, then keeps its return leg instead
+// of re-triggering the same turn every frame and getting stuck at the door.
+const dartSim = new Sim('dart-return-check');
+for (const agent of dartSim.agents) agent.dead = true;
+const dartDoor = openEscapeDoor(dartSim);
+assert.ok(dartDoor, 'dart fixture needs a visible doorway');
+const dartForm = makeAgent(FACTION.COMBAT, dartDoor.b, dartSim.graph);
+const dartShooter = makeAgent(FACTION.MARINE, dartDoor.b, dartSim.graph);
+dartSim.spawn(dartForm); dartSim.spawn(dartShooter);
+dartForm.task = { kind: TASK.DART, into: dartDoor.b, back: dartDoor.a, stage: 0 };
+dartForm.lastHurtBy = dartShooter.id;
+dartForm.lastHurtTick = dartSim.tickCount;
+dartSim.tickCount = 1;
+dartSim.t = dartSim.dt;
+dartSim._refreshOccupancy();
+dartSim._spatialSteer(dartForm, dartSim.dt);
+assert.equal(dartForm.task.stage, 1, 'a bait runner must turn on the first incoming round');
+assert.equal(dartForm.task.kind, TASK.DART, 'turning a bait runner must preserve its bait role');
+assert.equal(dartForm.path.at(-1)?.to, dartDoor.a,
+  'the bait runner must return to its staged pack');
+dartSim._advanceMovement(dartSim.dt);
+const dartLeg = dartForm.move;
+assert.ok(dartLeg, 'the bait runner must start its return leg');
+dartSim.tickCount++;
+dartSim.t += dartSim.dt;
+dartSim._refreshOccupancy();
+dartSim._spatialSteer(dartForm, dartSim.dt);
+dartSim._advanceMovement(dartSim.dt);
+assert.equal(dartForm.move, dartLeg,
+  'continued incoming fire must not restart the bait runner return leg');
+assert.ok(dartLeg.t > 0, 'the bait runner must make progress while under fire');
 
 // One appendage being shot gives the whole visible pack one response. Every
 // member abandons its stale destination, pursues the shared nearest marine,

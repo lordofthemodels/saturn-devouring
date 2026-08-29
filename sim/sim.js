@@ -1782,7 +1782,8 @@ export class Sim {
       }
       if (a.move) {
         if (this._holdMarineAtRadarDoor(a, dt) || this._holdMarineAtHotLadder(a, dt)) continue;
-        const retreatPace = a.move.retreatSprint ? this.P.speed.chargeMult : 1;
+        const retreatPace = (a.move.retreatSprint || a.move.dartSprint)
+          ? this.P.speed.chargeMult : 1;
         a.move.t += dt * retreatPace / a.move.travelSec;
         const from = g.node(a.move.from), to = g.node(a.move.to);
         const k = Math.min(1, a.move.t);
@@ -2140,6 +2141,7 @@ export class Sim {
         // sprinting/leaping the last stretch (renderers get FLAG.CHARGING)
         this._setCharging(a, false);
         if (a.faction === FACTION.COMBAT && a.dragging === -1 && link.kind === 'std'
+          && !a.task?.retreat && !(a.task?.kind === TASK.DART && a.task.stage === 1)
           && (surging || this._occ[step.to].some((h) => isLivingHuman(h)))) {
           mult *= this.P.speed.chargeMult;
           this._setCharging(a, true);
@@ -2160,7 +2162,8 @@ export class Sim {
         // overwhelm is untouched; only the transit silhouette changes. The crew
         // keep their tight ±1% file.
         const paceHash = ((a.id * 2654435761) >>> 0) / 4294967296;
-        const pace = surging ? 1
+        const pace = a.task?.retreat || (a.task?.kind === TASK.DART && a.task.stage === 1) ? 1
+          : surging ? 1
           : (a.faction === FACTION.INFECTION || a.faction === FACTION.COMBAT)
           ? 1 + (paceHash - 0.5) * 0.5
           : 1 + ((a.id % 7) - 3) * 0.012;
@@ -2171,7 +2174,9 @@ export class Sim {
         a.move = { from: a.node, to: step.to, link, layer: link.kind, t: 0,
           sx: a.x, sy: a.y, travelSec: this.travelSec(link, mult) * pace,
           retreatSprint: a.faction === FACTION.COMBAT && a.task?.retreat === true
-            ? a.retreatSprint : undefined };
+            ? a.retreatSprint : undefined,
+          dartSprint: a.faction === FACTION.COMBAT && a.task?.kind === TASK.DART
+            && a.task.stage === 1 };
         a.firePost = null; // a moving shooter re-takes its firing post on arrival
         // DUCT NOISES (user: vents don't show on the map — the crew only
         // HEARS them): a form slipping into the ducting drops an ominous
@@ -2398,10 +2403,42 @@ export class Sim {
       // actually hits it; incoming fire promotes every other posture to the
       // same surge decision below.
       if (k === TASK.TRANSFORM
+        || (k === TASK.DART && a.task.stage === 1)
         || (!shotAt && (k === TASK.DECOY || k === TASK.BAIT || k === TASK.DART))) return false;
 
       const source = shotAt ? this.byId.get(a.lastHurtBy) : null;
       const locked = this.hive.lockedCombatTarget(a);
+      const retreating = this.hive.isRetreating(a);
+      if (retreating) {
+        const prey = this.hive.retreatPrey(a);
+        if (prey) {
+          // why: a safe civilian in the room is a live conversion opportunity,
+          // not scenery a fleeing appendage should cross several rooms to find
+          // again. Drop the stale hurt stimulus so the new target remains a
+          // committed local attack instead of immediately re-triggering retreat.
+          this.hive.assign(a, { kind: TASK.ATTACK, node: pn, targetId: prey.id,
+            opportunistic: true });
+          a.lastHurtBy = undefined;
+          a.lastHurtTick = -999;
+          a.state = STATE.MOVE;
+          return false;
+        }
+      }
+      if (k === TASK.DART && a.task.stage === 0 && shotAt && a.task.back !== undefined) {
+        // A bait runner that draws a round turns immediately; letting the
+        // current outbound leg finish made the trap look like another attack
+        // and left the staged pack exposed one body at a time.
+        a.task.stage = 1;
+        if (a.move) this._interruptMove(a);
+        const back = a.task.back;
+        if (a.node !== back) {
+          const path = this.graph.path(a.node, back, ['std'], (link) => !link.locked);
+          if (path) this.setPath(a, path);
+        }
+        this._setCharging(a, false);
+        a.state = STATE.MOVE;
+        return false;
+      }
       // A long-lived hive assignment prevents room-wide target oscillation,
       // but it cannot make a form ignore a body already inside lunge range.
       // Keep the strategic lock intact and temporarily steer through the
@@ -2412,7 +2449,7 @@ export class Sim {
       // A landed round reveals its source for the short aggression window even
       // if the shooter has just side-stepped behind the edge of the opening.
       // The shared task carries that revelation to packmates following behind.
-      if (this.hive.isRetreating(a)) {
+      if (retreating) {
         // why: the round that causes the retreat still gets one clean walking
         // tick; only continued fire after the decision turns the withdrawal
         // into a full-speed run.
@@ -3392,7 +3429,8 @@ export class Sim {
     // recovery window returns to an alert idle instead of looping fake hits.
     if (a.faction === FACTION.COMBAT) {
       if ((a.meleeUntil ?? -1) > this.t) return CLIP.ATTACK;
-      if (a.move?.retreatSprint === false && a.task?.retreat === true
+      if (a.move?.retreatSprint === false
+        && (a.task?.retreat === true || (a.task?.kind === TASK.DART && a.task.stage === 1))
         && !a.charging && !a.leaping) return CLIP.WALK;
       if (a.move || a.charging || a.leaping) return CLIP.RUN;
       return CLIP.IDLE;

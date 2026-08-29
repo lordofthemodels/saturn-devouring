@@ -450,9 +450,11 @@ export class Hive {
     return [...humans.values()];
   }
 
-  // A local pack is a connected component of forms that can see one another.
-  // It follows the actual openings and open stair volumes, so changing the
-  // room graph changes the group naturally without tactical room IDs.
+  // A local pack is the forms sharing the same flood-sensed tactical cell:
+  // their room plus its directly adjacent rooms. The hive's perception is
+  // shared across that cell, so a doorway crossing cannot split one response
+  // into "run" and "advance" halves. It stays one hop wide rather than
+  // traversing the whole ship as one graph component.
   combatPack(form) {
     if (this._combatCacheTick !== this.sim.tickCount) {
       this._combatCacheTick = this.sim.tickCount;
@@ -464,23 +466,20 @@ export class Hive {
     const cached = this._combatPackCache.get(form.id);
     if (cached) return cached;
     if (!this._combatResponder(form)) return [form];
-    const pack = [], queue = [form], seen = new Set([form.id]);
-    while (queue.length) {
-      const member = queue.shift();
-      pack.push(member);
+    const origin = form.pnode ?? form.node;
+    const localNodes = new Set(this.sim.floodSenses(origin));
+    const pack = this.sim.agents.filter((candidate) =>
+      localNodes.has(candidate.pnode ?? candidate.node)
+      && this._combatResponder(candidate));
+    if (!pack.some((member) => member.id === form.id)) pack.push(form);
+    pack.sort((a, b) => a.id - b.id);
+    for (const member of pack) {
       const visible = this.sim.lineOfSightAgents(member,
         (candidate) => isLivingHuman(candidate) || isActiveFloodForm(candidate)
           || candidate.faction === FACTION.CARRIER);
       this._combatVisibleCache.set(member.id, visible);
-      for (const ally of visible) {
-        if (!this._combatResponder(ally)) continue;
-        if (seen.has(ally.id)) continue;
-        seen.add(ally.id);
-        queue.push(ally);
-      }
+      this._combatPackCache.set(member.id, pack);
     }
-    pack.sort((a, b) => a.id - b.id);
-    for (const member of pack) this._combatPackCache.set(member.id, pack);
     return pack;
   }
 
@@ -502,6 +501,11 @@ export class Hive {
         if (isLivingHuman(a)) humans.set(a.id, a);
         else if (a.faction !== FACTION.COMBAT || this._combatResponder(a)) flood.set(a.id, a);
       }
+      // why: every appendage in the local cell receives the same life-sense
+      // report, including a marine just beyond a closed doorway or on the
+      // neighboring landing. Without this union, the first threshold crosser
+      // could make a private decision and immediately split the pack.
+      for (const human of this.sensedHumans(member)) humans.set(human.id, human);
     }
     let strength = 0, defense = 0, threat = null, nearestThreat = Infinity;
     for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
@@ -647,6 +651,30 @@ export class Hive {
     return baseline > -Infinity && strength < baseline + RETREAT_REASSESS_STRENGTH;
   }
 
+  // A retreat is not blind flight. Once a form reaches a room with a soft
+  // body and no armed contact in its shared sense cell, that body is the best
+  // way to turn distance into new mass. Restricting this to the current room
+  // keeps the opportunistic stop safe and prevents a lone form from crossing
+  // another doorway just to chase an old civilian belief.
+  retreatPrey(form) {
+    const sim = this.sim;
+    const node = form.pnode ?? form.node;
+    const sensed = this.sensedHumans(form);
+    if (sensed.some((human) => human.faction === FACTION.MARINE
+      || human.faction === FACTION.ARMED)) return null;
+    let best = null, bestDistance = Infinity;
+    for (const human of sim.occupants(node)) {
+      if (!isLivingHuman(human) || human.faction !== FACTION.CIVILIAN) continue;
+      const distance = Math.hypot(human.x - form.x, human.y - form.y);
+      if (distance < bestDistance - 1e-9
+        || (Math.abs(distance - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity))) {
+        best = human;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   isCombatCommitted(form) {
     return form.state === STATE.FIGHT || (form.task?.kind === TASK.ATTACK
       && (form.task.surge || form.task.force));
@@ -680,6 +708,7 @@ export class Hive {
     }
     const fallbackNode = typeof target === 'number' ? target
       : (stimulus?.pnode ?? stimulus?.node ?? situation.threatNode);
+    const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
     // Use the same adjacent-room life-sense here that the doorway veto uses.
     // Otherwise a pack attacks the one silhouette visible in an opening, then
     // learns about the rest of that room a frame later and reverses course.
@@ -697,6 +726,15 @@ export class Hive {
     // not make it reconsider every tick. A newly connected combat form does:
     // that is a real change in the shared odds, not doorway jitter.
     if (!forced && this.retreatCommitmentHolds(pack, decisionStrength)) {
+      // A form that joins the cell after the retreat began must inherit the
+      // same withdrawal. Returning only from this function left the newcomer
+      // on its old attack order, producing the exact doorway split this pack
+      // model is meant to prevent.
+      if (threatNode >= 0) for (const member of pack) {
+        if (!this.isRetreating(member)) {
+          this.retreatOrFight(member, threatNode, false, undefined, decisionStrength);
+        }
+      }
       this._combatResponseCache.add(responseKey);
       return false;
     }
@@ -728,7 +766,6 @@ export class Hive {
       this._combatResponseCache.add(responseKey);
       return form.task?.kind === TASK.ATTACK;
     }
-    const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
     if (threatNode === undefined || threatNode < 0) return false;
     for (const member of pack) {
       if (!this.isRetreating(member)) {
@@ -2579,7 +2616,7 @@ export class Hive {
     // odds say withdraw, retaining ATTACK while retreatCombatForm installs an
     // escape path gives movement two opposite authorities and they overwrite
     // each other every tick, leaving the body stationary under fire.
-    if (lockedTarget && !task.retreat
+    if (lockedTarget && !task.retreat && !task.opportunistic
       && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
     // re-issuing the SAME task must not wipe the path or restart progress —
     // the strategic round re-assigns standing orders every 2.5 s, and the

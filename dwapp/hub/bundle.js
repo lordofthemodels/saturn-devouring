@@ -72649,9 +72649,11 @@ var init_hive = __esm({
         }
         return [...humans.values()];
       }
-      // A local pack is a connected component of forms that can see one another.
-      // It follows the actual openings and open stair volumes, so changing the
-      // room graph changes the group naturally without tactical room IDs.
+      // A local pack is the forms sharing the same flood-sensed tactical cell:
+      // their room plus its directly adjacent rooms. The hive's perception is
+      // shared across that cell, so a doorway crossing cannot split one response
+      // into "run" and "advance" halves. It stays one hop wide rather than
+      // traversing the whole ship as one graph component.
       combatPack(form) {
         if (this._combatCacheTick !== this.sim.tickCount) {
           this._combatCacheTick = this.sim.tickCount;
@@ -72663,24 +72665,19 @@ var init_hive = __esm({
         const cached = this._combatPackCache.get(form.id);
         if (cached) return cached;
         if (!this._combatResponder(form)) return [form];
-        const pack2 = [], queue = [form], seen = /* @__PURE__ */ new Set([form.id]);
-        while (queue.length) {
-          const member = queue.shift();
-          pack2.push(member);
+        const origin = form.pnode ?? form.node;
+        const localNodes = new Set(this.sim.floodSenses(origin));
+        const pack2 = this.sim.agents.filter((candidate) => localNodes.has(candidate.pnode ?? candidate.node) && this._combatResponder(candidate));
+        if (!pack2.some((member) => member.id === form.id)) pack2.push(form);
+        pack2.sort((a2, b2) => a2.id - b2.id);
+        for (const member of pack2) {
           const visible = this.sim.lineOfSightAgents(
             member,
             (candidate) => isLivingHuman(candidate) || isActiveFloodForm(candidate) || candidate.faction === FACTION.CARRIER
           );
           this._combatVisibleCache.set(member.id, visible);
-          for (const ally of visible) {
-            if (!this._combatResponder(ally)) continue;
-            if (seen.has(ally.id)) continue;
-            seen.add(ally.id);
-            queue.push(ally);
-          }
+          this._combatPackCache.set(member.id, pack2);
         }
-        pack2.sort((a2, b2) => a2.id - b2.id);
-        for (const member of pack2) this._combatPackCache.set(member.id, pack2);
         return pack2;
       }
       // Real-space combat balance belongs to the connected pack, not the one
@@ -72701,6 +72698,7 @@ var init_hive = __esm({
             if (isLivingHuman(a2)) humans.set(a2.id, a2);
             else if (a2.faction !== FACTION.COMBAT || this._combatResponder(a2)) flood.set(a2.id, a2);
           }
+          for (const human of this.sensedHumans(member)) humans.set(human.id, human);
         }
         let strength = 0, defense = 0, threat = null, nearestThreat2 = Infinity;
         for (const ally of flood.values()) strength += W_FLOOD[ally.faction] ?? 0;
@@ -72830,6 +72828,27 @@ var init_hive = __esm({
         }
         return baseline > -Infinity && strength < baseline + RETREAT_REASSESS_STRENGTH;
       }
+      // A retreat is not blind flight. Once a form reaches a room with a soft
+      // body and no armed contact in its shared sense cell, that body is the best
+      // way to turn distance into new mass. Restricting this to the current room
+      // keeps the opportunistic stop safe and prevents a lone form from crossing
+      // another doorway just to chase an old civilian belief.
+      retreatPrey(form) {
+        const sim2 = this.sim;
+        const node = form.pnode ?? form.node;
+        const sensed = this.sensedHumans(form);
+        if (sensed.some((human) => human.faction === FACTION.MARINE || human.faction === FACTION.ARMED)) return null;
+        let best = null, bestDistance = Infinity;
+        for (const human of sim2.occupants(node)) {
+          if (!isLivingHuman(human) || human.faction !== FACTION.CIVILIAN) continue;
+          const distance3 = Math.hypot(human.x - form.x, human.y - form.y);
+          if (distance3 < bestDistance - 1e-9 || Math.abs(distance3 - bestDistance) <= 1e-9 && human.id < (best?.id ?? Infinity)) {
+            best = human;
+            bestDistance = distance3;
+          }
+        }
+        return best;
+      }
       isCombatCommitted(form) {
         return form.state === STATE.FIGHT || form.task?.kind === TASK.ATTACK && (form.task.surge || form.task.force);
       }
@@ -72857,6 +72876,7 @@ var init_hive = __esm({
           if (source && isLivingHuman(source) && !knownHumans.some((human) => human.id === source.id)) knownHumans.push(source);
         }
         const fallbackNode = typeof target === "number" ? target : stimulus?.pnode ?? stimulus?.node ?? situation.threatNode;
+        const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
         const sensed = fallbackNode >= 0 ? this.sensedRoomCombat(form, fallbackNode) : null;
         if (sensed) for (const human of sensed.humans) {
           if (!knownHumans.some((known) => known.id === human.id)) knownHumans.push(human);
@@ -72866,6 +72886,11 @@ var init_hive = __esm({
         const surge = provoked || pack2.some((member) => member.task?.surge || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
         const forced = pack2.some((member) => member.task?.force);
         if (!forced && this.retreatCommitmentHolds(pack2, decisionStrength)) {
+          if (threatNode >= 0) for (const member of pack2) {
+            if (!this.isRetreating(member)) {
+              this.retreatOrFight(member, threatNode, false, void 0, decisionStrength);
+            }
+          }
           this._combatResponseCache.add(responseKey);
           return false;
         }
@@ -72894,7 +72919,6 @@ var init_hive = __esm({
           this._combatResponseCache.add(responseKey);
           return form.task?.kind === TASK.ATTACK;
         }
-        const threatNode = situation.threatNode !== -1 ? situation.threatNode : fallbackNode;
         if (threatNode === void 0 || threatNode < 0) return false;
         for (const member of pack2) {
           if (!this.isRetreating(member)) {
@@ -74324,7 +74348,7 @@ var init_hive = __esm({
           if (alive) return;
         }
         const lockedTarget = form.faction === FACTION.COMBAT ? this.lockedCombatTarget(form) : null;
-        if (lockedTarget && !task.retreat && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
+        if (lockedTarget && !task.retreat && !task.opportunistic && (task.kind !== TASK.ATTACK || task.targetId !== lockedTarget.id)) return;
         const t2 = form.task;
         const same = t2 && t2.kind === task.kind && t2.node === task.node && t2.targetId === task.targetId && t2.corpseId === task.corpseId && t2.muster === task.muster;
         if (!same && t2) {
@@ -77187,7 +77211,7 @@ var init_sim = __esm({
           }
           if (a2.move) {
             if (this._holdMarineAtRadarDoor(a2, dt) || this._holdMarineAtHotLadder(a2, dt)) continue;
-            const retreatPace = a2.move.retreatSprint ? this.P.speed.chargeMult : 1;
+            const retreatPace = a2.move.retreatSprint || a2.move.dartSprint ? this.P.speed.chargeMult : 1;
             a2.move.t += dt * retreatPace / a2.move.travelSec;
             const from = g2.node(a2.move.from), to = g2.node(a2.move.to);
             const k2 = Math.min(1, a2.move.t);
@@ -77421,7 +77445,7 @@ var init_sim = __esm({
             a2.path.shift();
             let mult = this._speedMult(a2);
             this._setCharging(a2, false);
-            if (a2.faction === FACTION.COMBAT && a2.dragging === -1 && link.kind === "std" && (surging || this._occ[step3.to].some((h2) => isLivingHuman(h2)))) {
+            if (a2.faction === FACTION.COMBAT && a2.dragging === -1 && link.kind === "std" && !a2.task?.retreat && !(a2.task?.kind === TASK.DART && a2.task.stage === 1) && (surging || this._occ[step3.to].some((h2) => isLivingHuman(h2)))) {
               mult *= this.P.speed.chargeMult;
               this._setCharging(a2, true);
             }
@@ -77430,7 +77454,7 @@ var init_sim = __esm({
               this._setCharging(a2, true);
             }
             const paceHash = (a2.id * 2654435761 >>> 0) / 4294967296;
-            const pace = surging ? 1 : a2.faction === FACTION.INFECTION || a2.faction === FACTION.COMBAT ? 1 + (paceHash - 0.5) * 0.5 : 1 + (a2.id % 7 - 3) * 0.012;
+            const pace = a2.task?.retreat || a2.task?.kind === TASK.DART && a2.task.stage === 1 ? 1 : surging ? 1 : a2.faction === FACTION.INFECTION || a2.faction === FACTION.COMBAT ? 1 + (paceHash - 0.5) * 0.5 : 1 + (a2.id % 7 - 3) * 0.012;
             a2.move = {
               from: a2.node,
               to: step3.to,
@@ -77440,7 +77464,8 @@ var init_sim = __esm({
               sx: a2.x,
               sy: a2.y,
               travelSec: this.travelSec(link, mult) * pace,
-              retreatSprint: a2.faction === FACTION.COMBAT && a2.task?.retreat === true ? a2.retreatSprint : void 0
+              retreatSprint: a2.faction === FACTION.COMBAT && a2.task?.retreat === true ? a2.retreatSprint : void 0,
+              dartSprint: a2.faction === FACTION.COMBAT && a2.task?.kind === TASK.DART && a2.task.stage === 1
             };
             a2.firePost = null;
             if ((link.kind === "vent" || link.kind === "shaft") && this.t - (link._ductLogAt ?? -99) > 12) {
@@ -77633,13 +77658,41 @@ var init_sim = __esm({
           if (a2.downed || a2.hp <= 0 || a2.dragging !== -1) return false;
           const k2 = a2.task?.kind;
           const shotAt = this.tickCount - (a2.lastHurtTick ?? -999) < 45;
-          if (k2 === TASK.TRANSFORM || !shotAt && (k2 === TASK.DECOY || k2 === TASK.BAIT || k2 === TASK.DART)) return false;
+          if (k2 === TASK.TRANSFORM || k2 === TASK.DART && a2.task.stage === 1 || !shotAt && (k2 === TASK.DECOY || k2 === TASK.BAIT || k2 === TASK.DART)) return false;
           const source = shotAt ? this.byId.get(a2.lastHurtBy) : null;
           const locked = this.hive.lockedCombatTarget(a2);
+          const retreating = this.hive.isRetreating(a2);
+          if (retreating) {
+            const prey = this.hive.retreatPrey(a2);
+            if (prey) {
+              this.hive.assign(a2, {
+                kind: TASK.ATTACK,
+                node: pn,
+                targetId: prey.id,
+                opportunistic: true
+              });
+              a2.lastHurtBy = void 0;
+              a2.lastHurtTick = -999;
+              a2.state = STATE.MOVE;
+              return false;
+            }
+          }
+          if (k2 === TASK.DART && a2.task.stage === 0 && shotAt && a2.task.back !== void 0) {
+            a2.task.stage = 1;
+            if (a2.move) this._interruptMove(a2);
+            const back = a2.task.back;
+            if (a2.node !== back) {
+              const path = this.graph.path(a2.node, back, ["std"], (link) => !link.locked);
+              if (path) this.setPath(a2, path);
+            }
+            this._setCharging(a2, false);
+            a2.state = STATE.MOVE;
+            return false;
+          }
           const immediate = this.hive.immediateCombatTarget(a2, P2.combat.lungeRiskM);
           const provoker = source && !source.dead && source.hp > 0 ? source : null;
           let best = immediate ?? provoker ?? locked ?? this.hive.nearestCombatTarget(a2);
-          if (this.hive.isRetreating(a2)) {
+          if (retreating) {
             if (shotAt && a2.retreatStartedTick !== this.tickCount) this._setRetreatSprint(a2, true);
             const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
             const step3 = committed ? null : a2.move ? { to: a2.move.to, link: a2.move.link } : a2.path[0];
@@ -78402,7 +78455,7 @@ var init_sim = __esm({
         if (a2.faction === FACTION.CORPSE || a2.downed || a2.hp <= 0) return CLIP.DEATH;
         if (a2.faction === FACTION.COMBAT) {
           if ((a2.meleeUntil ?? -1) > this.t) return CLIP.ATTACK;
-          if (a2.move?.retreatSprint === false && a2.task?.retreat === true && !a2.charging && !a2.leaping) return CLIP.WALK;
+          if (a2.move?.retreatSprint === false && (a2.task?.retreat === true || a2.task?.kind === TASK.DART && a2.task.stage === 1) && !a2.charging && !a2.leaping) return CLIP.WALK;
           if (a2.move || a2.charging || a2.leaping) return CLIP.RUN;
           return CLIP.IDLE;
         }
