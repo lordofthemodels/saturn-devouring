@@ -891,6 +891,7 @@ export class Hive {
   // the score; remembered danger and dead-end rooms break ties.
   retreatCombatForm(form, threatNode, observedStrength = undefined) {
     const sim = this.sim, g = sim.graph;
+    const wasRetreating = this.isRetreating(form);
     const retreatStrength = form.task?.retreatStrength
       ?? observedStrength
       ?? this.combatLineOfSight(form).strength;
@@ -899,6 +900,10 @@ export class Hive {
     // lets that leg finish on the far side, where the new first edge is no
     // longer connected; the form then appears to jump onto a lift or ladder.
     if (form.move) sim._interruptMove(form);
+    if (!wasRetreating) {
+      sim._setRetreatSprint(form, false);
+      form.retreatStartedTick = sim.tickCount;
+    }
     const from = form.node;
     const openEscape = (link, a, b) => {
       if (link.kind !== 'std' || link.locked) return false;
@@ -2598,6 +2603,11 @@ export class Hive {
     }
     if ((t?.kind === TASK.TRANSFORM) !== (task.kind === TASK.TRANSFORM)) {
       this._combatCacheTick = -1;
+    }
+    if (form.faction === FACTION.COMBAT && !task.retreat) {
+      form.retreatSprint = false;
+      form.retreatStartedTick = -1;
+      if (form.move) form.move.retreatSprint = false;
     }
     // A new destination cannot inherit a physical leg aimed somewhere else.
     // Preserve movement whose complete queued route already ends at the new

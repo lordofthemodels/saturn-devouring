@@ -70830,7 +70830,7 @@ function makeAgent(kind, node, graph) {
     heading: 0,
     // movement along an edge: null when parked in a node
     move: null,
-    // { to, link, layer, t (0..1), travelSec }
+    // { to, link, layer, t (0..1), travelSec, retreatSprint }
     path: [],
     // remaining [{to, link, layer}]
     hp: 1,
@@ -70884,6 +70884,9 @@ function makeAgent(kind, node, graph) {
     nextCombatLeapAt: 0,
     chargeTargetId: -1,
     // sticky spatial-charge target for LOS pursuit (sim.js)
+    retreatSprint: false,
+    retreatStartedTick: -1,
+    // walk first; run if engaged after
     chargePoseSequence: 0,
     chargeArmsHigh: false,
     chargeEndedAt: -Infinity,
@@ -73043,8 +73046,13 @@ var init_hive = __esm({
       // the score; remembered danger and dead-end rooms break ties.
       retreatCombatForm(form, threatNode, observedStrength = void 0) {
         const sim2 = this.sim, g2 = sim2.graph;
+        const wasRetreating = this.isRetreating(form);
         const retreatStrength = form.task?.retreatStrength ?? observedStrength ?? this.combatLineOfSight(form).strength;
         if (form.move) sim2._interruptMove(form);
+        if (!wasRetreating) {
+          sim2._setRetreatSprint(form, false);
+          form.retreatStartedTick = sim2.tickCount;
+        }
         const from = form.node;
         const openEscape = (link, a2, b2) => {
           if (link.kind !== "std" || link.locked) return false;
@@ -74331,6 +74339,11 @@ var init_hive = __esm({
         }
         if (t2?.kind === TASK.TRANSFORM !== (task.kind === TASK.TRANSFORM)) {
           this._combatCacheTick = -1;
+        }
+        if (form.faction === FACTION.COMBAT && !task.retreat) {
+          form.retreatSprint = false;
+          form.retreatStartedTick = -1;
+          if (form.move) form.move.retreatSprint = false;
         }
         if (!same && form.move && task.node !== void 0) {
           const moveGoal = form.path.at(-1)?.to ?? form.move.to;
@@ -76523,6 +76536,12 @@ var init_sim = __esm({
         }
         a2.charging = charging;
       }
+      _setRetreatSprint(a2, sprint) {
+        if (a2.faction !== FACTION.COMBAT) return;
+        const value = !!sprint;
+        a2.retreatSprint = value;
+        if (a2.move) a2.move.retreatSprint = value;
+      }
       // One authoritative sliding-door clock serves AI sight, rifle damage, and
       // the renderer. The old renderer-only clock let marines acquire targets
       // through an unlocked panel while the player was visibly watching it shut.
@@ -77168,7 +77187,8 @@ var init_sim = __esm({
           }
           if (a2.move) {
             if (this._holdMarineAtRadarDoor(a2, dt) || this._holdMarineAtHotLadder(a2, dt)) continue;
-            a2.move.t += dt / a2.move.travelSec;
+            const retreatPace = a2.move.retreatSprint ? this.P.speed.chargeMult : 1;
+            a2.move.t += dt * retreatPace / a2.move.travelSec;
             const from = g2.node(a2.move.from), to = g2.node(a2.move.to);
             const k2 = Math.min(1, a2.move.t);
             const link = a2.move.link;
@@ -77419,7 +77439,8 @@ var init_sim = __esm({
               t: 0,
               sx: a2.x,
               sy: a2.y,
-              travelSec: this.travelSec(link, mult) * pace
+              travelSec: this.travelSec(link, mult) * pace,
+              retreatSprint: a2.faction === FACTION.COMBAT && a2.task?.retreat === true ? a2.retreatSprint : void 0
             };
             a2.firePost = null;
             if ((link.kind === "vent" || link.kind === "shaft") && this.t - (link._ductLogAt ?? -99) > 12) {
@@ -77619,6 +77640,7 @@ var init_sim = __esm({
           const provoker = source && !source.dead && source.hp > 0 ? source : null;
           let best = immediate ?? provoker ?? locked ?? this.hive.nearestCombatTarget(a2);
           if (this.hive.isRetreating(a2)) {
+            if (shotAt && a2.retreatStartedTick !== this.tickCount) this._setRetreatSprint(a2, true);
             const committed = a2.move && (a2.move.hidden || a2.move.appT !== void 0 && a2.move.t >= a2.move.appT || a2.move.appT === void 0 && a2.node !== a2.move.from);
             const step3 = committed ? null : a2.move ? { to: a2.move.to, link: a2.move.link } : a2.path[0];
             if (best && step3 && !this.hive.retreatApproachSafe(a2, step3)) {
@@ -78380,6 +78402,7 @@ var init_sim = __esm({
         if (a2.faction === FACTION.CORPSE || a2.downed || a2.hp <= 0) return CLIP.DEATH;
         if (a2.faction === FACTION.COMBAT) {
           if ((a2.meleeUntil ?? -1) > this.t) return CLIP.ATTACK;
+          if (a2.move?.retreatSprint === false && a2.task?.retreat === true && !a2.charging && !a2.leaping) return CLIP.WALK;
           if (a2.move || a2.charging || a2.leaping) return CLIP.RUN;
           return CLIP.IDLE;
         }
