@@ -72543,17 +72543,34 @@ var init_hive = __esm({
         memo.set(key, path);
         return path === null ? null : path.slice();
       }
+      // A vent exit is safe only when the hive senses no armed contact in that
+      // room OR immediately beyond its doors. A pod has life-sense through the
+      // bulkhead; surfacing beside a marine just to discover it one doorway later
+      // wastes the hive's most precious unit.
+      infectionSurfaceThreat(node) {
+        for (const sensed of this.sim.floodSenses(node)) {
+          if (this.believedHardness[sensed] > 0.35) return true;
+          for (const human of this.sim.occupants(sensed)) {
+            if (human.dead || human.hp <= 0) continue;
+            if (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED) return true;
+          }
+        }
+        return false;
+      }
+      infectionSurfaceSafe(node) {
+        return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionSurfaceThreat(node);
+      }
       // INFECTION ROUTING (user redesign): pods ALWAYS avoid marines, and the
       // duct network is how. Compare the quiet walk against the direct network
       // transit by time and take the faster — with two hard rules on top:
-      //  1. never EMERGE into a room the hive believes marines hold;
+      //  1. never EMERGE into a room with sensed or believed armed contact;
       //  2. if the only walk crosses believed guns, the network wins outright
       //     (the pod vanishes into the walls instead).
       safeInfectionPath(from, to) {
         if (from === to) return [];
         const walk = this.stealthPath(from, to, "infection");
         const g2 = this.sim.graph;
-        const ventOk = this.believedHardness[to] <= 0.3;
+        const ventOk = this.infectionSurfaceSafe(to);
         if (!ventOk) return walk;
         const vEta = this.ventEtaSec(from, to);
         if (walk) {
@@ -73323,7 +73340,7 @@ var init_hive = __esm({
         return best;
       }
       // Where a pod diving into the grate should surface: the quietest room the
-      // hive believes empty of guns, biased toward its own mass and toward decks
+      // hive senses empty of guns, biased toward its own mass and toward decks
       // the counter says are unmarined. O(n) scan, only run when a pod is
       // actually bolting for its life. Deterministic (score, then lowest index).
       ventBoltTarget(from) {
@@ -73331,8 +73348,7 @@ var init_hive = __esm({
         let best = -1, bestScore = -Infinity;
         for (let n2 = 0; n2 < g2.n; n2++) {
           if (n2 === from) continue;
-          if (g2.burningUntil[n2] > this.sim.t) continue;
-          if (this.believedHardness[n2] > 0.1 || this.believedHumanStr[n2] > 0.3) continue;
+          if (!this.infectionSurfaceSafe(n2)) continue;
           const score = -this.localThreat(n2) * 2 + this.sim.influence.floodStr[n2] * 0.5 + this.radioDark(g2.node(n2).deck) - this.trafficPenalty(n2) * 0.3;
           if (score > bestScore + 1e-9) {
             bestScore = score;
@@ -74432,7 +74448,9 @@ function updateFloodTick(sim2, dt) {
       const roomies = sim2.occupants(pn);
       const hot = roomies.some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED && h2.state === STATE.FIGHT));
       const inLunge = roomies.some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.CIVILIAN || h2.faction === FACTION.ARMED || h2.faction === FACTION.MARINE) && Math.hypot(h2.x - a2.x, h2.y - a2.y) <= sim2.P.combat.lungeRiskM);
-      if (hot && !inLunge) {
+      const localPrize = roomies.some((occupant) => !occupant.dead && occupant.hp > 0 && (occupant.faction === FACTION.CIVILIAN || occupant.faction === FACTION.ARMED) || occupant.faction === FACTION.CORPSE && !occupant.dead && occupant.damage < 100 && !occupant.claimed);
+      const sensedThreat = !localPrize && hive.infectionSurfaceThreat(pn);
+      if ((hot || sensedThreat) && !inLunge) {
         let hereDanger = 0;
         for (const h2 of roomies) {
           if (h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED && h2.state === STATE.FIGHT)) hereDanger += 2;

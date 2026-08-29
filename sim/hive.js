@@ -330,18 +330,37 @@ export class Hive {
     // the stored array, on hit OR miss
     return path === null ? null : path.slice();
   }
+  // A vent exit is safe only when the hive senses no armed contact in that
+  // room OR immediately beyond its doors. A pod has life-sense through the
+  // bulkhead; surfacing beside a marine just to discover it one doorway later
+  // wastes the hive's most precious unit.
+  infectionSurfaceThreat(node) {
+    for (const sensed of this.sim.floodSenses(node)) {
+      if (this.believedHardness[sensed] > 0.35) return true;
+      for (const human of this.sim.occupants(sensed)) {
+        if (human.dead || human.hp <= 0) continue;
+        if (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED) return true;
+      }
+    }
+    return false;
+  }
+
+  infectionSurfaceSafe(node) {
+    return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionSurfaceThreat(node);
+  }
+
   // INFECTION ROUTING (user redesign): pods ALWAYS avoid marines, and the
   // duct network is how. Compare the quiet walk against the direct network
   // transit by time and take the faster — with two hard rules on top:
-  //  1. never EMERGE into a room the hive believes marines hold;
+  //  1. never EMERGE into a room with sensed or believed armed contact;
   //  2. if the only walk crosses believed guns, the network wins outright
   //     (the pod vanishes into the walls instead).
   safeInfectionPath(from, to) {
     if (from === to) return [];
     const walk = this.stealthPath(from, to, 'infection');
     const g = this.sim.graph;
-    const ventOk = this.believedHardness[to] <= 0.3;
-    if (!ventOk) return walk; // never surface under believed guns
+    const ventOk = this.infectionSurfaceSafe(to);
+    if (!ventOk) return walk; // never surface beside sensed or believed guns
     const vEta = this.ventEtaSec(from, to);
     if (walk) {
       let walkSec = 0, crossesGuns = false;
@@ -1249,7 +1268,7 @@ export class Hive {
   }
 
   // Where a pod diving into the grate should surface: the quietest room the
-  // hive believes empty of guns, biased toward its own mass and toward decks
+  // hive senses empty of guns, biased toward its own mass and toward decks
   // the counter says are unmarined. O(n) scan, only run when a pod is
   // actually bolting for its life. Deterministic (score, then lowest index).
   ventBoltTarget(from) {
@@ -1257,8 +1276,7 @@ export class Hive {
     let best = -1, bestScore = -Infinity;
     for (let n = 0; n < g.n; n++) {
       if (n === from) continue;
-      if (g.burningUntil[n] > this.sim.t) continue;
-      if (this.believedHardness[n] > 0.1 || this.believedHumanStr[n] > 0.3) continue;
+      if (!this.infectionSurfaceSafe(n)) continue;
       const score = -this.localThreat(n) * 2
         + this.sim.influence.floodStr[n] * 0.5
         + this.radioDark(g.node(n).deck)
