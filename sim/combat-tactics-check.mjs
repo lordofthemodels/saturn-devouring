@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FACTION } from '../shared/agentBuffer.js';
+import { FACTION, CLIP } from '../shared/agentBuffer.js';
 import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
 import { updateHumansTick } from './humans.js';
@@ -341,14 +341,28 @@ lockedRetreatSim._advanceMovement(lockedRetreatSim.dt);
 assert.ok(lockedRetreatForm.move,
   'a locked form that withdraws must begin moving instead of oscillating in place');
 const retreatLeg = lockedRetreatForm.move;
+assert.equal(retreatLeg.retreatSprint, false,
+  'a newly chosen retreat must begin at walking pace');
+assert.equal(lockedRetreatSim._clipFor(lockedRetreatForm), CLIP.WALK,
+  'a walking retreat must use the walk animation');
+const walkingProgress = lockedRetreatSim.dt / retreatLeg.travelSec;
 lockedRetreatSim.tickCount++;
 lockedRetreatSim.t += lockedRetreatSim.dt;
 lockedRetreatSim._refreshOccupancy();
+lockedRetreatSim._spatialSteer(lockedRetreatForm, lockedRetreatSim.dt);
+assert.equal(lockedRetreatForm.retreatSprint, true,
+  'incoming fire must accelerate a retreating form');
+assert.equal(retreatLeg.retreatSprint, true,
+  'the active retreat leg must adopt the run pace');
+assert.equal(lockedRetreatSim._clipFor(lockedRetreatForm), CLIP.RUN,
+  'an engaged retreat must use the run animation');
 lockedRetreatSim._advanceMovement(lockedRetreatSim.dt);
 assert.equal(lockedRetreatForm.move, retreatLeg,
   'incoming fire must not replace an already viable retreat leg');
 assert.ok(lockedRetreatForm.move.t > 0,
   'the retreat leg must continue making physical progress under fire');
+assert.ok(lockedRetreatForm.move.t > walkingProgress * 2,
+  'an engaged retreat must advance materially faster than its walking pace');
 
 // One appendage being shot gives the whole visible pack one response. Every
 // member abandons its stale destination, pursues the shared nearest marine,

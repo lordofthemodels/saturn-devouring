@@ -1024,6 +1024,16 @@ export class Sim {
     a.charging = charging;
   }
 
+  _setRetreatSprint(a, sprint) {
+    if (a.faction !== FACTION.COMBAT) return;
+    const value = !!sprint;
+    a.retreatSprint = value;
+    // why: movement legs cache their travel time, so update the active leg
+    // directly when fire catches a retreating form instead of rebuilding its
+    // route and reintroducing the doorway oscillation this state prevents.
+    if (a.move) a.move.retreatSprint = value;
+  }
+
   // One authoritative sliding-door clock serves AI sight, rifle damage, and
   // the renderer. The old renderer-only clock let marines acquire targets
   // through an unlocked panel while the player was visibly watching it shut.
@@ -1772,7 +1782,8 @@ export class Sim {
       }
       if (a.move) {
         if (this._holdMarineAtRadarDoor(a, dt) || this._holdMarineAtHotLadder(a, dt)) continue;
-        a.move.t += dt / a.move.travelSec;
+        const retreatPace = a.move.retreatSprint ? this.P.speed.chargeMult : 1;
+        a.move.t += dt * retreatPace / a.move.travelSec;
         const from = g.node(a.move.from), to = g.node(a.move.to);
         const k = Math.min(1, a.move.t);
         const link = a.move.link;
@@ -2158,7 +2169,9 @@ export class Sim {
         // every parked/steered/separated agent snap onto the center line the
         // moment a move began
         a.move = { from: a.node, to: step.to, link, layer: link.kind, t: 0,
-          sx: a.x, sy: a.y, travelSec: this.travelSec(link, mult) * pace };
+          sx: a.x, sy: a.y, travelSec: this.travelSec(link, mult) * pace,
+          retreatSprint: a.faction === FACTION.COMBAT && a.task?.retreat === true
+            ? a.retreatSprint : undefined };
         a.firePost = null; // a moving shooter re-takes its firing post on arrival
         // DUCT NOISES (user: vents don't show on the map — the crew only
         // HEARS them): a form slipping into the ducting drops an ominous
@@ -2400,6 +2413,10 @@ export class Sim {
       // if the shooter has just side-stepped behind the edge of the opening.
       // The shared task carries that revelation to packmates following behind.
       if (this.hive.isRetreating(a)) {
+        // why: the round that causes the retreat still gets one clean walking
+        // tick; only continued fire after the decision turns the withdrawal
+        // into a full-speed run.
+        if (shotAt && a.retreatStartedTick !== this.tickCount) this._setRetreatSprint(a, true);
         // Keep a clean escape uninterrupted, but never preserve one whose
         // physical approach has become a run past a visible shooter. Re-plan
         // from the body's live position; no other clean first leg means it is
@@ -3375,6 +3392,8 @@ export class Sim {
     // recovery window returns to an alert idle instead of looping fake hits.
     if (a.faction === FACTION.COMBAT) {
       if ((a.meleeUntil ?? -1) > this.t) return CLIP.ATTACK;
+      if (a.move?.retreatSprint === false && a.task?.retreat === true
+        && !a.charging && !a.leaping) return CLIP.WALK;
       if (a.move || a.charging || a.leaping) return CLIP.RUN;
       return CLIP.IDLE;
     }
