@@ -2481,10 +2481,9 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // ONE ACTION KEY, matching controller RB: a live context gets E first;
-  // without one, the same press reloads. R stays as a quiet legacy alias.
+  // without one, the same press reloads.
   if (e.code === 'KeyE' && !e.repeat
     && singleActionPress(true, contextualActionAvailable()).reloadPressed) reloadPressed = true;
-  if (e.code === 'KeyR') reloadPressed = true;
   if (e.code === 'KeyF') meleePressed = true;
   if (e.code === 'KeyG') fragPressed = true;
   if (e.code === 'KeyK') toggleSoundBoard();
@@ -3814,7 +3813,11 @@ function frame(now) {
     // With the flamethrower up, red means a visible Flood body is inside both
     // the finite fuel reach and the current cone. Blue means close the range
     // or clear the obstruction; it is not a generic enemy-awareness marker.
-    const hot = heldIsFlamer && !spectating && !!solveFlameAim().target;
+    // `spectating` is derived later in this frame, after afterlife state has
+    // advanced. Reading that later const here put it in the temporal dead zone:
+    // the short circuit hid the bug until the first flamethrower came up, then
+    // every render frame crashed. Player liveness is the actual requirement.
+    const hot = heldIsFlamer && !player.dead && !!solveFlameAim().target;
     const xh = el('crosshair');
     const cls = hot ? 'hud flame-hot' : 'hud';
     if (xh.className !== cls) xh.className = cls;
@@ -4176,6 +4179,10 @@ function frame(now) {
         : trunk.edge?.type === 'ladder' && sim.vertBusy(trunk.edge, player.agent.id)
           ? `${kind} busy — ${inputPrompt('E', 'RB')} to take the next slot`
           : `${inputPrompt('E', 'RB')} — climb ${kind} ${up ? 'up' : 'down'} to deck ${up ? trunk.upperDeck : trunk.lowerDeck}`);
+      setStyle('hint', 'display', 'block');
+    } else if (!player.dead && !weapon.reloading
+      && weapon.mag < weapon.def.mag && weapon.reserve > 0) {
+      setText('hint', `${inputPrompt('E', 'RB')} — reload MA5`);
       setStyle('hint', 'display', 'block');
     } else setStyle('hint', 'display', 'none');
   }

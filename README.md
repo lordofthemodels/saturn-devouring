@@ -136,8 +136,9 @@ behavior inspectable and reproducible.
 ## Controls
 
 - `WASD` move, mouse look, click fire
-- `E` picks up or uses ammunition, health, armor, and weapons; `R` reloads and `F` melees
-- `L` use ladders or stair transitions
+- `E` is the single action key: it picks up or uses ammunition, health, armor,
+  and weapons, uses ladders or stairs, and reloads when no interaction is nearby
+- `F` melees
 - `M` tactical map, `G` throw a frag, `T` give a magazine to a fireteam member
 - `1` follow, `2` hold, `3` advance
 
