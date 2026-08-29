@@ -94000,7 +94000,7 @@ function updateStrengthHud(now) {
     if (a2.faction === FACTION.INFECTION && !a2.downed) infectionMass++;
     else if (a2.faction === FACTION.COMBAT && !a2.downed) infectionMass += 2;
     else if (a2.faction === FACTION.CARRIER) infectionMass += 2;
-    else if (a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer) marinesAlive++;
+    else if (a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer && !a2.deckGuard) marinesAlive++;
   }
   const infectionScale = Math.max(1, sim.P.carrier.productionBackpressure);
   setStyle(
@@ -96073,7 +96073,7 @@ var init_main = __esm({
     }).catch((e2) => console.error("[charon] Rapier physics failed to initialise:", e2));
     agents.playerId = player.agent.id;
     fireteam = networkSquads.get(LAUNCH.session?.did) ?? sim.attachPlayerSquad(player.agent, 3);
-    shipMarines0 = sim.agents.filter((a2) => a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer).length;
+    shipMarines0 = sim.agents.filter((a2) => a2.faction === FACTION.MARINE && !a2.isPlayer && !a2.fromPlayer && !a2.deckGuard).length;
     gameSync = createGameSync({
       session: LAUNCH.session,
       scene,

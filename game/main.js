@@ -353,11 +353,12 @@ initRapier().then(() => {
 }).catch((e) => console.error('[charon] Rapier physics failed to initialise:', e));
 agents.playerId = player.agent.id;
 const fireteam = networkSquads.get(LAUNCH.session?.did) ?? sim.attachPlayerSquad(player.agent, 3);
-// Every rifle aboard exists before the first frame. This is the stable full
-// scale for the numberless ship-strength meter; players and converted player
-// bodies are deliberately not part of the ship's marine complement.
+// The ship-strength meter tracks the mobile fighting complement. Deck 1 room
+// sentries are a local alarm network, not a meaningful share of shipwide
+// strength; players and converted player bodies are excluded for the same
+// reason.
 const shipMarines0 = sim.agents.filter((a) => a.faction === FACTION.MARINE
-  && !a.isPlayer && !a.fromPlayer).length;
+  && !a.isPlayer && !a.fromPlayer && !a.deckGuard).length;
 const gameSync = createGameSync({
   session: LAUNCH.session,
   scene,
@@ -1442,7 +1443,7 @@ function updateStrengthHud(now) {
     if (a.faction === FACTION.INFECTION && !a.downed) infectionMass++;
     else if (a.faction === FACTION.COMBAT && !a.downed) infectionMass += 2;
     else if (a.faction === FACTION.CARRIER) infectionMass += 2;
-    else if (a.faction === FACTION.MARINE && !a.isPlayer && !a.fromPlayer) marinesAlive++;
+    else if (a.faction === FACTION.MARINE && !a.isPlayer && !a.fromPlayer && !a.deckGuard) marinesAlive++;
   }
   const infectionScale = Math.max(1, sim.P.carrier.productionBackpressure);
   setStyle('infectionStrengthBar', 'transform',
