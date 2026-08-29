@@ -330,29 +330,24 @@ export class Hive {
     // the stored array, on hit OR miss
     return path === null ? null : path.slice();
   }
-  // A vent exit is safe only when the hive senses no armed contact in that
-  // room OR immediately beyond its doors. A pod has life-sense through the
-  // bulkhead; surfacing beside a marine just to discover it one doorway later
-  // wastes the hive's most precious unit.
-  infectionSurfaceThreat(node) {
-    for (const sensed of this.sim.floodSenses(node)) {
-      if (this.believedHardness[sensed] > 0.35) return true;
-      for (const human of this.sim.occupants(sensed)) {
-        if (human.dead || human.hp <= 0) continue;
-        if (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED) return true;
-      }
-    }
-    return false;
+  // A vent exit itself must be clear of armed contact. Nearby rooms remain
+  // valid: the pod can sense a rifle one doorway away and decides whether its
+  // NEXT step would cross into that line, rather than treating the whole
+  // neighbourhood as forbidden territory.
+  infectionArmedContact(node) {
+    if (this.believedHardness[node] > 0.35) return true;
+    return this.sim.occupants(node).some((human) => !human.dead && human.hp > 0
+      && (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED));
   }
 
   infectionSurfaceSafe(node) {
-    return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionSurfaceThreat(node);
+    return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionArmedContact(node);
   }
 
   // INFECTION ROUTING (user redesign): pods ALWAYS avoid marines, and the
   // duct network is how. Compare the quiet walk against the direct network
   // transit by time and take the faster — with two hard rules on top:
-  //  1. never EMERGE into a room with sensed or believed armed contact;
+  //  1. never EMERGE into a room with armed contact;
   //  2. if the only walk crosses believed guns, the network wins outright
   //     (the pod vanishes into the walls instead).
   safeInfectionPath(from, to) {

@@ -64,17 +64,19 @@ export function updateFloodTick(sim, dt) {
       const inLunge = roomies.some((h) => h.hp > 0 && !h.dead &&
         (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE)
         && Math.hypot(h.x - a.x, h.y - a.y) <= sim.P.combat.lungeRiskM);
-      // A pod that surfaced into an otherwise empty room still senses rifles
-      // on the other side of its doors. It has no reason to cross that
-      // threshold without prey underfoot: dive back into the vent network and
-      // surface somewhere that is actually safe.
+      // A pod that surfaced into an otherwise empty room can sense rifles on
+      // the other side of its doors. It only bails if its NEXT step would
+      // cross that threshold: a nearby marine does not make every empty vent
+      // exit unusable, but walking straight into the rifle line still is.
       const localPrize = roomies.some((occupant) =>
         (!occupant.dead && occupant.hp > 0
           && (occupant.faction === FACTION.CIVILIAN || occupant.faction === FACTION.ARMED))
         || (occupant.faction === FACTION.CORPSE && !occupant.dead
           && occupant.damage < 100 && !occupant.claimed));
-      const sensedThreat = !localPrize && hive.infectionSurfaceThreat(pn);
-      if ((hot || sensedThreat) && !inLunge) {
+      const nextStep = nextInfectionStep(sim, hive, a);
+      const crossingSensedGuns = !localPrize && nextStep?.layer === 'std'
+        && hive.infectionArmedContact(nextStep.to);
+      if ((hot || crossingSensedGuns) && !inLunge) {
         // danger where we STAND, for comparison — bolting only makes sense
         // into a strictly safer room. Without this, a form whose exits were
         // all covered would "flee" INTO the next room's marines (user
@@ -472,6 +474,20 @@ function moveToward(sim, a, node, pathFn = null) {
     ?? sim.graph.path(a.node, node, ['std'], hive.combatPass);
   if (path && path.length) sim.setPath(a, path);
   else if (!path) a.task = null; // believed-unreachable; hive will reassign
+}
+
+function nextInfectionStep(sim, hive, form) {
+  if (form.path.length) return form.path[0];
+  const task = form.task;
+  let target = -1;
+  if (task?.kind === TASK.MOVE || task?.kind === TASK.SCOUT || task?.kind === TASK.GUARD) {
+    target = task.node;
+  } else if (task?.kind === TASK.GRAB) {
+    const victim = sim.byId.get(task.targetId);
+    target = victim?.pnode ?? victim?.node ?? -1;
+  }
+  if (target < 0 || target === form.node) return null;
+  return hive.safeInfectionPath(form.node, target)?.[0] ?? null;
 }
 
 export function spawnCombatForm(sim, node, at = null) {

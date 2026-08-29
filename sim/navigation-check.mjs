@@ -276,12 +276,14 @@ ventContactSim.t = ventContactSim.dt;
 ventEscapePod.task = { kind: TASK.SCOUT, node: contactEdge.b };
 ventContactSim._refreshOccupancy();
 ventContactSim._computeInfluence();
-assert.equal(ventContactSim.hive.infectionSurfaceThreat(contactEdge.a), true,
-  'an infection form must sense a live marine in an adjacent room');
+assert.equal(ventContactSim.hive.infectionSurfaceSafe(contactEdge.a), true,
+  'an empty vent exit remains usable beside a marine in the next room');
+assert.equal(ventContactSim.hive.infectionArmedContact(contactEdge.b), true,
+  'an infection form must sense a live marine before crossing into its room');
 const ventSafeRoom = ventContactSim.hive.ventBoltTarget(contactEdge.a);
 assert.notEqual(ventSafeRoom, -1, 'the vent network must have a safe fallback room');
-assert.equal(ventContactSim.hive.infectionSurfaceThreat(ventSafeRoom), false,
-  'the fallback vent exit must not surface beside an armed contact');
+assert.equal(ventContactSim.hive.infectionArmedContact(ventSafeRoom), false,
+  'the fallback vent exit must not surface into armed contact');
 updateFloodTick(ventContactSim, ventContactSim.dt);
 assert.equal(ventEscapePod.task, null,
   'a pod must abandon an empty-room scout when it senses the adjacent rifle line');
