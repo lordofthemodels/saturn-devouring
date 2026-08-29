@@ -72543,27 +72543,21 @@ var init_hive = __esm({
         memo.set(key, path);
         return path === null ? null : path.slice();
       }
-      // A vent exit is safe only when the hive senses no armed contact in that
-      // room OR immediately beyond its doors. A pod has life-sense through the
-      // bulkhead; surfacing beside a marine just to discover it one doorway later
-      // wastes the hive's most precious unit.
-      infectionSurfaceThreat(node) {
-        for (const sensed of this.sim.floodSenses(node)) {
-          if (this.believedHardness[sensed] > 0.35) return true;
-          for (const human of this.sim.occupants(sensed)) {
-            if (human.dead || human.hp <= 0) continue;
-            if (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED) return true;
-          }
-        }
-        return false;
+      // A vent exit itself must be clear of armed contact. Nearby rooms remain
+      // valid: the pod can sense a rifle one doorway away and decides whether its
+      // NEXT step would cross into that line, rather than treating the whole
+      // neighbourhood as forbidden territory.
+      infectionArmedContact(node) {
+        if (this.believedHardness[node] > 0.35) return true;
+        return this.sim.occupants(node).some((human) => !human.dead && human.hp > 0 && (human.faction === FACTION.MARINE || human.faction === FACTION.ARMED));
       }
       infectionSurfaceSafe(node) {
-        return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionSurfaceThreat(node);
+        return this.sim.graph.burningUntil[node] <= this.sim.t && !this.infectionArmedContact(node);
       }
       // INFECTION ROUTING (user redesign): pods ALWAYS avoid marines, and the
       // duct network is how. Compare the quiet walk against the direct network
       // transit by time and take the faster — with two hard rules on top:
-      //  1. never EMERGE into a room with sensed or believed armed contact;
+      //  1. never EMERGE into a room with armed contact;
       //  2. if the only walk crosses believed guns, the network wins outright
       //     (the pod vanishes into the walls instead).
       safeInfectionPath(from, to) {
@@ -74449,8 +74443,9 @@ function updateFloodTick(sim2, dt) {
       const hot = roomies.some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED && h2.state === STATE.FIGHT));
       const inLunge = roomies.some((h2) => h2.hp > 0 && !h2.dead && (h2.faction === FACTION.CIVILIAN || h2.faction === FACTION.ARMED || h2.faction === FACTION.MARINE) && Math.hypot(h2.x - a2.x, h2.y - a2.y) <= sim2.P.combat.lungeRiskM);
       const localPrize = roomies.some((occupant) => !occupant.dead && occupant.hp > 0 && (occupant.faction === FACTION.CIVILIAN || occupant.faction === FACTION.ARMED) || occupant.faction === FACTION.CORPSE && !occupant.dead && occupant.damage < 100 && !occupant.claimed);
-      const sensedThreat = !localPrize && hive.infectionSurfaceThreat(pn);
-      if ((hot || sensedThreat) && !inLunge) {
+      const nextStep = nextInfectionStep(sim2, hive, a2);
+      const crossingSensedGuns = !localPrize && nextStep?.layer === "std" && hive.infectionArmedContact(nextStep.to);
+      if ((hot || crossingSensedGuns) && !inLunge) {
         let hereDanger = 0;
         for (const h2 of roomies) {
           if (h2.hp > 0 && !h2.dead && (h2.faction === FACTION.MARINE || h2.faction === FACTION.ARMED && h2.state === STATE.FIGHT)) hereDanger += 2;
@@ -74768,6 +74763,19 @@ function moveToward(sim2, a2, node, pathFn = null) {
   else path = hive.safeAssaultPath(a2.node, node) ?? sim2.graph.path(a2.node, node, ["std"], hive.combatPass);
   if (path && path.length) sim2.setPath(a2, path);
   else if (!path) a2.task = null;
+}
+function nextInfectionStep(sim2, hive, form) {
+  if (form.path.length) return form.path[0];
+  const task = form.task;
+  let target = -1;
+  if (task?.kind === TASK.MOVE || task?.kind === TASK.SCOUT || task?.kind === TASK.GUARD) {
+    target = task.node;
+  } else if (task?.kind === TASK.GRAB) {
+    const victim = sim2.byId.get(task.targetId);
+    target = victim?.pnode ?? victim?.node ?? -1;
+  }
+  if (target < 0 || target === form.node) return null;
+  return hive.safeInfectionPath(form.node, target)?.[0] ?? null;
 }
 function spawnCombatForm(sim2, node, at = null) {
   const f2 = makeAgent(FACTION.COMBAT, node, sim2.graph);
