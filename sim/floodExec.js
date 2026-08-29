@@ -64,12 +64,17 @@ export function updateFloodTick(sim, dt) {
       const inLunge = roomies.some((h) => h.hp > 0 && !h.dead &&
         (h.faction === FACTION.CIVILIAN || h.faction === FACTION.ARMED || h.faction === FACTION.MARINE)
         && Math.hypot(h.x - a.x, h.y - a.y) <= sim.P.combat.lungeRiskM);
-      // NOTE: an earlier "flee marines SENSED in the next room via ducts" pass
-      // was cut — the balk + pod-muster already keep pods OUT of manned rooms
-      // (measured ~0.3% ever share a marine's node), and the extra proactive
-      // flee only sapped the flood's push (design rule: the flood must dominate
-      // an NPC-only ship). Pods still bolt from guns in their OWN room below.
-      if (hot && !inLunge) {
+      // A pod that surfaced into an otherwise empty room still senses rifles
+      // on the other side of its doors. It has no reason to cross that
+      // threshold without prey underfoot: dive back into the vent network and
+      // surface somewhere that is actually safe.
+      const localPrize = roomies.some((occupant) =>
+        (!occupant.dead && occupant.hp > 0
+          && (occupant.faction === FACTION.CIVILIAN || occupant.faction === FACTION.ARMED))
+        || (occupant.faction === FACTION.CORPSE && !occupant.dead
+          && occupant.damage < 100 && !occupant.claimed));
+      const sensedThreat = !localPrize && hive.infectionSurfaceThreat(pn);
+      if ((hot || sensedThreat) && !inLunge) {
         // danger where we STAND, for comparison — bolting only makes sense
         // into a strictly safer room. Without this, a form whose exits were
         // all covered would "flee" INTO the next room's marines (user

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { FACTION } from '../shared/agentBuffer.js';
 import { makeAgent, STATE } from './init.js';
 import { TASK } from './hive.js';
+import { updateFloodTick } from './floodExec.js';
 import { Sim } from './sim.js';
 
 const sim = new Sim('navigation-check');
@@ -255,6 +256,39 @@ for (let tick = 0; tick < 1_000 && !ventPod.move?.hidden; tick++) {
 }
 assert.equal(ventPod.dead, false, 'a pod must survive a viable route around fire to its grate');
 assert.equal(ventPod.move?.hidden, true, 'the pod must reach the vent after taking the detour');
+
+// A pod that surfaces into an empty room still knows about the marine one
+// doorway away. It must dive back into the network, not walk into the rifle
+// line simply because it has not crossed that threshold yet.
+const ventContactSim = new Sim('vent-adjacent-contact-check');
+for (const agent of ventContactSim.agents) agent.dead = true;
+const contactEdge = ventContactSim.graph.edges.find((edge) => edge.kind === 'std' && !edge.locked);
+assert.ok(contactEdge, 'vent contact fixture needs an open doorway');
+const ventEscapePod = makeAgent(FACTION.INFECTION, contactEdge.a, ventContactSim.graph);
+const nextRoomMarine = makeAgent(FACTION.MARINE, contactEdge.b, ventContactSim.graph);
+ventContactSim.spawn(ventEscapePod);
+ventContactSim.spawn(nextRoomMarine);
+ventContactSim.hive.beliefs.clear();
+ventContactSim.hive.believedHardness.fill(0);
+ventContactSim.hive.believedHumanStr.fill(0);
+ventContactSim.tickCount = 1;
+ventContactSim.t = ventContactSim.dt;
+ventEscapePod.task = { kind: TASK.SCOUT, node: contactEdge.b };
+ventContactSim._refreshOccupancy();
+ventContactSim._computeInfluence();
+assert.equal(ventContactSim.hive.infectionSurfaceThreat(contactEdge.a), true,
+  'an infection form must sense a live marine in an adjacent room');
+const ventSafeRoom = ventContactSim.hive.ventBoltTarget(contactEdge.a);
+assert.notEqual(ventSafeRoom, -1, 'the vent network must have a safe fallback room');
+assert.equal(ventContactSim.hive.infectionSurfaceThreat(ventSafeRoom), false,
+  'the fallback vent exit must not surface beside an armed contact');
+updateFloodTick(ventContactSim, ventContactSim.dt);
+assert.equal(ventEscapePod.task, null,
+  'a pod must abandon an empty-room scout when it senses the adjacent rifle line');
+assert.equal(ventEscapePod.path[0]?.layer, 'vent',
+  'a pod exposed beside a rifle line must return to the vent network');
+assert.equal(ventEscapePod.path[0]?.to, ventSafeRoom,
+  'the pod must surface in the selected safe room rather than entering the marine room');
 
 const reserveSim = new Sim('dormant-vent-reserve-check', {
   flood: { dormantVentReserves: 2 },
