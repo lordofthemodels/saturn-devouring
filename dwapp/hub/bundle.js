@@ -72893,7 +72893,8 @@ var init_hive = __esm({
         const decisionDefense = knownHumans.reduce((sum, human) => sum + (W_HUMAN[human.faction] ?? 0), 0);
         const surge = provoked || pack2.some((member) => member.task?.surge || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
         const forced = pack2.some((member) => member.task?.force);
-        if (!forced && this.retreatCommitmentHolds(pack2, decisionStrength)) {
+        const stillOutmatched = decisionDefense > 0 && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
+        if (!forced && stillOutmatched && this.retreatCommitmentHolds(pack2, decisionStrength)) {
           if (threatNode >= 0) for (const member of pack2) {
             if (!this.isRetreating(member)) {
               this.retreatOrFight(member, threatNode, false, void 0, decisionStrength);
@@ -73735,7 +73736,7 @@ var init_hive = __esm({
           wantK = Math.max(wantK, bodyBackedK);
         }
         if (seedingK === 0 && plannedK < wantK && (C2 > K2 || K2 === 0)) {
-          const spares = combat.filter((c2) => !c2.fromPlayer && !this.isCombatCommitted(c2) && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 || c2.task.kind === TASK.ATTACK || c2.task.kind === TASK.SCOUT));
+          const spares = combat.filter((c2) => !c2.fromPlayer && !c2.downed && c2.hp > 0 && !this.isCombatCommitted(c2) && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 || c2.task.kind === TASK.ATTACK || c2.task.kind === TASK.SCOUT));
           const localSeed = spares.filter((c2) => !c2.move && this.localThreat(c2.node) < 0.5).sort((a2, b2) => this.localThreat(a2.node) - this.localThreat(b2.node) || a2.id - b2.id)[0];
           if (localSeed) this.assign(localSeed, { kind: TASK.TRANSFORM });
           else {
