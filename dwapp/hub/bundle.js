@@ -69229,8 +69229,6 @@ var init_params = __esm({
         // one Deck 1 net report per contact area, not one per sentry
       },
       rampage: {
-        threshold: 1.5,
-        // local flood:human strength ratio to flip aggressive
         localReserve: 1.5,
         // min local flood mass in a region before it rampages
         marineCap: 0.6
@@ -69241,14 +69239,13 @@ var init_params = __esm({
         // weighted flood:shooter ratio at which grabs work THROUGH gunfire
         dominationRatio: 2,
         // active combat forms per believed marine that ends caution globally
+        attackRatio: 1.5,
+        // one ratio for an unprovoked assault, muster, and local rampage
         dominationMinForms: 8,
         // zero/near-zero marine beliefs still require a real fighting mass
-        // 3:1 DOCTRINE (user redesign): the hive avoids marines unless it holds a
-        // ~3:1 local advantage until its total combat force reaches the 2:1
-        // global dominance rule above. The muster patience valve and cornered
-        // forms remain the other "no choice" paths.
-        killRatio: 3,
-        // muster:defense ratio before an assault launches
+        // One attack ratio (user tuning): the hive spends forms against a marine
+        // line once its local muster clears this number. Provoked or cornered
+        // forms still attack at even odds; the ratio only governs planned pressure.
         musterHops: 3,
         // how far the hive gathers forms for a squad-wipe
         maxMusterForms: 45,
@@ -72765,7 +72762,7 @@ var init_hive = __esm({
         const forced = situation.pack.some((member) => member.task?.force);
         const formCommitted = form.task?.kind === TASK.ATTACK && (form.task.surge || form.task.force || form.state === STATE.FIGHT);
         if ((surging || forced) && !formCommitted) return false;
-        if (forced || situation.strength >= situation.defense * (surging ? 1 : this.sim.P.swarm.killRatio)) return true;
+        if (forced || situation.strength >= situation.defense * (surging ? 1 : this.sim.P.swarm.attackRatio)) return true;
         const responseKey = situation.pack[0]?.id ?? form.id;
         if (this._combatResponseCache.has(responseKey)) return false;
         if (this.retreatCommitmentHolds(situation.pack, situation.strength)) return false;
@@ -72869,7 +72866,7 @@ var init_hive = __esm({
         if (forced || this.allIn) return true;
         const { strength, defense } = this.combatLineOfSight(form);
         if (defense === 0) return true;
-        return strength >= defense * (provoked ? 1 : this.sim.P.swarm.killRatio);
+        return strength >= defense * (provoked ? 1 : this.sim.P.swarm.attackRatio);
       }
       respondToCombat(form, target, provoked = false) {
         const situation = this.combatLineOfSight(form);
@@ -72905,7 +72902,7 @@ var init_hive = __esm({
           this._combatResponseCache.add(responseKey);
           return false;
         }
-        const canPress = forced || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.killRatio);
+        const canPress = forced || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
         if (canPress) {
           const targetLoads = /* @__PURE__ */ new Map();
           for (const attacker of this.sim.agents) {
@@ -73721,7 +73718,7 @@ var init_hive = __esm({
             hs += this.believedHumanStr[r2];
             hard += this.believedHardness[r2];
           }
-          if (fs >= P2.rampage.threshold * Math.max(hs, 0.3) && fs >= P2.rampage.localReserve && hard < P2.rampage.marineCap) rampaging.add(n2.idx);
+          if (fs >= P2.swarm.attackRatio * Math.max(hs, 0.3) && fs >= P2.rampage.localReserve && hard < P2.rampage.marineCap) rampaging.add(n2.idx);
         }
         if (rampaging.size > 0 && !this.rampageLogged) {
           this.rampageLogged = true;
@@ -73863,7 +73860,7 @@ var init_hive = __esm({
             const needed = this.combatDominant ? Math.min(P2.swarm.maxMusterForms, Math.max(
               4,
               Math.ceil(this.believedHumanStr[target] * P2.swarm.dominationRatio)
-            )) : this.allIn ? Math.min(P2.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6))) : Math.min(defense * P2.swarm.killRatio, P2.swarm.maxMusterForms);
+            )) : this.allIn ? Math.min(P2.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6))) : Math.min(defense * P2.swarm.attackRatio, P2.swarm.maxMusterForms);
             const arrived = forms.filter((f2) => !f2.move && f2.node === f2.task.node).length;
             if (defense <= 0.8 || arrived >= needed) {
               this._musterStart.delete(target);
@@ -74254,7 +74251,7 @@ var init_hive = __esm({
             }
           }
           const reserveOk = carriers.length > 0 || I2 - muster.filter((m2) => m2.faction === FACTION.INFECTION).length >= 0 ? carriers.length > 0 || I2 >= P2.reserveForms : false;
-          if (musterW >= squadW * P2.killRatio && reserveOk && muster.length) {
+          if (musterW >= squadW * P2.attackRatio && reserveOk && muster.length) {
             for (const f2 of muster) this.assign(f2, { kind: TASK.ATTACK, node: bel.node });
             this.squadWipeCooldownUntil = sim2.t + 45;
             sim2.log("rampage", `the hive springs on isolated squad ${squad.id + 1} in ${g2.node(bel.node).name} (${muster.length} forms, ${musterW.toFixed(1)}:${squadW} odds)`);
@@ -77449,7 +77446,7 @@ var init_sim = __esm({
               }
               if (guns > 0 && !this.hive.allIn) {
                 const pack2 = this._floodAt[a2.node] + this._floodAt[step3.to];
-                if (pack2 < guns * this.P.swarm.killRatio) {
+                if (pack2 < guns * this.P.swarm.attackRatio) {
                   a2.doorHold = (a2.doorHold ?? 0) + 1;
                   if (a2.doorHold > 45 * this.P.sim.tickHz) {
                     a2.doorHold = 0;
