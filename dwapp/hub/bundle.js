@@ -73735,13 +73735,17 @@ var init_hive = __esm({
           wantK = Math.max(wantK, bodyBackedK);
         }
         if (seedingK === 0 && plannedK < wantK && (C2 > K2 || K2 === 0)) {
-          const target = this.bestCarrierNode();
-          if (target !== -1) {
-            const spares = combat.filter((c3) => !c3.fromPlayer && !this.isCombatCommitted(c3) && (!c3.task || c3.task.kind === TASK.GUARD && c3.task.muster === void 0 || c3.task.kind === TASK.ATTACK || c3.task.kind === TASK.SCOUT));
-            const c2 = this.nearest(spares, target, ["std"], this.bigPass);
-            if (c2) {
-              if (c2.node === target && !c2.move && this.localThreat(target) < 0.5) this.assign(c2, { kind: TASK.TRANSFORM });
-              else this.assign(c2, { kind: TASK.GUARD, node: target, seed: true });
+          const spares = combat.filter((c2) => !c2.fromPlayer && !this.isCombatCommitted(c2) && (!c2.task || c2.task.kind === TASK.GUARD && c2.task.muster === void 0 || c2.task.kind === TASK.ATTACK || c2.task.kind === TASK.SCOUT));
+          const localSeed = spares.filter((c2) => !c2.move && this.localThreat(c2.node) < 0.5).sort((a2, b2) => this.localThreat(a2.node) - this.localThreat(b2.node) || a2.id - b2.id)[0];
+          if (localSeed) this.assign(localSeed, { kind: TASK.TRANSFORM });
+          else {
+            const target = this.bestCarrierNode();
+            if (target !== -1) {
+              const c2 = this.nearest(spares, target, ["std"], this.bigPass);
+              if (c2) {
+                if (c2.node === target && !c2.move && this.localThreat(target) < 0.5) this.assign(c2, { kind: TASK.TRANSFORM });
+                else this.assign(c2, { kind: TASK.GUARD, node: target, seed: true });
+              }
             }
           }
         }

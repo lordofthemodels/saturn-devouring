@@ -1764,24 +1764,33 @@ export class Hive {
       wantK = Math.max(wantK, bodyBackedK);
     }
     if (seedingK === 0 && plannedK < wantK && (C > K || K === 0)) {
-      const target = this.bestCarrierNode();
-      if (target !== -1) {
-        // a form raised from the PLAYER never roots into a carrier (game rule);
-        // a form staged in a LIVE MUSTER is off-limits too — drafting the army
-        // it is trying to raise put the hive in a loop of eating its own
-        // soldiers (raise the dead → draft to carrier → rupture → raise…)
-        const spares = combat.filter((c) => !c.fromPlayer
-          && !this.isCombatCommitted(c)
-          && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined)
-            || c.task.kind === TASK.ATTACK || c.task.kind === TASK.SCOUT));
-        const c = this.nearest(spares, target, ['std'], this.bigPass);
-        if (c) {
-          if (c.node === target && !c.move && this.localThreat(target) < 0.5) this.assign(c, { kind: TASK.TRANSFORM });
-          // seed: true protects the walk from the rampage muster — production
-          // precedes war, and re-drafting the seed form every round starved
-          // the hive of carriers entirely (deadlock: no carriers -> no
-          // infection forms -> no conversions -> the muster can never fill)
-          else this.assign(c, { kind: TASK.GUARD, node: target, seed: true });
+      // a form raised from the PLAYER never roots into a carrier (game rule);
+      // a form staged in a LIVE MUSTER is off-limits too — drafting the army
+      // it is trying to raise put the hive in a loop of eating its own
+      // soldiers (raise the dead → draft to carrier → rupture → raise…).
+      const spares = combat.filter((c) => !c.fromPlayer
+        && !this.isCombatCommitted(c)
+        && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined)
+          || c.task.kind === TASK.ATTACK || c.task.kind === TASK.SCOUT));
+      // A safe isolated form is already a viable carrier site. Root it in
+      // place before asking it to cross the ship: this closes the failure mode
+      // where the last combat form keeps walking toward an ideal den and dies
+      // before reproduction starts (user report: Charon-9 lone survivor).
+      const localSeed = spares.filter((c) => !c.move && this.localThreat(c.node) < 0.5)
+        .sort((a, b) => (this.localThreat(a.node) - this.localThreat(b.node)) || (a.id - b.id))[0];
+      if (localSeed) this.assign(localSeed, { kind: TASK.TRANSFORM });
+      else {
+        const target = this.bestCarrierNode();
+        if (target !== -1) {
+          const c = this.nearest(spares, target, ['std'], this.bigPass);
+          if (c) {
+            // seed: true protects the walk from the rampage muster — production
+            // precedes war, and re-drafting the seed form every round starved
+            // the hive of carriers entirely (deadlock: no carriers -> no
+            // infection forms -> no conversions -> the muster can never fill)
+            if (c.node === target && !c.move && this.localThreat(target) < 0.5) this.assign(c, { kind: TASK.TRANSFORM });
+            else this.assign(c, { kind: TASK.GUARD, node: target, seed: true });
+          }
         }
       }
     }
