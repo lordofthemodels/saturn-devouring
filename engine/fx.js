@@ -112,9 +112,14 @@ function flameMaterial() {
       ray.addAssign(direction.mul(step));
       const local = modelWorldMatrixInverse.mul(vec4(ray, 1)).xyz.toVar();
       local.x.mulAssign(2.0); local.z.mulAssign(2.0);
-      color.addAssign(sampleFire(local).mul(0.18));
+      // The profile is sampled from a premultiplied canvas texture. A low
+      // accumulation factor made the volume technically present but almost
+      // invisible on dark scenes, leaving only the additive ember sprites
+      // readable. Keep the same twelve-step budget and restore the intended
+      // solid flame body by accumulating enough density for one visible pass.
+      color.addAssign(sampleFire(local).mul(0.42));
     });
-    return vec4(color.rgb, clamp(color.a, 0, 0.94));
+    return vec4(color.rgb, clamp(color.a, 0, 0.98));
   })();
   _flameMat = mat;
   return mat;
