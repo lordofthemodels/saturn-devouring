@@ -579,7 +579,7 @@ export class Hive {
     // the same doorway. Block only that crossing; the shared fight continues.
     if ((surging || forced) && !formCommitted) return false;
     if (forced || situation.strength >= situation.defense
-      * (surging ? 1 : this.sim.P.swarm.killRatio)) return true;
+      * (surging ? 1 : this.sim.P.swarm.attackRatio)) return true;
     const responseKey = situation.pack[0]?.id ?? form.id;
     if (this._combatResponseCache.has(responseKey)) return false;
     if (this.retreatCommitmentHolds(situation.pack, situation.strength)) return false;
@@ -700,7 +700,7 @@ export class Hive {
     if (forced || this.allIn) return true;
     const { strength, defense } = this.combatLineOfSight(form);
     if (defense === 0) return true;
-    return strength >= defense * (provoked ? 1 : this.sim.P.swarm.killRatio);
+    return strength >= defense * (provoked ? 1 : this.sim.P.swarm.attackRatio);
   }
 
   respondToCombat(form, target, provoked = false) {
@@ -753,7 +753,7 @@ export class Hive {
       return false;
     }
     const canPress = forced || this.allIn || decisionDefense === 0
-      || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.killRatio);
+      || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
     if (canPress) {
       // Target locks are individual and sticky. Count every live combat form,
       // not just this visible pack, so two waves entering through different
@@ -1728,7 +1728,7 @@ export class Hive {
         hs += this.believedHumanStr[r];
         hard += this.believedHardness[r];
       }
-      if (fs >= P.rampage.threshold * Math.max(hs, 0.3)
+      if (fs >= P.swarm.attackRatio * Math.max(hs, 0.3)
         && fs >= P.rampage.localReserve
         && hard < P.rampage.marineCap) rampaging.add(n.idx);
     }
@@ -1941,7 +1941,7 @@ export class Hive {
 
     // 4b. LAUNCH THE MUSTER (user rule): staged forms go in TOGETHER once
     //     the mass that has actually ARRIVED at the staging ground clears
-    //     killRatio against the believed defense — never one at a time. A
+    //     attackRatio against the believed defense — never one at a time. A
     //     muster that can't fill in 90s gives its forms back to the economy.
     {
       const staged = new Map(); // target -> staged combat forms
@@ -1968,7 +1968,7 @@ export class Hive {
             Math.ceil(this.believedHumanStr[target] * P.swarm.dominationRatio)))
           : this.allIn
           ? Math.min(P.swarm.maxMusterForms, Math.max(4, Math.ceil(combat.length * 0.6)))
-          : Math.min(defense * P.swarm.killRatio, P.swarm.maxMusterForms);
+          : Math.min(defense * P.swarm.attackRatio, P.swarm.maxMusterForms);
         const arrived = forms.filter((f) => !f.move && f.node === f.task.node).length;
         if (defense <= 0.8 || arrived >= needed) {
           this._musterStart.delete(target);
@@ -1989,7 +1989,8 @@ export class Hive {
           continue;
         }
         // DOOR BAIT (user tactic): the pack is staged near the target, short
-        // of 3:1, holding DEAD STILL — invisible to a motion tracker. One
+        // of the attack ratio, holding DEAD STILL — invisible to a motion
+        // tracker. One
         // form runs to the defended room, shows itself, and doubles straight
         // back to the motionless pack. A defender who follows the blip walks
         // into everyone (the spring in floodExec fires the tick a human
@@ -2488,7 +2489,7 @@ export class Hive {
       // future (a carrier or a pool) somewhere else
       const reserveOk = carriers.length > 0 || I - muster.filter((m) => m.faction === FACTION.INFECTION).length >= 0
         ? (carriers.length > 0 || I >= P.reserveForms) : false;
-      if (musterW >= squadW * P.killRatio && reserveOk && muster.length) {
+      if (musterW >= squadW * P.attackRatio && reserveOk && muster.length) {
         for (const f of muster) this.assign(f, { kind: TASK.ATTACK, node: bel.node });
         this.squadWipeCooldownUntil = sim.t + 45;
         sim.log('rampage', `the hive springs on isolated squad ${squad.id + 1} in ${g.node(bel.node).name} (${muster.length} forms, ${musterW.toFixed(1)}:${squadW} odds)`);

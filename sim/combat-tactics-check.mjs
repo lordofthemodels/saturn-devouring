@@ -204,7 +204,7 @@ forms[1].dead = false;
 forms[2].dead = false;
 sim._refreshOccupancy();
 assert.equal(sim.hive.canPressCombatContact(attacker), true,
-  'three visible combat forms must satisfy the planned 3:1 threshold against one marine');
+  'three visible combat forms must satisfy the planned attack ratio against one marine');
 
 // The exact standoff regression: a pack already withdrawing from the squad
 // must not reverse when its leading marine steps through alone.
@@ -639,7 +639,7 @@ assert.equal(seedForms.filter((form) => form.task?.kind === TASK.DECOY
 
 // The screenshot regression: a roomful of forms outside four rifles is one
 // connected hive response. The appendage with the sightline commits the whole
-// 3:1-plus mass instead of repeatedly probing the doorway alone.
+// attack-ratio-plus mass instead of repeatedly probing the doorway alone.
 const breachSim = new Sim('overwhelming-door-breach-check');
 for (const agent of breachSim.agents) agent.dead = true;
 const breachDoor = openEscapeDoor(breachSim);

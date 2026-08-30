@@ -159,19 +159,17 @@ export const PARAMS = {
     deckSightingDedupeSec: 3, // one Deck 1 net report per contact area, not one per sentry
   },
   rampage: {
-    threshold: 1.5,      // local flood:human strength ratio to flip aggressive
     localReserve: 1.5,   // min local flood mass in a region before it rampages
     marineCap: 0.6,      // if believed marine strength in the region exceeds this, hide instead
   },
   swarm: {
     overwhelmRatio: 2.0,   // weighted flood:shooter ratio at which grabs work THROUGH gunfire
     dominationRatio: 2.0,  // active combat forms per believed marine that ends caution globally
+    attackRatio: 1.5,      // one ratio for an unprovoked assault, muster, and local rampage
     dominationMinForms: 8, // zero/near-zero marine beliefs still require a real fighting mass
-    // 3:1 DOCTRINE (user redesign): the hive avoids marines unless it holds a
-    // ~3:1 local advantage until its total combat force reaches the 2:1
-    // global dominance rule above. The muster patience valve and cornered
-    // forms remain the other "no choice" paths.
-    killRatio: 3.0,        // muster:defense ratio before an assault launches
+    // One attack ratio (user tuning): the hive spends forms against a marine
+    // line once its local muster clears this number. Provoked or cornered
+    // forms still attack at even odds; the ratio only governs planned pressure.
     musterHops: 3,         // how far the hive gathers forms for a squad-wipe
     maxMusterForms: 45,    // a wave this size flattens any line — stop waiting
     isolationHops: 3,      // no friendly squad within this = isolated

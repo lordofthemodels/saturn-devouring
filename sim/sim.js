@@ -2099,7 +2099,7 @@ export class Sim {
           }
           if (guns > 0 && !this.hive.allIn) {
             const pack = this._floodAt[a.node] + this._floodAt[step.to];
-            if (pack < guns * this.P.swarm.killRatio) {
+            if (pack < guns * this.P.swarm.attackRatio) {
               a.doorHold = (a.doorHold ?? 0) + 1;
               if (a.doorHold > 45 * this.P.sim.tickHz) { // 45s of waiting — give it up
                 a.doorHold = 0; a.path = []; a.task = null;
