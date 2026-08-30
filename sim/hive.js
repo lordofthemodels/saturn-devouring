@@ -739,7 +739,9 @@ export class Hive {
     // Once the hive has chosen a viable escape, ordinary incoming fire does
     // not make it reconsider every tick. A newly connected combat form does:
     // that is a real change in the shared odds, not doorway jitter.
-    if (!forced && this.retreatCommitmentHolds(pack, decisionStrength)) {
+    const stillOutmatched = decisionDefense > 0
+      && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
+    if (!forced && stillOutmatched && this.retreatCommitmentHolds(pack, decisionStrength)) {
       // A form that joins the cell after the retreat began must inherit the
       // same withdrawal. Returning only from this function left the newcomer
       // on its old attack order, producing the exact doorway split this pack
@@ -1768,7 +1770,7 @@ export class Hive {
       // a form staged in a LIVE MUSTER is off-limits too — drafting the army
       // it is trying to raise put the hive in a loop of eating its own
       // soldiers (raise the dead → draft to carrier → rupture → raise…).
-      const spares = combat.filter((c) => !c.fromPlayer
+      const spares = combat.filter((c) => !c.fromPlayer && !c.downed && c.hp > 0
         && !this.isCombatCommitted(c)
         && (!c.task || (c.task.kind === TASK.GUARD && c.task.muster === undefined)
           || c.task.kind === TASK.ATTACK || c.task.kind === TASK.SCOUT));
