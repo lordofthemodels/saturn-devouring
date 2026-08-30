@@ -85408,9 +85408,9 @@ function flameMaterial() {
       const local = modelWorldMatrixInverse2.mul(vec42(ray, 1)).xyz.toVar();
       local.x.mulAssign(2);
       local.z.mulAssign(2);
-      color3.addAssign(sampleFire(local).mul(0.18));
+      color3.addAssign(sampleFire(local).mul(0.42));
     });
-    return vec42(color3.rgb, clamp3(color3.a, 0, 0.94));
+    return vec42(color3.rgb, clamp3(color3.a, 0, 0.98));
   })();
   _flameMat = mat;
   return mat;
