@@ -72893,8 +72893,9 @@ var init_hive = __esm({
         const decisionDefense = knownHumans.reduce((sum, human) => sum + (W_HUMAN[human.faction] ?? 0), 0);
         const surge = provoked || pack2.some((member) => member.task?.surge || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
         const forced = pack2.some((member) => member.task?.force);
+        const committedAttack = pack2.some((member) => member.task?.kind === TASK.ATTACK && member.task.commit && this.lockedCombatTarget(member));
         const stillOutmatched = decisionDefense > 0 && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
-        if (!forced && stillOutmatched && this.retreatCommitmentHolds(pack2, decisionStrength)) {
+        if (!forced && !committedAttack && stillOutmatched && this.retreatCommitmentHolds(pack2, decisionStrength)) {
           if (threatNode >= 0) for (const member of pack2) {
             if (!this.isRetreating(member)) {
               this.retreatOrFight(member, threatNode, false, void 0, decisionStrength);
@@ -72903,7 +72904,7 @@ var init_hive = __esm({
           this._combatResponseCache.add(responseKey);
           return false;
         }
-        const canPress = forced || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
+        const canPress = forced || committedAttack || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
         if (canPress) {
           const targetLoads = /* @__PURE__ */ new Map();
           for (const attacker of this.sim.agents) {
@@ -72922,7 +72923,8 @@ var init_hive = __esm({
               node,
               targetId: prey?.id,
               surge: !!surge,
-              force: forced
+              force: forced,
+              commit: true
             });
           }
           this._combatResponseCache.add(responseKey);
@@ -73169,7 +73171,8 @@ var init_hive = __esm({
           node: threatNode,
           targetId,
           force: true,
-          cornered: true
+          cornered: true,
+          commit: true
         });
         return true;
       }

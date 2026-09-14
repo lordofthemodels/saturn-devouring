@@ -736,12 +736,19 @@ export class Hive {
     const surge = provoked || pack.some((member) => member.task?.surge
       || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
     const forced = pack.some((member) => member.task?.force);
+    // Once a pack has actually crossed the attack decision, keep that
+    // commitment stable until its locked prey dies. Re-running the ratio
+    // check as formations move made the same group charge, retreat, and
+    // charge again whenever one body briefly left the shared sense cell.
+    const committedAttack = pack.some((member) => member.task?.kind === TASK.ATTACK
+      && member.task.commit && this.lockedCombatTarget(member));
     // Once the hive has chosen a viable escape, ordinary incoming fire does
     // not make it reconsider every tick. A newly connected combat form does:
     // that is a real change in the shared odds, not doorway jitter.
     const stillOutmatched = decisionDefense > 0
       && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
-    if (!forced && stillOutmatched && this.retreatCommitmentHolds(pack, decisionStrength)) {
+    if (!forced && !committedAttack && stillOutmatched
+      && this.retreatCommitmentHolds(pack, decisionStrength)) {
       // A form that joins the cell after the retreat began must inherit the
       // same withdrawal. Returning only from this function left the newcomer
       // on its old attack order, producing the exact doorway split this pack
@@ -754,7 +761,7 @@ export class Hive {
       this._combatResponseCache.add(responseKey);
       return false;
     }
-    const canPress = forced || this.allIn || decisionDefense === 0
+    const canPress = forced || committedAttack || this.allIn || decisionDefense === 0
       || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
     if (canPress) {
       // Target locks are individual and sticky. Count every live combat form,
@@ -777,7 +784,7 @@ export class Hive {
         const node = prey ? (prey.pnode ?? prey.node) : fallbackNode;
         if (node === undefined || node < 0) continue;
         this.assign(member, { kind: TASK.ATTACK, node, targetId: prey?.id,
-          surge: !!surge, force: forced });
+          surge: !!surge, force: forced, commit: true });
       }
       this._combatResponseCache.add(responseKey);
       return form.task?.kind === TASK.ATTACK;
@@ -1043,7 +1050,7 @@ export class Hive {
     if (targetId !== undefined && this.combatTargetLoad(targetId, form.id)
       >= this.sim.P.combat.combatForm.attackersPerTarget) targetId = undefined;
     this.assign(form, { kind: TASK.ATTACK, node: threatNode, targetId,
-      force: true, cornered: true });
+      force: true, cornered: true, commit: true });
     return true;
   }
 
