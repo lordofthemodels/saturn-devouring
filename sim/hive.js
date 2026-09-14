@@ -733,6 +733,11 @@ export class Hive {
     const decisionStrength = Math.max(situation.strength, sensed?.strength ?? 0);
     const decisionDefense = knownHumans.reduce((sum, human) =>
       sum + (W_HUMAN[human.faction] ?? 0), 0);
+    // A doorway contact is decided first by the room the pack is actually
+    // entering. The wider sense cell is useful for caution, but letting a
+    // distant squad outweigh a locally superior pack made forms reverse at
+    // the threshold even while they had the numbers to finish the contact.
+    const localAdvantage = sensed?.defense > 0 && decisionStrength > sensed.defense;
     const surge = provoked || pack.some((member) => member.task?.surge
       || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
     const forced = pack.some((member) => member.task?.force);
@@ -745,7 +750,7 @@ export class Hive {
     // Once the hive has chosen a viable escape, ordinary incoming fire does
     // not make it reconsider every tick. A newly connected combat form does:
     // that is a real change in the shared odds, not doorway jitter.
-    const stillOutmatched = decisionDefense > 0
+    const stillOutmatched = decisionDefense > 0 && !localAdvantage
       && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
     if (!forced && !committedAttack && stillOutmatched
       && this.retreatCommitmentHolds(pack, decisionStrength)) {
@@ -761,7 +766,7 @@ export class Hive {
       this._combatResponseCache.add(responseKey);
       return false;
     }
-    const canPress = forced || committedAttack || this.allIn || decisionDefense === 0
+    const canPress = forced || committedAttack || localAdvantage || this.allIn || decisionDefense === 0
       || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
     if (canPress) {
       // Target locks are individual and sticky. Count every live combat form,

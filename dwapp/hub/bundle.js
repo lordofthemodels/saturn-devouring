@@ -72891,10 +72891,11 @@ var init_hive = __esm({
         }
         const decisionStrength = Math.max(situation.strength, sensed?.strength ?? 0);
         const decisionDefense = knownHumans.reduce((sum, human) => sum + (W_HUMAN[human.faction] ?? 0), 0);
+        const localAdvantage = sensed?.defense > 0 && decisionStrength > sensed.defense;
         const surge = provoked || pack2.some((member) => member.task?.surge || this.sim.tickCount - (member.lastHurtTick ?? -999) < 45);
         const forced = pack2.some((member) => member.task?.force);
         const committedAttack = pack2.some((member) => member.task?.kind === TASK.ATTACK && member.task.commit && this.lockedCombatTarget(member));
-        const stillOutmatched = decisionDefense > 0 && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
+        const stillOutmatched = decisionDefense > 0 && !localAdvantage && decisionStrength < decisionDefense * this.sim.P.swarm.attackRatio;
         if (!forced && !committedAttack && stillOutmatched && this.retreatCommitmentHolds(pack2, decisionStrength)) {
           if (threatNode >= 0) for (const member of pack2) {
             if (!this.isRetreating(member)) {
@@ -72904,7 +72905,7 @@ var init_hive = __esm({
           this._combatResponseCache.add(responseKey);
           return false;
         }
-        const canPress = forced || committedAttack || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
+        const canPress = forced || committedAttack || localAdvantage || this.allIn || decisionDefense === 0 || decisionStrength >= decisionDefense * (surge ? 1 : this.sim.P.swarm.attackRatio);
         if (canPress) {
           const targetLoads = /* @__PURE__ */ new Map();
           for (const attacker of this.sim.agents) {
